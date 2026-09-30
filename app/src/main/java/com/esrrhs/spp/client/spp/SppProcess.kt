@@ -6,6 +6,7 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import com.esrrhs.spp.client.util.LogSanitizer
 import java.util.concurrent.TimeUnit
 
 class SppException(message: String) : Exception(message)
@@ -78,7 +79,7 @@ class SppProcess(context: Context) {
             runCatching {
                 proc.inputStream.bufferedReader().forEachLine { raw ->
                     // spp 的 stdout 带 ANSI 颜色码，剥除后再回放/落盘
-                    val line = raw.replace(ANSI_PATTERN, "")
+                    val line = LogSanitizer.stripAnsi(raw)
                     synchronized(outputLines) {
                         outputLines.addLast(line)
                         while (outputLines.size > MAX_OUTPUT_LINES) outputLines.removeFirst()
@@ -170,9 +171,5 @@ class SppProcess(context: Context) {
         const val MAX_LOG_BYTES = 256L * 1024
         const val LOG_FILE = "spp.log"
         const val TAG = "SppProcess"
-
-        /** ANSI 转义序列（CSI：ESC[ 颜色/光标等）；ESC 由码值构造，避免源码转义。 */
-        val ANSI_PATTERN =
-            Regex(Regex.escape(27.toChar().toString()) + "\\[[0-9;?]*[a-zA-Z]")
     }
 }
