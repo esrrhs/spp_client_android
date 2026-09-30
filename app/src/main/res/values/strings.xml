@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SPP Client</string>
+
+    <string name="notif_channel_name">VPN 状态</string>
+    <string name="notif_connecting">正在连接…</string>
+    <string name="notif_connected">已连接 · %1$s</string>
+    <string name="notif_disconnecting">正在断开…</string>
+    <string name="error_establish">无法建立 VPN 接口（establish 返回 null，请重试或检查系统 VPN 设置）</string>
+</resources>
