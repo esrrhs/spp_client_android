@@ -20,7 +20,8 @@ class CnRouteTest {
     }
 
     private fun routesWithCnBypass() =
-        CidrRoutes.publicCidrs(requireCnList(), CN_GAP_PADDING)
+        // 精确模式：无间隙填充
+        CidrRoutes.publicCidrs(requireCnList())
 
     @Test
     fun cnDirect_cnSamplesAreNotRouted() {
@@ -37,7 +38,7 @@ class CnRouteTest {
     fun cnDirect_foreignSamplesAreRouted() {
         val routes = routesWithCnBypass()
         listOf(
-            "8.8.8.8", "9.9.9.9", "208.67.222.222", "20.44.145.247",
+            "8.8.8.8", "1.1.1.1", "9.9.9.9", "208.67.222.222", "20.44.145.247",
         ).forEach { ip ->
             assertTrue("$ip should be proxied", covers(routes, ip))
         }
@@ -52,14 +53,10 @@ class CnRouteTest {
     }
 
     @Test
-    fun cnDirect_routeCountIsAcceptable() {
+    fun cnDirect_routeCountIsExactSet() {
         val routes = routesWithCnBypass()
         println("routes with CN bypass: ${routes.size}")
-        assertTrue("too many routes: ${routes.size}", routes.size in 3000..6000)
-    }
-
-    private companion object {
-        const val CN_GAP_PADDING = 16_384L
+        assertTrue("unexpected route count: ${routes.size}", routes.size in 11000..13000)
     }
 
     private fun covers(cidrs: List<Cidr4>, ip: String): Boolean {
