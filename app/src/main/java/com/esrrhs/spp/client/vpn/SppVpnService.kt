@@ -21,6 +21,7 @@ import com.esrrhs.spp.client.spp.SppException
 import com.esrrhs.spp.client.spp.SppProcess
 import com.esrrhs.spp.client.tun.HevTunnel
 import com.esrrhs.spp.client.util.CidrRoutes
+import com.esrrhs.spp.client.util.CnRouteList
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -296,17 +297,28 @@ class SppVpnService : VpnService() {
         return builder
     }
 
-    /** IPv4/IPv6 路由：全局或仅公网（绕过私有网段）。 */
+    /** IPv4/IPv6 路由：全局、仅公网（绕过私有网段）或 CN 直连。 */
     private fun applyRouting(builder: Builder, profile: Profile) {
-        if (profile.bypassLan) {
-            CidrRoutes.publicCidrs.forEach { cidr -> builder.addRoute(cidr.address, cidr.prefix) }
-            if (profile.config.enableIpv6) {
-                // 仅接管全球单播（2000::/3），ULA/link-local 直连
-                builder.addRoute("2000::", 3)
-            }
-        } else {
+        if (!profile.bypassLan && !profile.bypassCn) {
             builder.addRoute("0.0.0.0", 0)
             if (profile.config.enableIpv6) builder.addRoute("::", 0)
+            return
+        }
+
+        val cnCidrs = if (profile.bypassCn) {
+            CnRouteList.load(this)
+        } else {
+            emptyList()
+        }
+        val padding = if (profile.bypassCn) CN_GAP_PADDING else 0L
+
+        CidrRoutes.publicCidrs(cnCidrs, padding)
+            .forEach { cidr -> builder.addRoute(cidr.address, cidr.prefix) }
+
+        if (profile.config.enableIpv6) {
+            // 智能分流时仅接管全球单播（2000::/3），ULA/link-local 直连；
+            // IPv6 的 CN 过滤本轮不包含
+            builder.addRoute("2000::", 3)
         }
     }
 
@@ -407,5 +419,8 @@ class SppVpnService : VpnService() {
         private const val NOTIFICATION_ID = 1
         private const val TAG = "SppVpnService"
         private const val MAX_RECONNECT_ATTEMPTS = 5
+
+        /** CN 路由聚合的间隙填充阈值（≤16K 的间隙直连，压缩路由数量）。 */
+        private const val CN_GAP_PADDING = 16_384L
     }
 }
