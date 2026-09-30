@@ -310,9 +310,8 @@ class SppVpnService : VpnService() {
         } else {
             emptyList()
         }
-        val padding = if (profile.bypassCn) CN_GAP_PADDING else 0L
-
-        CidrRoutes.publicCidrs(cnCidrs, padding)
+        // 精确模式：CN 段严格直连、其余公网地址全部代理，不做间隙填充
+        CidrRoutes.publicCidrs(cnCidrs)
             .forEach { cidr -> builder.addRoute(cidr.address, cidr.prefix) }
 
         if (profile.config.enableIpv6) {
@@ -419,8 +418,5 @@ class SppVpnService : VpnService() {
         private const val NOTIFICATION_ID = 1
         private const val TAG = "SppVpnService"
         private const val MAX_RECONNECT_ATTEMPTS = 5
-
-        /** CN 路由聚合的间隙填充阈值（≤16K 的间隙直连，压缩路由数量）。 */
-        private const val CN_GAP_PADDING = 16_384L
     }
 }

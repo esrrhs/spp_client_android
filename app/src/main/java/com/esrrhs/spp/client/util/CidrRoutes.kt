@@ -10,9 +10,8 @@ data class Cidr4(val address: String, val prefix: Int)
  * 注意：100.64.0.0/10（mapdns fake-ip 段）与 198.18.0.0/15 必须仍指向 TUN，
  * 因此不在排除列表中。
  *
- * CN 模式（chnroute）为**近似**方案：受系统路由承载能力所限，CN 段间 ≤16K 地址
- * 的微小空隙会被一并直连（如 1.1.1.0/24 这类被 CN 分配包围的地址）；个别因此
- * 直连而不可达的站点，应改用全局代理模式。
+ * CN 模式（chnroute）为精确方案：CN 分配段严格直连，其余公网地址全部代理
+ * （约 1.2 万条路由，建立约需十余秒）。
  */
 object CidrRoutes {
 

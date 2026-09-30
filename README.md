@@ -159,10 +159,9 @@ Default ABIs are `arm64-v8a` + `x86_64` (matching abiFilters); extend with `SPP_
 ./scripts/build_chnroute.sh
 ```
 
-CN-direct mode is an approximation: gaps of up to 16K addresses between CN
-allocations also go direct (e.g. addresses such as `1.1.1.0/24` surrounded by CN
-space). Sites that fail while CN-direct is enabled should be used in full-proxy
-mode. IPv6 CN filtering is not included (IPv6 smart split covers global unicast
+CN-direct mode is exact: CN allocations go direct and every other public address
+is proxied. It installs roughly 12k routes and takes about 14s to establish.
+IPv6 CN filtering is not included (IPv6 smart split covers global unicast
 `2000::/3` only).
 
 ---
