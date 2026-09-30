@@ -6,48 +6,153 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.esrrhs.spp.client.spp.Profile
 import com.esrrhs.spp.client.spp.SppConfig
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
 
 private val Context.dataStore by preferencesDataStore(name = "spp_config")
 
-/** DataStore 持久化的连接配置仓库。 */
+/** 多配置持久化仓库：配置列表 + 当前选中项 + 每配置累计流量。 */
 class ConfigRepository(context: Context) {
 
     private val dataStore = context.applicationContext.dataStore
 
     private object Keys {
-        val SERVER_HOST = stringPreferencesKey("server_host")
-        val SERVER_PORT = intPreferencesKey("server_port")
-        val PROTO = stringPreferencesKey("proto")
-        val KEY = stringPreferencesKey("key")
-        val ENCRYPT = stringPreferencesKey("encrypt")
-        val COMPRESS = intPreferencesKey("compress")
-        val ENABLE_IPV6 = booleanPreferencesKey("enable_ipv6")
+        val PROFILES_JSON = stringPreferencesKey("profiles_json")
+        val ACTIVE_ID = stringPreferencesKey("active_id")
+
+        // 旧版单配置字段（仅用于一次性迁移）
+        val LEGACY_HOST = stringPreferencesKey("server_host")
+        val LEGACY_PORT = intPreferencesKey("server_port")
+        val LEGACY_PROTO = stringPreferencesKey("proto")
+        val LEGACY_KEY = stringPreferencesKey("key")
+        val LEGACY_ENCRYPT = stringPreferencesKey("encrypt")
+        val LEGACY_COMPRESS = intPreferencesKey("compress")
+        val LEGACY_IPV6 = booleanPreferencesKey("enable_ipv6")
     }
 
-    val config: Flow<SppConfig> = dataStore.data.map { prefs ->
-        SppConfig(
-            serverHost = prefs[Keys.SERVER_HOST] ?: "",
-            serverPort = prefs[Keys.SERVER_PORT] ?: 8888,
-            proto = prefs[Keys.PROTO] ?: SppConfig.PROTOS.first(),
-            key = prefs[Keys.KEY] ?: "",
-            encrypt = prefs[Keys.ENCRYPT] ?: "",
-            compress = prefs[Keys.COMPRESS] ?: 0,
-            enableIpv6 = prefs[Keys.ENABLE_IPV6] ?: true,
-        )
-    }
+    private val json = Json { ignoreUnknownKeys = true }
+    private val listSerializer = ListSerializer(Profile.serializer())
 
-    suspend fun save(config: SppConfig) {
-        dataStore.edit { prefs ->
-            prefs[Keys.SERVER_HOST] = config.serverHost.trim()
-            prefs[Keys.SERVER_PORT] = config.serverPort
-            prefs[Keys.PROTO] = config.proto
-            prefs[Keys.KEY] = config.key
-            prefs[Keys.ENCRYPT] = config.encrypt
-            prefs[Keys.COMPRESS] = config.compress
-            prefs[Keys.ENABLE_IPV6] = config.enableIpv6
+    /** 全部配置；首次升级且无新数据时，从旧版单配置迁移出一条 "Default"。 */
+    val profiles: Flow<List<Profile>> = dataStore.data.map { prefs ->
+        val stored = prefs[Keys.PROFILES_JSON]
+        when {
+            stored != null -> runCatching { json.decodeFromString(listSerializer, stored) }
+                .getOrDefault(emptyList())
+            else -> migrateLegacy(prefs)
         }
+    }
+
+    /** 当前生效配置 id；未显式选择时默认为第一条。 */
+    val activeId: Flow<String?> = dataStore.data.map { prefs ->
+        prefs[Keys.ACTIVE_ID]
+    }
+
+    suspend fun upsert(profile: Profile) {
+        dataStore.edit { prefs ->
+            val list = decodeList(prefs[Keys.PROFILES_JSON]).toMutableList()
+            val index = list.indexOfFirst { it.id == profile.id }
+            if (index >= 0) {
+                // 保留已累计的流量，编辑只改名称与参数
+                list[index] = profile.copy(txBytes = list[index].txBytes, rxBytes = list[index].rxBytes)
+            } else {
+                list.add(profile)
+            }
+            prefs[Keys.PROFILES_JSON] = json.encodeToString(listSerializer, list)
+            if (prefs[Keys.ACTIVE_ID] == null) {
+                prefs[Keys.ACTIVE_ID] = profile.id
+            }
+        }
+    }
+
+    suspend fun delete(id: String) {
+        dataStore.edit { prefs ->
+            val list = decodeList(prefs[Keys.PROFILES_JSON]).filterNot { it.id == id }
+            prefs[Keys.PROFILES_JSON] = json.encodeToString(listSerializer, list)
+            if (prefs[Keys.ACTIVE_ID] == id) {
+                prefs[Keys.ACTIVE_ID] = list.firstOrNull()?.id ?: ""
+            }
+        }
+    }
+
+    suspend fun setActive(id: String) {
+        dataStore.edit { prefs -> prefs[Keys.ACTIVE_ID] = id }
+    }
+
+    /** 更新某配置最近一次延迟测试结果。 */
+    suspend fun updatePing(id: String, pingMs: Int) {
+        dataStore.edit { prefs ->
+            val list = decodeList(prefs[Keys.PROFILES_JSON]).map { p ->
+                if (p.id == id) p.copy(pingMs = pingMs) else p
+            }
+            prefs[Keys.PROFILES_JSON] = json.encodeToString(listSerializer, list)
+        }
+    }
+
+    /** 批量导入配置（与现有配置合并；id 冲突时为导入项分配新 id）。 */
+    suspend fun importProfiles(incoming: List<Profile>) {
+        if (incoming.isEmpty()) return
+        dataStore.edit { prefs ->
+            val list = decodeList(prefs[Keys.PROFILES_JSON]).toMutableList()
+            val existingIds = list.map { it.id }.toMutableSet()
+            for (profile in incoming) {
+                val resolved = if (existingIds.add(profile.id)) {
+                    profile
+                } else {
+                    val re = profile.copy(id = java.util.UUID.randomUUID().toString())
+                    existingIds.add(re.id)
+                    re
+                }
+                list.add(resolved)
+            }
+            prefs[Keys.PROFILES_JSON] = json.encodeToString(listSerializer, list)
+            val active = prefs[Keys.ACTIVE_ID]
+            if (active.isNullOrEmpty() || list.none { it.id == active }) {
+                prefs[Keys.ACTIVE_ID] = list.firstOrNull()?.id ?: ""
+            }
+        }
+    }
+
+    /** 给指定配置累加本次会话的字节数。 */
+    suspend fun addTraffic(id: String, txDelta: Long, rxDelta: Long) {
+        if (txDelta <= 0 && rxDelta <= 0) return
+        dataStore.edit { prefs ->
+            val list = decodeList(prefs[Keys.PROFILES_JSON]).map { p ->
+                if (p.id == id) {
+                    p.copy(txBytes = p.txBytes + txDelta, rxBytes = p.rxBytes + rxDelta)
+                } else p
+            }
+            prefs[Keys.PROFILES_JSON] = json.encodeToString(listSerializer, list)
+        }
+    }
+
+    private fun decodeList(stored: String?): List<Profile> =
+        if (stored == null) emptyList()
+        else runCatching { json.decodeFromString(listSerializer, stored) }.getOrDefault(emptyList())
+
+    private fun migrateLegacy(prefs: androidx.datastore.preferences.core.Preferences): List<Profile> {
+        val host = prefs[Keys.LEGACY_HOST]
+        return if (host.isNullOrBlank()) {
+            emptyList()
+        } else {
+            val config = SppConfig(
+                serverHost = host,
+                serverPort = prefs[Keys.LEGACY_PORT] ?: 8888,
+                proto = prefs[Keys.LEGACY_PROTO] ?: "tcp",
+                key = prefs[Keys.LEGACY_KEY] ?: "",
+                encrypt = prefs[Keys.LEGACY_ENCRYPT] ?: "",
+                compress = prefs[Keys.LEGACY_COMPRESS] ?: 0,
+                enableIpv6 = prefs[Keys.LEGACY_IPV6] ?: true,
+            )
+            listOf(Profile(id = LEGACY_ID, name = "Default", config = config))
+        }
+    }
+
+    private companion object {
+        const val LEGACY_ID = "legacy-default"
     }
 }

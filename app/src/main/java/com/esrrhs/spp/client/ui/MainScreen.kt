@@ -1,9 +1,12 @@
 package com.esrrhs.spp.client.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -12,38 +15,24 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Switch
+import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.MaterialTheme.typography
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.esrrhs.spp.client.spp.SppConfig
+import com.esrrhs.spp.client.spp.Profile
 import com.esrrhs.spp.client.util.Formatters
 import com.esrrhs.spp.client.vpn.VpnState
 
@@ -54,64 +43,136 @@ private val StateGray = Color(0xFF9E9E9E)
 
 @Composable
 fun MainScreen(
-    form: SppConfig,
+    profiles: List<Profile>,
+    activeId: String?,
     vpnState: VpnState,
-    saved: Boolean,
-    traffic: TrafficStats?,
-    onFormChange: (SppConfig) -> Unit,
-    onConnect: () -> Unit,
-    onDisconnect: () -> Unit,
-    onSave: () -> Unit,
+    session: SessionTraffic,
+    testingPings: Boolean,
+    qrProfile: Profile?,
+    onProfileClick: (String) -> Unit,
+    onEdit: (String) -> Unit,
+    onDelete: (String) -> Unit,
+    onAdd: () -> Unit,
     onShowLogs: () -> Unit,
+    onSettings: () -> Unit,
+    onScan: () -> Unit,
+    onImport: () -> Unit,
+    onExport: () -> Unit,
+    onTestPing: (String) -> Unit,
+    onTestAll: () -> Unit,
+    onSelectFastest: () -> Unit,
+    onShowQr: (String) -> Unit,
+    onDismissQr: () -> Unit,
 ) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+            .padding(horizontal = 12.dp),
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 12.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(text = "SPP Client", style = typography.headlineMedium)
+            Text(text = "SPP Client", style = typography.headlineSmall)
             TextButton(onClick = onShowLogs) { Text("运行日志") }
         }
-        Text(
-            text = "整机流量与 DNS 经 SPP Server 转发",
-            style = typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+
+        GlobalState(vpnState)
+
+        ToolsRow(
+            testingPings = testingPings,
+            onScan = onScan,
+            onImport = onImport,
+            onExport = onExport,
+            onTestAll = onTestAll,
+            onSelectFastest = onSelectFastest,
+            onSettings = onSettings,
         )
 
-        StatusCard(vpnState, traffic)
+        Box(modifier = Modifier.weight(1f)) {
+            if (profiles.isEmpty()) {
+                Text(
+                    text = "暂无配置，点下方按钮添加，或扫码 / 从文件导入。",
+                    style = typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 40.dp),
+                )
+            } else {
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = PaddingValues(vertical = 4.dp),
+                ) {
+                    items(profiles, key = { it.id }) { profile ->
+                        ProfileItem(
+                            profile = profile,
+                            active = profile.id == activeId,
+                            vpnState = vpnState,
+                            session = session,
+                            onClick = { onProfileClick(profile.id) },
+                            onEdit = { onEdit(profile.id) },
+                            onDelete = { onDelete(profile.id) },
+                            onTestPing = { onTestPing(profile.id) },
+                            onShowQr = { onShowQr(profile.id) },
+                        )
+                    }
+                }
+            }
+        }
 
-        ConnectButton(
-            state = vpnState,
-            onConnect = onConnect,
-            onDisconnect = onDisconnect,
-        )
+        OutlinedButton(
+            onClick = onAdd,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 12.dp)
+                .height(48.dp),
+        ) {
+            Text("添加配置", style = typography.titleMedium)
+        }
+    }
 
-        ConfigForm(
-            form = form,
-            saved = saved,
-            onFormChange = onFormChange,
-            onSave = onSave,
-        )
-
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            text = "首次连接需授予系统 VPN 权限；断开按钮随时可停。" +
-                "DNS 查询在本地被映射应答，不会直连运营商。",
-            style = typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+    if (qrProfile != null) {
+        QrShareDialog(profile = qrProfile, onDismiss = onDismissQr)
     }
 }
 
 @Composable
-private fun StatusCard(state: VpnState, traffic: TrafficStats?) {
+private fun ToolsRow(
+    testingPings: Boolean,
+    onScan: () -> Unit,
+    onImport: () -> Unit,
+    onExport: () -> Unit,
+    onTestAll: () -> Unit,
+    onSelectFastest: () -> Unit,
+    onSettings: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        ToolButton("扫码", onScan)
+        ToolButton("导入", onImport)
+        ToolButton("导出", onExport)
+        ToolButton(if (testingPings) "测延迟…" else "全部延迟", onTestAll)
+        ToolButton("最快", onSelectFastest)
+        ToolButton("设置", onSettings)
+    }
+}
+
+@Composable
+private fun ToolButton(text: String, onClick: () -> Unit) {
+    TextButton(
+        onClick = onClick,
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+    ) { Text(text, style = typography.labelLarge) }
+}
+
+@Composable
+private fun GlobalState(state: VpnState) {
     val (color, label) = when (state) {
         VpnState.Disconnected -> StateGray to "未连接"
         VpnState.Connecting -> StateAmber to "连接中…"
@@ -119,194 +180,107 @@ private fun StatusCard(state: VpnState, traffic: TrafficStats?) {
         VpnState.Disconnecting -> StateAmber to "断开中…"
         is VpnState.Error -> StateRed to "错误"
     }
-    Card(
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .background(color, CircleShape),
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(text = label, style = typography.bodyMedium)
+        if (state is VpnState.Error && state.message.isNotBlank()) {
+            Text(
+                text = "：${state.message}",
+                style = typography.bodySmall,
+                color = StateRed,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ProfileItem(
+    profile: Profile,
+    active: Boolean,
+    vpnState: VpnState,
+    session: SessionTraffic,
+    onClick: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+    onTestPing: () -> Unit,
+    onShowQr: () -> Unit,
+) {
+    val connected = active && vpnState is VpnState.Connected
+    val borderColor = when {
+        connected -> StateGreen
+        active -> StateAmber
+        else -> Color.Transparent
+    }
+    OutlinedCard(
+        onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        border = BorderStroke(if (connected || active) 2.dp else 1.dp, borderColor),
     ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(10.dp)
-                        .background(color, CircleShape),
-                )
-                Spacer(modifier = Modifier.width(10.dp))
-                Text(text = label, style = typography.titleMedium)
-            }
-            if (state is VpnState.Error && state.message.isNotBlank()) {
-                Text(
-                    text = state.message,
-                    style = typography.bodySmall,
-                    color = StateRed,
-                )
-            }
-            if (state is VpnState.Connected && traffic != null) {
-                Text(
-                    text = "↑ ${Formatters.formatBytes(traffic.txBytes)}（${Formatters.formatBytes(traffic.txRate)}/s）" +
-                        "    ↓ ${Formatters.formatBytes(traffic.rxBytes)}（${Formatters.formatBytes(traffic.rxRate)}/s）",
-                    style = typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun ConnectButton(
-    state: VpnState,
-    onConnect: () -> Unit,
-    onDisconnect: () -> Unit,
-) {
-    val busy = state is VpnState.Connecting || state is VpnState.Disconnecting
-    val connected = state is VpnState.Connected
-    Button(
-        onClick = if (connected) onDisconnect else onConnect,
-        enabled = !busy,
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(52.dp),
-        colors = if (connected) {
-            ButtonDefaults.buttonColors(containerColor = StateRed)
-        } else {
-            ButtonDefaults.buttonColors()
-        },
-    ) {
-        Text(
-            text = when (state) {
-                VpnState.Connecting -> "连接中…"
-                VpnState.Disconnecting -> "断开中…"
-                VpnState.Connected -> "断开连接"
-                is VpnState.Error -> "重试连接"
-                VpnState.Disconnected -> "连接"
-            },
-            style = typography.titleMedium,
-        )
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun ConfigForm(
-    form: SppConfig,
-    saved: Boolean,
-    onFormChange: (SppConfig) -> Unit,
-    onSave: () -> Unit,
-) {
-    var protoExpanded by remember { mutableStateOf(false) }
-
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text(text = "服务器配置", style = typography.titleMedium)
-
-        OutlinedTextField(
-            value = form.serverHost,
-            onValueChange = { onFormChange(form.copy(serverHost = it)) },
-            label = { Text("服务器地址（host）") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-
-        OutlinedTextField(
-            value = form.serverPort.takeIf { it > 0 }?.toString() ?: "",
-            onValueChange = { text ->
-                onFormChange(form.copy(serverPort = text.toIntOrNull() ?: 0))
-            },
-            label = { Text("端口") },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            modifier = Modifier.fillMaxWidth(),
-        )
-
-        ExposedDropdownMenuBox(
-            expanded = protoExpanded,
-            onExpandedChange = { protoExpanded = it },
-        ) {
-            OutlinedTextField(
-                value = form.proto,
-                onValueChange = {},
-                readOnly = true,
-                label = { Text("传输协议（proto）") },
-                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = protoExpanded) },
-                modifier = Modifier
-                    .menuAnchor(MenuAnchorType.PrimaryNotEditable)
-                    .fillMaxWidth(),
-            )
-            ExposedDropdownMenu(
-                expanded = protoExpanded,
-                onDismissRequest = { protoExpanded = false },
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                SppConfig.PROTOS.forEach { proto ->
-                    DropdownMenuItem(
-                        text = { Text(proto) },
-                        onClick = {
-                            onFormChange(form.copy(proto = proto))
-                            protoExpanded = false
-                        },
-                    )
-                }
-            }
-        }
-
-        OutlinedTextField(
-            value = form.key,
-            onValueChange = { onFormChange(form.copy(key = it)) },
-            label = { Text("认证 Key") },
-            singleLine = true,
-            visualTransformation = PasswordVisualTransformation(),
-            modifier = Modifier.fillMaxWidth(),
-        )
-
-        OutlinedTextField(
-            value = form.encrypt,
-            onValueChange = { onFormChange(form.copy(encrypt = it)) },
-            label = { Text("加密 Key（留空则不加密）") },
-            singleLine = true,
-            visualTransformation = PasswordVisualTransformation(),
-            modifier = Modifier.fillMaxWidth(),
-        )
-
-        OutlinedTextField(
-            value = form.compress.toString(),
-            onValueChange = { text ->
-                onFormChange(form.copy(compress = text.toIntOrNull() ?: 0))
-            },
-            label = { Text("压缩阈值（字节，0=关闭）") },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            modifier = Modifier.fillMaxWidth(),
-        )
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column {
-                Text(text = "接管 IPv6 流量", style = typography.bodyLarge)
                 Text(
-                    text = "关闭则仅代理 IPv4（IPv6 可能直连）",
-                    style = typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    text = profile.name,
+                    style = typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
                 )
+                PingLabel(profile.pingMs)
             }
-            Switch(
-                checked = form.enableIpv6,
-                onCheckedChange = { onFormChange(form.copy(enableIpv6 = it)) },
+
+            Text(
+                text = "${profile.config.proto}  ${profile.config.serverAddr}",
+                style = typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
-        }
 
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            OutlinedButton(onClick = onSave) {
-                Text("保存配置")
-            }
-            Spacer(modifier = Modifier.width(12.dp))
-            if (saved) {
-                Text(
-                    text = "已保存",
-                    style = typography.bodyMedium,
-                    color = StateGreen,
-                )
+            val tx = profile.txBytes + if (active) session.tx else 0
+            val rx = profile.rxBytes + if (active) session.rx else 0
+            Text(
+                text = "↑ ${Formatters.formatBytes(tx)}    ↓ ${Formatters.formatBytes(rx)}",
+                style = typography.bodySmall,
+            )
+
+            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                ItemButton("延迟", onTestPing)
+                ItemButton("二维码", onShowQr)
+                ItemButton("编辑", onEdit)
+                ItemButton("删除", onDelete, color = StateRed)
             }
         }
     }
+}
+
+@Composable
+private fun PingLabel(pingMs: Int) {
+    val (text, color) = when {
+        pingMs < 0 -> "未测" to StateGray
+        else -> "$pingMs ms" to if (pingMs < 200) StateGreen else StateRed
+    }
+    Text(text = text, style = typography.labelMedium, color = color)
+}
+
+@Composable
+private fun ItemButton(
+    text: String,
+    onClick: () -> Unit,
+    color: Color = MaterialTheme.colorScheme.primary,
+) {
+    TextButton(
+        onClick = onClick,
+        contentPadding = PaddingValues(horizontal = 8.dp),
+    ) { Text(text, style = typography.labelMedium, color = color) }
 }
