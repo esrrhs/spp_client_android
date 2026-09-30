@@ -37,7 +37,9 @@ TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/$HOST_TAG/bin"
 
 cd "$SPP_DIR"
 VERSION="$(git describe --tags 2>/dev/null || echo dev)"
-LDFLAGS="-s -w -X 'github.com/esrrhs/spp/version.Version=$VERSION-android'"
+# CGO 经外部链接器（clang）最终链接，要求其按 16KB 页对齐 LOAD 段，
+# 满足 Android 15+ 的 16KB page size 要求（否则系统提示应用不合规）。
+LDFLAGS="-s -w -X 'github.com/esrrhs/spp/version.Version=$VERSION-android' -extldflags=-Wl,-z,max-page-size=16384"
 
 for ABI in "${ABIS[@]}"; do
     case "$ABI" in
