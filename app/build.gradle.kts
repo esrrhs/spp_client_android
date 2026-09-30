@@ -4,6 +4,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 // Release 签名从 keystore.properties 读取（不入库）；文件缺失时产出未签名 release APK
@@ -87,6 +88,9 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.datastore.preferences)
+    implementation(libs.kotlinx.serialization.json)
+    implementation(libs.zxing.core)
+    implementation(libs.zxing.embedded)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
 

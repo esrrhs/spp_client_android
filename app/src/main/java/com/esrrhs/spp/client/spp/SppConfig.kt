@@ -1,8 +1,11 @@
 package com.esrrhs.spp.client.spp
 
+import kotlinx.serialization.Serializable
+
 /**
  * SPP 连接配置，字段与 spp 命令行参数一一对应（见 README「SPP 参数映射」）。
  */
+@Serializable
 data class SppConfig(
     val serverHost: String = "",
     val serverPort: Int = 8888,

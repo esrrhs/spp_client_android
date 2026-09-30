@@ -14,14 +14,20 @@ import androidx.core.app.NotificationCompat
 import com.esrrhs.spp.client.MainActivity
 import com.esrrhs.spp.client.R
 import com.esrrhs.spp.client.data.ConfigRepository
+import com.esrrhs.spp.client.data.SettingsRepository
+import com.esrrhs.spp.client.spp.PerAppMode
+import com.esrrhs.spp.client.spp.Profile
 import com.esrrhs.spp.client.spp.SppException
 import com.esrrhs.spp.client.spp.SppProcess
 import com.esrrhs.spp.client.tun.HevTunnel
+import com.esrrhs.spp.client.util.CidrRoutes
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -33,11 +39,20 @@ class SppVpnService : VpnService() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    /** 串行化 connect / teardown，杜绝「正在连接时断开」导致的状态错乱。 */
+    /** 串行化 connect / teardown / reconnect。 */
     private val lifecycleMutex = Mutex()
 
     private var sppProcess: SppProcess? = null
     private var tunInterface: ParcelFileDescriptor? = null
+
+    /** 本次会话（含重连）所属配置及统计。 */
+    private var activeProfileId: String? = null
+    private var baselineTx = 0L
+    private var baselineRx = 0L
+    private var sessionTxTotal = 0L
+    private var sessionRxTotal = 0L
+
+    private var reconnectJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -50,25 +65,23 @@ class SppVpnService : VpnService() {
             // ACTION_CONNECT / null（系统重建 Service）
             else -> requestConnect()
         }
-        // Service 被系统杀掉后不自动重连（MVP 行为，见 IMPLEMENTATION_PLAN Phase 6）
         return START_NOT_STICKY
     }
 
-    /**
-     * 系统收回 VPN：用户在系统设置中断开、或被其它 VPN 抢占。
-     * 必须停掉 hev / spp 并复位状态，否则 UI 会永远显示「已连接」。
-     */
+    /** 系统收回 VPN：停 hev / spp 并复位状态。 */
     override fun onRevoke() {
         Log.i(TAG, "vpn revoked by system")
+        reconnectJob?.cancel()
         scope.launch { teardown(notifyDisconnected = true) }
     }
 
     override fun onDestroy() {
-        // best-effort 同步清理（极端情况下协程已无法调度时的兜底）
+        reconnectJob?.cancel()
         runCatching { HevTunnel.stop() }
         tunInterface?.let { pfd -> runCatching { pfd.close() } }
         sppProcess?.stop()
         sppProcess = null
+        activeProfileId = null
         scope.cancel()
         super.onDestroy()
     }
@@ -91,6 +104,8 @@ class SppVpnService : VpnService() {
         if (current is VpnState.Disconnected || current is VpnState.Disconnecting) {
             return
         }
+        // 用户主动断开：取消可能进行中的自动重连
+        reconnectJob?.cancel()
         startAsForeground(getString(R.string.notif_disconnecting))
         VpnStateHolder.set(VpnState.Disconnecting)
         scope.launch { teardown(notifyDisconnected = true) }
@@ -99,96 +114,219 @@ class SppVpnService : VpnService() {
     private suspend fun connect() = withContext(Dispatchers.IO) {
         lifecycleMutex.withLock {
             try {
-                val config = ConfigRepository(this@SppVpnService).config.first()
-                config.validate()?.let { throw SppException(it) }
-
-                // 1. 先拉起本地 SOCKS5（SPP socks5_client 子进程），等到端口监听
-                val spp = SppProcess(this@SppVpnService)
-                spp.onUnexpectedExit = {
-                    // 仅在已连接状态下视为意外；连接中由 waitUntilListening 报错
-                    if (VpnStateHolder.state.value is VpnState.Connected) {
-                        scope.launch {
-                            teardown(
-                                errorMessage = "SPP 客户端进程意外退出，请检查网络或 Server 后重连",
-                            )
-                        }
-                    }
-                }
-                val socksPort = spp.start(config)
-                Log.i(TAG, "spp socks5 listening on 127.0.0.1:$socksPort")
-                sppProcess = spp
-
-                // 2. 建立 TUN；环路防护见 SppProcess 类注释
-                val tun = Builder()
-                    .setSession(TunConfig.SESSION)
-                    .setMtu(TunConfig.MTU)
-                    .addAddress(TunConfig.TUN_ADDRESS, TunConfig.TUN_PREFIX)
-                    .addRoute("0.0.0.0", 0)
-                    .addDnsServer(TunConfig.DNS_ADDRESS)
-                    .apply {
-                        if (config.enableIpv6) {
-                            addAddress(TunConfig.TUN_ADDRESS_V6, TunConfig.TUN_PREFIX_V6)
-                            addRoute("::", 0)
-                        }
-                    }
-                    .addDisallowedApplication(packageName)
-                    .establish() ?: throw SppException(getString(R.string.error_establish))
-                Log.i(TAG, "tun established")
-                tunInterface = tun
-
-                // 3. fd 交给 hev-socks5-tunnel，全流量转成本地 SOCKS5。
-                // 用 getFd() 只给 int、不转移所有权：hev 对外部传入的 fd 不会自行关闭
-                // （tunnel_fini 里 tun_fd_local==0 直接 return），必须由本类在 teardown
-                // 时 close() 这个 PFD——关闭后内核删除 tun0，框架收到 interfaceRemoved
-                // 才会 unbind 服务、断开 VPN network agent。
-                val configFile = writeHevConfig(socksPort, config.enableIpv6)
-                if (!HevTunnel.start(configFile.absolutePath, tun.fd)) {
-                    throw SppException("hev-socks5-tunnel 启动失败")
-                }
-                Log.i(TAG, "hev tunnel started")
-
-                updateNotification(getString(R.string.notif_connected, config.serverAddr))
-                VpnStateHolder.set(VpnState.Connected)
+                val (repository, profile) = loadActiveProfile()
+                sessionTxTotal = 0L
+                sessionRxTotal = 0L
+                establishSession(repository, profile)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "connect failed: ${e.message}")
+                stopDataPlaneAndCount()
+                persistSessionTraffic()
                 VpnStateHolder.set(VpnState.Error(e.message ?: "连接失败"))
-                teardownLocked()
+                finishService()
             }
         }
     }
 
-    /** 拆链：停 hev → 关 tun → 停 spp → 关通知。 */
+    /** 建立一次完整数据面（spp → TUN → hev）；成功后状态为 Connected。 */
+    private suspend fun establishSession(repository: ConfigRepository, profile: Profile) {
+        profile.validate()?.let { throw SppException(it) }
+        val config = profile.config
+        activeProfileId = profile.id
+
+        // 1. 拉起本地 SOCKS5
+        val spp = SppProcess(this)
+        spp.onUnexpectedExit = {
+            if (VpnStateHolder.state.value is VpnState.Connected &&
+                activeProfileId == profile.id
+            ) {
+                scope.launch { handleTunnelLost(profile.id) }
+            }
+        }
+        val socksPort = spp.start(config)
+        Log.i(TAG, "spp socks5 listening on 127.0.0.1:$socksPort")
+        sppProcess = spp
+
+        // 2. 建立 TUN（含分应用 / 智能分流路由）
+        val tun = buildTun(profile)
+            .establish() ?: throw SppException(getString(R.string.error_establish))
+        Log.i(TAG, "tun established")
+        tunInterface = tun
+
+        // 3. hev：getFd() 只传 int，PFD 所有权保留在本类
+        val configFile = writeHevConfig(socksPort, config.enableIpv6)
+        if (!HevTunnel.start(configFile.absolutePath, tun.fd)) {
+            throw SppException("hev-socks5-tunnel 启动失败")
+        }
+        Log.i(TAG, "hev tunnel started")
+
+        HevTunnel.stats()?.let { s ->
+            baselineTx = s.getOrNull(1) ?: 0L
+            baselineRx = s.getOrNull(3) ?: 0L
+        }
+
+        updateNotification(getString(R.string.notif_connected, config.serverAddr))
+        VpnStateHolder.set(VpnState.Connected)
+    }
+
+    /** spp 意外退出：按设置自动重连，否则报错停止。 */
+    private suspend fun handleTunnelLost(profileId: String) {
+        lifecycleMutex.withLock {
+            val autoReconnect = runCatching {
+                SettingsRepository(this@SppVpnService).settings.first().autoReconnect
+            }.getOrDefault(false)
+
+            // 先把当前数据面计数结账
+            stopDataPlaneAndCount()
+
+            if (!autoReconnect) {
+                persistSessionTraffic()
+                VpnStateHolder.set(
+                    VpnState.Error("SPP 连接已断开，请检查网络后重连"),
+                )
+                finishService()
+                return
+            }
+
+            VpnStateHolder.set(VpnState.Connecting)
+            updateNotification(getString(R.string.notif_reconnecting))
+            for (attempt in 1..MAX_RECONNECT_ATTEMPTS) {
+                delay(backoffMs(attempt))
+                try {
+                    val (repository, profile) = loadActiveProfile()
+                    // 选中项已变化或已非本配置：不再重连
+                    if (profile.id != profileId) {
+                        persistSessionTraffic()
+                        finishService()
+                        return
+                    }
+                    establishSession(repository, profile)
+                    return
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "reconnect attempt $attempt failed: ${e.message}")
+                    stopDataPlaneAndCount()
+                }
+            }
+            persistSessionTraffic()
+            VpnStateHolder.set(VpnState.Error("多次重连失败，请检查网络或 Server"))
+            finishService()
+        }
+    }
+
     private suspend fun teardown(
         errorMessage: String? = null,
         notifyDisconnected: Boolean = false,
     ) {
         lifecycleMutex.withLock {
-            teardownLocked(errorMessage, notifyDisconnected)
-        }
-    }
-
-    private fun teardownLocked(
-        errorMessage: String? = null,
-        notifyDisconnected: Boolean = false,
-    ) {
-        try {
-            // 顺序：停 hev → 关 tun（触发内核删接口、框架 unbind）→ 停 spp
-            HevTunnel.stop()
-            tunInterface?.let { pfd -> runCatching { pfd.close() } }
-            tunInterface = null
-            sppProcess?.stop()
-            sppProcess = null
-        } finally {
+            stopDataPlaneAndCount()
+            persistSessionTraffic()
             when {
                 errorMessage != null -> VpnStateHolder.set(VpnState.Error(errorMessage))
                 notifyDisconnected &&
                     VpnStateHolder.state.value !is VpnState.Error ->
                     VpnStateHolder.set(VpnState.Disconnected)
             }
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            finishService()
+        }
+    }
+
+    /** 停数据面并把本段字节计入会话累计。 */
+    private fun stopDataPlaneAndCount() {
+        val finalStats = HevTunnel.stats()
+        runCatching { HevTunnel.stop() }
+        tunInterface?.let { pfd -> runCatching { pfd.close() } }
+        tunInterface = null
+        sppProcess?.stop()
+        sppProcess = null
+        if (finalStats != null) {
+            sessionTxTotal += ((finalStats.getOrNull(1) ?: 0L) - baselineTx).coerceAtLeast(0)
+            sessionRxTotal += ((finalStats.getOrNull(3)  ?: 0L) - baselineRx).coerceAtLeast(0)
+        }
+        baselineTx = 0L
+        baselineRx = 0L
+    }
+
+    private suspend fun persistSessionTraffic() {
+        val pid = activeProfileId
+        if (pid != null && (sessionTxTotal > 0 || sessionRxTotal > 0)) {
+            runCatching {
+                ConfigRepository(this).addTraffic(pid, sessionTxTotal, sessionRxTotal)
+            }
+        }
+        sessionTxTotal = 0L
+        sessionRxTotal = 0L
+        activeProfileId = null
+    }
+
+    private fun finishService() {
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    /** 读取当前选中配置；不存在有效配置时抛错。 */
+    private suspend fun loadActiveProfile(): Pair<ConfigRepository, Profile> {
+        val repository = ConfigRepository(this)
+        val profiles = repository.profiles.first()
+        val activeId = repository.activeId.first()
+        val profile = profiles.firstOrNull { it.id == activeId } ?: profiles.firstOrNull()
+        return if (profile == null) {
+            throw SppException("请先添加配置")
+        } else {
+            repository to profile
+        }
+    }
+
+    private fun buildTun(profile: Profile): Builder {
+        val builder = Builder()
+            .setSession(TunConfig.SESSION)
+            .setMtu(TunConfig.MTU)
+            .addAddress(TunConfig.TUN_ADDRESS, TunConfig.TUN_PREFIX)
+            .addDnsServer(TunConfig.DNS_ADDRESS)
+
+        if (profile.config.enableIpv6) {
+            builder.addAddress(TunConfig.TUN_ADDRESS_V6, TunConfig.TUN_PREFIX_V6)
+        }
+
+        applyRouting(builder, profile)
+        applyPerApp(builder, profile)
+        return builder
+    }
+
+    /** IPv4/IPv6 路由：全局或仅公网（绕过私有网段）。 */
+    private fun applyRouting(builder: Builder, profile: Profile) {
+        if (profile.bypassLan) {
+            CidrRoutes.publicCidrs.forEach { cidr -> builder.addRoute(cidr.address, cidr.prefix) }
+            if (profile.config.enableIpv6) {
+                // 仅接管全球单播（2000::/3），ULA/link-local 直连
+                builder.addRoute("2000::", 3)
+            }
+        } else {
+            builder.addRoute("0.0.0.0", 0)
+            if (profile.config.enableIpv6) builder.addRoute("::", 0)
+        }
+    }
+
+    /** 分应用代理规则；已卸载的包忽略。 */
+    private fun applyPerApp(builder: Builder, profile: Profile) {
+        when (profile.perAppMode) {
+            PerAppMode.ALL ->
+                runCatching { builder.addDisallowedApplication(packageName) }
+
+            PerAppMode.ALLOWED ->
+                profile.perAppPackages.distinct().forEach { pkg ->
+                    runCatching { builder.addAllowedApplication(pkg) }
+                }
+
+            PerAppMode.DISALLOWED -> {
+                runCatching { builder.addDisallowedApplication(packageName) }
+                profile.perAppPackages.distinct().filter { it != packageName }.forEach { pkg ->
+                    runCatching { builder.addDisallowedApplication(pkg) }
+                }
+            }
         }
     }
 
@@ -198,9 +336,7 @@ class SppVpnService : VpnService() {
             appendLine("  name: tun0")
             appendLine("  mtu: ${TunConfig.MTU}")
             appendLine("  ipv4: ${TunConfig.TUN_ADDRESS}")
-            if (enableIpv6) {
-                appendLine("  ipv6: '${TunConfig.TUN_ADDRESS_V6}'")
-            }
+            if (enableIpv6) appendLine("  ipv6: '${TunConfig.TUN_ADDRESS_V6}'")
             appendLine("socks5:")
             appendLine("  address: 127.0.0.1")
             appendLine("  port: $socksPort")
@@ -217,6 +353,9 @@ class SppVpnService : VpnService() {
         }
         return File(filesDir, "hev.yml").apply { writeText(yaml) }
     }
+
+    private fun backoffMs(attempt: Int): Long =
+        (1000L shl (attempt - 1).coerceAtMost(4))
 
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
@@ -267,5 +406,6 @@ class SppVpnService : VpnService() {
         private const val CHANNEL_ID = "spp_vpn"
         private const val NOTIFICATION_ID = 1
         private const val TAG = "SppVpnService"
+        private const val MAX_RECONNECT_ATTEMPTS = 5
     }
 }
