@@ -44,6 +44,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.esrrhs.spp.client.spp.SppConfig
+import com.esrrhs.spp.client.util.Formatters
 import com.esrrhs.spp.client.vpn.VpnState
 
 private val StateGreen = Color(0xFF2E7D32)
@@ -141,27 +142,14 @@ private fun StatusCard(state: VpnState, traffic: TrafficStats?) {
             }
             if (state is VpnState.Connected && traffic != null) {
                 Text(
-                    text = "↑ ${formatBytes(traffic.txBytes)}（${formatBytes(traffic.txRate)}/s）" +
-                        "    ↓ ${formatBytes(traffic.rxBytes)}（${formatBytes(traffic.rxRate)}/s）",
+                    text = "↑ ${Formatters.formatBytes(traffic.txBytes)}（${Formatters.formatBytes(traffic.txRate)}/s）" +
+                        "    ↓ ${Formatters.formatBytes(traffic.rxBytes)}（${Formatters.formatBytes(traffic.rxRate)}/s）",
                     style = typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
     }
-}
-
-/** 自适应单位格式化字节数。 */
-private fun formatBytes(bytes: Long): String {
-    if (bytes < 1024) return "${bytes}B"
-    val units = arrayOf("KB", "MB", "GB", "TB")
-    var value = bytes.toDouble()
-    var unitIndex = -1
-    do {
-        value /= 1024.0
-        unitIndex++
-    } while (value >= 1024 && unitIndex < units.lastIndex)
-    return String.format("%.1f%s", value, units[unitIndex])
 }
 
 @Composable
