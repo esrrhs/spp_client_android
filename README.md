@@ -16,6 +16,7 @@ The goal is simple: **tap one button on your phone to turn on the VPN, and all d
 | Full-traffic proxy | `0.0.0.0/0` (IPv6 optional) is captured via TUN |
 | DNS over proxy | System DNS points to a virtual address; queries are resolved by the server via SOCKS5/UDP ASSOCIATE to prevent DNS leaks |
 | SPP Server integration | Runs a local `socks5_client` that connects to the remote server through an SPP tunnel |
+| Smart split | Bypass private/LAN ranges, or route China (CN) IPs directly (chnroute) while proxying everything else |
 | Loop prevention | `addDisallowedApplication(own package name)` excludes the app from the VPN, so SPP outbound traffic bypasses the TUN |
 
 **Out of scope (first release):** split-routing rules, subscriptions, a traffic-statistics dashboard, deep Always-on VPN integration, and RICMP (unavailable without root).
@@ -121,12 +122,13 @@ spp_client_android/
 ├── IMPLEMENTATION_PLAN.md    # Phased implementation plan
 ├── app/                      # Android app (Kotlin + Compose)
 │   └── src/main/
+│       ├── assets/           # cn_ipv4_cidr.txt chnroute data (generated, committed)
 │       ├── java/com/esrrhs/spp/client/   # ui/ vpn/ spp/ tun/ data/
 │       ├── java/hev/htproxy/             # hev JNI binding class (name is registered in the so; do not change)
 │       ├── jniLibs/          # Build artifacts: libspp.so / libhev-socks5-tunnel.so (gitignored)
 │       └── res/
 ├── gradle/                   # Wrapper + version catalog
-└── scripts/                  # build_spp.sh / build_hev.sh / build_native.sh
+└── scripts/                  # build_spp.sh / build_hev.sh / build_native.sh / build_chnroute.sh
 ```
 
 `third_party/` (spp and hev-socks5-tunnel sources) is cloned by the scripts on first run and is not committed.
@@ -148,6 +150,20 @@ spp_client_android/
 ```
 
 Default ABIs are `arm64-v8a` + `x86_64` (matching abiFilters); extend with `SPP_ABIS` / `HEV_ABIS`.
+
+### Update chnroute data
+
+```bash
+# Generates app/src/main/assets/cn_ipv4_cidr.txt from APNIC delegated stats
+# (downloads on first run; delete third_party/delegated-apnic-latest to refresh)
+./scripts/build_chnroute.sh
+```
+
+CN-direct mode is an approximation: gaps of up to 16K addresses between CN
+allocations also go direct (e.g. addresses such as `1.1.1.0/24` surrounded by CN
+space). Sites that fail while CN-direct is enabled should be used in full-proxy
+mode. IPv6 CN filtering is not included (IPv6 smart split covers global unicast
+`2000::/3` only).
 
 ---
 

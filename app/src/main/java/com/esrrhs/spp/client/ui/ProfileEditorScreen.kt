@@ -30,6 +30,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -84,9 +85,9 @@ fun ProfileEditorScreen(
                 onPickApps = onPickApps,
             )
 
-            LanBypassSection(
-                checked = profile.bypassLan,
-                onChange = { v -> profile = profile.copy(bypassLan = v) },
+            SmartSplitSection(
+                profile = profile,
+                onChange = { profile = it },
             )
 
             ConnectionFields(
@@ -129,20 +130,43 @@ private fun PerAppSection(
 }
 
 @Composable
-private fun LanBypassSection(checked: Boolean, onChange: (Boolean) -> Unit) {
+private fun SmartSplitSection(
+    profile: Profile,
+    onChange: (Profile) -> Unit,
+) {
+    Text(text = "智能分流", style = typography.titleMedium)
+
+    SplitToggle(
+        title = "绕过局域网",
+        subtitle = "私有网段直连，其余走代理（含 IPv6 全球单播）",
+        checked = profile.bypassLan,
+        onCheckedChange = { v -> onChange(profile.copy(bypassLan = v)) },
+    )
+    SplitToggle(
+        title = "CN 直连（chnroute）",
+        subtitle = "中国大陆 IP 直连，其它地址走代理；数据来自 APNIC",
+        checked = profile.bypassCn,
+        onCheckedChange = { v -> onChange(profile.copy(bypassCn = v)) },
+    )
+}
+
+@Composable
+private fun SplitToggle(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column {
-            Text(text = "智能分流：绕过局域网", style = typography.bodyLarge)
-            Text(
-                text = "私有网段直连，其余走代理（含 IPv6 全球单播）",
-                style = typography.bodySmall,
-            )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = title, style = typography.bodyLarge)
+            Text(text = subtitle, style = typography.bodySmall)
         }
-        Switch(checked = checked, onCheckedChange = onChange)
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
 

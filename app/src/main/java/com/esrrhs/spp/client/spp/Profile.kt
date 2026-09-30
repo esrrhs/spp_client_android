@@ -33,6 +33,8 @@ data class Profile(
     val perAppPackages: List<String> = emptyList(),
     /** 绕过局域网/私有网段（智能分流）。 */
     val bypassLan: Boolean = false,
+    /** CN 地址直连、其余走代理（chnroute，智能分流）。 */
+    val bypassCn: Boolean = false,
     val pingMs: Int = -1,
 ) {
     /** 返回首个校验错误（名称与连接参数）；null 表示合法。 */

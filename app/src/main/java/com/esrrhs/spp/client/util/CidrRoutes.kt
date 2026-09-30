@@ -9,11 +9,15 @@ data class Cidr4(val address: String, val prefix: Int)
  *
  * 注意：100.64.0.0/10（mapdns fake-ip 段）与 198.18.0.0/15 必须仍指向 TUN，
  * 因此不在排除列表中。
+ *
+ * CN 模式（chnroute）为**近似**方案：受系统路由承载能力所限，CN 段间 ≤16K 地址
+ * 的微小空隙会被一并直连（如 1.1.1.0/24 这类被 CN 分配包围的地址）；个别因此
+ * 直连而不可达的站点，应改用全局代理模式。
  */
 object CidrRoutes {
 
     /** 绕过模式下排除的私有/保留网段（dotted/prefix）。 */
-    private val EXCLUDED = listOf(
+    private val PRIVATE = listOf(
         "0.0.0.0/8",       // "this" network
         "10.0.0.0/8",      // RFC1918
         "127.0.0.0/8",     // loopback
@@ -26,13 +30,26 @@ object CidrRoutes {
 
     private const val SPACE = 1L shl 32
 
-    /** 公网 CIDR 列表（结果固定，惰性计算一次）。 */
-    val publicCidrs: List<Cidr4> by lazy { compute() }
+    /** 仅排除私有段时的公网路由（结果固定，惰性计算一次）。 */
+    val publicCidrs: List<Cidr4> by lazy { publicCidrs(emptyList()) }
 
-    private fun compute(): List<Cidr4> {
-        val excluded = EXCLUDED.map { parse(it) }
+    /**
+     * 公网路由：排除私有段 + [extraExcluded]（如 CN CIDR 列表）。
+     * 调用方保证额外项格式合法。
+     */
+    fun publicCidrs(
+        extraExcluded: List<String>,
+        /** 间隙填充：被排除段间小于该绝对值、或小于相邻段相对比例的空隙视为直连。 */
+        gapPadding: Long = 0L,
+        gapRatio: Double = 0.0,
+    ): List<Cidr4> {
+        val excluded = (PRIVATE + extraExcluded)
+            .map { parse(it) }
             .sortedBy { range -> range.first }
             .let { merge(it) }
+            .let {
+                if (gapPadding > 0 || gapRatio > 0) padGaps(it, gapPadding, gapRatio) else it
+            }
 
         val freeIntervals = mutableListOf<Pair<Long, Long>>()
         var cursor = 0L
@@ -56,6 +73,34 @@ object CidrRoutes {
                 result.add(interval)
             }
         }
+        return result
+    }
+
+    /**
+     * 合并相邻区间：当间隙 <= [absPadding]，或间隙 <= [ratio] × 两侧较小区间时
+     * （即 CN 包围的小"岛屿"），间隙内地址随之直连。
+     */
+    private fun padGaps(
+        intervals: List<Pair<Long, Long>>,
+        absPadding: Long,
+        ratio: Double,
+    ): List<Pair<Long, Long>> {
+        if (intervals.size < 2) return intervals
+        val result = mutableListOf<Pair<Long, Long>>()
+        var (lo, hi) = intervals.first()
+        for (i in 1..intervals.lastIndex) {
+            val (nextLo, nextHi) = intervals[i]
+            val gap = nextLo - hi
+            val island = gap <= absPadding ||
+                gap <= ratio * minOf(hi - lo, nextHi - nextLo)
+            if (island) {
+                hi = nextHi
+            } else {
+                result.add(lo to hi)
+                lo = nextLo; hi = nextHi
+            }
+        }
+        result.add(lo to hi)
         return result
     }
 
