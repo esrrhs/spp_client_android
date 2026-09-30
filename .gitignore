@@ -1,0 +1,17 @@
+*.iml
+.gradle/
+local.properties
+keystore.properties
+*.keystore
+*.jks
+.idea/
+.DS_Store
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# third_party 源码与 native 构建产物由 scripts/build_native.sh 生成
+third_party/
+app/src/main/jniLibs/*/libspp.so
+app/src/main/jniLibs/*/libhev-socks5-tunnel.so
