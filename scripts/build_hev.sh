@@ -34,7 +34,8 @@ echo "==> ndk-build hev-socks5-tunnel (${ABIS[*]})"
     APP_BUILD_SCRIPT=Android.mk \
     APP_ABI="${ABIS[*]}" \
     APP_PLATFORM=android-26 \
-    APP_CFLAGS="-O3"
+    APP_CFLAGS="-O3" \
+    APP_SUPPORT_FLEXIBLE_PAGE_SIZES=true
 
 for ABI in "${ABIS[@]}"; do
     mkdir -p "$OUT_DIR/$ABI"
