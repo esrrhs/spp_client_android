@@ -154,15 +154,28 @@ Default ABIs are `arm64-v8a` + `x86_64` (matching abiFilters); extend with `SPP_
 ### Update chnroute data
 
 ```bash
-# Generates app/src/main/assets/cn_ipv4_cidr.txt from APNIC delegated stats
-# (downloads on first run; delete third_party/delegated-apnic-latest to refresh)
+# Generates app/src/main/assets/cn_ipv4_cidr.txt and cn_ipv6_cidr.txt from
+# APNIC delegated stats (downloads on first run; delete
+# third_party/delegated-apnic-latest to refresh)
 ./scripts/build_chnroute.sh
 ```
 
-CN-direct mode is exact: CN allocations go direct and every other public address
-is proxied. It installs roughly 12k routes and takes about 14s to establish.
-IPv6 CN filtering is not included (IPv6 smart split covers global unicast
-`2000::/3` only).
+CN-direct mode covers both IPv4 and IPv6: CN allocations go direct and every
+other public/global address is proxied. Because `Builder.establish()` packs all
+routes into **one** Binder transaction (about 1 MB), the exact CN sets (roughly
+12k v4 routes / 14s, far larger for v6) do not fit. Each CN segment is therefore
+expanded to its enclosing aligned block before the complement is computed:
+
+| Family | Block size | Routes installed | Inflation vs exact CN union |
+|---|---|---|---|
+| IPv4 | `/21` | ~7.5k | ~3.5M extra addresses (~1%) |
+| IPv6 | `/26` | ~3.3k | 2x |
+
+Consequence of the approximation: non-CN addresses that share an expanded block
+with a CN allocation also go direct (for example, `1.1.1.1` shares `1.1.0.0/21`
+with CN's `1.1.0.0/24`). Non-CN-bypass modes are unaffected. IPv6 smart split
+(without CN bypass) covers global unicast `2000::/3` only; ULA/link-local ranges
+stay direct.
 
 ---
 

@@ -10,8 +10,9 @@ data class Cidr4(val address: String, val prefix: Int)
  * 注意：100.64.0.0/10（mapdns fake-ip 段）与 198.18.0.0/15 必须仍指向 TUN，
  * 因此不在排除列表中。
  *
- * CN 模式（chnroute）为精确方案：CN 分配段严格直连，其余公网地址全部代理
- * （约 1.2 万条路由，建立约需十余秒）。
+ * CN 模式（chnroute）：CN 段直连、其余公网地址代理。因 establish 的全部路由
+ * 会打进**一个** Binder parcel（上限约 1MB），CN 段需扩展到对齐 /N 块以压缩
+ * 路由数（v4/v6 同理）。
  */
 object CidrRoutes {
 
@@ -33,22 +34,17 @@ object CidrRoutes {
     val publicCidrs: List<Cidr4> by lazy { publicCidrs(emptyList()) }
 
     /**
-     * 公网路由：排除私有段 + [extraExcluded]（如 CN CIDR 列表）。
-     * 调用方保证额外项格式合法。
+     * 公网路由：排除私有段 + [extraExcluded]（CN CIDR 列表）。
+     * [expandPrefix]：把每个 CN 段扩展到对齐 /N 块后合并，用于适配 parcel 上限。
      */
     fun publicCidrs(
         extraExcluded: List<String>,
-        /** 间隙填充：被排除段间小于该绝对值、或小于相邻段相对比例的空隙视为直连。 */
-        gapPadding: Long = 0L,
-        gapRatio: Double = 0.0,
+        expandPrefix: Int = 32,
     ): List<Cidr4> {
-        val excluded = (PRIVATE + extraExcluded)
+        val excluded = (PRIVATE + expandCn(extraExcluded, expandPrefix))
             .map { parse(it) }
             .sortedBy { range -> range.first }
             .let { merge(it) }
-            .let {
-                if (gapPadding > 0 || gapRatio > 0) padGaps(it, gapPadding, gapRatio) else it
-            }
 
         val freeIntervals = mutableListOf<Pair<Long, Long>>()
         var cursor = 0L
@@ -59,6 +55,23 @@ object CidrRoutes {
         if (cursor < SPACE) freeIntervals.add(cursor to SPACE)
 
         return freeIntervals.flatMap { (lo, hi) -> intervalToCidrs(lo, hi) }
+    }
+
+    /** CN 段扩展到对齐 /[expandPrefix] 块；更粗的段保留。 */
+    private fun expandCn(cnCidrs: List<String>, expandPrefix: Int): List<String> {
+        if (cnCidrs.isEmpty() || expandPrefix >= 32) return cnCidrs
+        return cnCidrs.map { cidr ->
+            val (addr, prefixText) = cidr.split("/")
+            val prefix = prefixText.toInt()
+            if (prefix <= expandPrefix) {
+                cidr
+            } else {
+                val value = addr.split(".").fold(0L) { acc, p -> (acc shl 8) + p.toLong() }
+                val hostBits = 32 - expandPrefix
+                val network = value shr hostBits shl hostBits
+                toDotted(network) + "/" + expandPrefix
+            }
+        }.distinct()
     }
 
     private fun merge(intervals: List<Pair<Long, Long>>): List<Pair<Long, Long>> {
@@ -72,34 +85,6 @@ object CidrRoutes {
                 result.add(interval)
             }
         }
-        return result
-    }
-
-    /**
-     * 合并相邻区间：当间隙 <= [absPadding]，或间隙 <= [ratio] × 两侧较小区间时
-     * （即 CN 包围的小"岛屿"），间隙内地址随之直连。
-     */
-    private fun padGaps(
-        intervals: List<Pair<Long, Long>>,
-        absPadding: Long,
-        ratio: Double,
-    ): List<Pair<Long, Long>> {
-        if (intervals.size < 2) return intervals
-        val result = mutableListOf<Pair<Long, Long>>()
-        var (lo, hi) = intervals.first()
-        for (i in 1..intervals.lastIndex) {
-            val (nextLo, nextHi) = intervals[i]
-            val gap = nextLo - hi
-            val island = gap <= absPadding ||
-                gap <= ratio * minOf(hi - lo, nextHi - nextLo)
-            if (island) {
-                hi = nextHi
-            } else {
-                result.add(lo to hi)
-                lo = nextLo; hi = nextHi
-            }
-        }
-        result.add(lo to hi)
         return result
     }
 
