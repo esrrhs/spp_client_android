@@ -20,6 +20,7 @@ import com.esrrhs.spp.client.spp.Profile
 import com.esrrhs.spp.client.spp.SppException
 import com.esrrhs.spp.client.spp.SppProcess
 import com.esrrhs.spp.client.tun.HevTunnel
+import com.esrrhs.spp.client.util.Cidr6Routes
 import com.esrrhs.spp.client.util.CidrRoutes
 import com.esrrhs.spp.client.util.CnRouteList
 import kotlinx.coroutines.CancellationException
@@ -305,19 +306,18 @@ class SppVpnService : VpnService() {
             return
         }
 
-        val cnCidrs = if (profile.bypassCn) {
-            CnRouteList.load(this)
-        } else {
-            emptyList()
-        }
-        // 精确模式：CN 段严格直连、其余公网地址全部代理，不做间隙填充
-        CidrRoutes.publicCidrs(cnCidrs)
+        val cnV4 = if (profile.bypassCn) CnRouteList.loadV4(this) else emptyList()
+        val cnV6 = if (profile.bypassCn) CnRouteList.loadV6(this) else emptyList()
+
+        // CN 段扩展到对齐 /21 块（v6 为 /26）以适配 Binder parcel 上限
+        CidrRoutes.publicCidrs(cnV4, CN_V4_EXPAND_PREFIX)
             .forEach { cidr -> builder.addRoute(cidr.address, cidr.prefix) }
 
         if (profile.config.enableIpv6) {
-            // 智能分流时仅接管全球单播（2000::/3），ULA/link-local 直连；
-            // IPv6 的 CN 过滤本轮不包含
-            builder.addRoute("2000::", 3)
+            // IPv6：CN 段直连，其余全球单播走代理；ULA/link-local 直连。
+            // 受 Binder parcel 上限所限，CN 段扩展到对齐 /26 块。
+            Cidr6Routes.globalCidrs(cnV6, CN_V6_EXPAND_PREFIX)
+                .forEach { cidr -> builder.addRoute(cidr.address, cidr.prefix) }
         }
     }
 
@@ -418,5 +418,11 @@ class SppVpnService : VpnService() {
         private const val NOTIFICATION_ID = 1
         private const val TAG = "SppVpnService"
         private const val MAX_RECONNECT_ATTEMPTS = 5
+
+        /** CN IPv6 段扩展到对齐 /26 块，使路由数适配 Binder parcel 上限。 */
+        private const val CN_V6_EXPAND_PREFIX = 26
+
+        /** CN IPv4 段扩展到对齐 /21 块。 */
+        private const val CN_V4_EXPAND_PREFIX = 21
     }
 }
