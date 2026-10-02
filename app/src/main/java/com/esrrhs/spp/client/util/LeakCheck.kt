@@ -48,7 +48,7 @@ object LeakCheck {
             if (!id.isNullOrBlank()) {
                 // 让 SPP Server 端解析这些探测域名，bash.ws 记录其解析器
                 repeat(DNS_TRIGGER_COUNT) { i ->
-                    SocksProbe.measure(socksPort, "${i + 1}.$id.dns.bash.ws", 443)
+                    SocksProbe.connectOnly(socksPort, "${i + 1}.$id.dns.bash.ws", 443)
                 }
                 val json = httpGet(
                     "https://bash.ws/dnsleak/test/$id?json",

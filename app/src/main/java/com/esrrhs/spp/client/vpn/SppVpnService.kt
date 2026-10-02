@@ -230,9 +230,17 @@ class SppVpnService : VpnService() {
         ActiveSession.socksPort = socksPort
 
         // 1b. 域名直连规则：hev 先接本地分流器，再由其转发 socks5_client
+        //     生效集合 = 内置大陆域名表 + 用户自定义规则
         val hevSocksPort = if (cachedSettings.domainDirectEnabled) {
-            val rules = com.esrrhs.spp.client.util.DomainRuleMatcher
-                .parse(cachedSettings.domainDirectRulesText)
+            val rules = LinkedHashSet<String>(
+                com.esrrhs.spp.client.util.BundledDirectDomains.load(this),
+            ).apply {
+                addAll(
+                    com.esrrhs.spp.client.util.DomainRuleMatcher
+                        .parse(cachedSettings.domainDirectRulesText),
+                )
+            }
+            Log.i(TAG, "domain direct rules: ${rules.size} domains")
             val server = com.esrrhs.spp.client.proxy.RuleSocksServer(socksPort, rules)
             server.start()
             ruleServer = server
@@ -296,8 +304,9 @@ class SppVpnService : VpnService() {
 
     /**
      * 数据面丢失恢复：spp 意外退出或默认网络切换共用。
-     * 按设置自动重连（指数退避）；开启故障切换时，当前配置尝试耗尽后
-     * 自动切到延迟最低的备用配置再试；否则报错停止。
+     *
+     * 自动重连**无次数上限**，退避 1s/2s/4s/5s/5s…，直到成功或被用户取消；
+     * 开启故障切换时，每个配置连续失败 [FAILOVER_CYCLE] 次后轮换到下一个候选。
      */
     private suspend fun recoverTunnel(profileId: String) {
         lifecycleMutex.withLock {
@@ -323,60 +332,59 @@ class SppVpnService : VpnService() {
                 return
             }
 
-            // 候选：当前配置优先；开启故障切换时追加一个最优备用配置
+            // 候选：当前配置优先；开启故障切换时追加按延迟排序的全部备用配置
             val candidates = mutableListOf(profileId)
             if (settings.failover) {
-                val repository = ConfigRepository(this)
-                val profiles = repository.profiles.first()
-                Failover.pickNext(profiles, profileId)?.let {
-                    candidates.add(it.id)
-                }
+                val profiles = ConfigRepository(this).profiles.first()
+                Failover.orderedOthers(profiles, profileId).forEach { candidates.add(it.id) }
             }
 
             VpnStateHolder.set(VpnState.Connecting)
-            for ((index, candidateId) in candidates.withIndex()) {
-                if (index > 0) {
-                    ConfigRepository(this).setActive(candidateId)
-                    Log.i(TAG, "failover to profile $candidateId")
-                    // 旧配置会话结账，新配置另起一条历史
-                    finishHistory(com.esrrhs.spp.client.data.HistoryReason.FAILOVER)
-                    updateNotification(getString(R.string.notif_failover))
-                } else {
-                    updateNotification(getString(R.string.notif_reconnecting))
-                }
-                val attempts = if (index == 0) {
-                    ReconnectBackoff.MAX_ATTEMPTS
-                } else {
-                    FAILOVER_ATTEMPTS
-                }
-                if (tryEstablish(candidateId, attempts)) return
-            }
-            persistSessionTraffic()
-            finishHistory(com.esrrhs.spp.client.data.HistoryReason.ERROR)
-            VpnStateHolder.set(VpnState.Error(getString(R.string.error_reconnect_failed)))
-            finishService()
-        }
-    }
+            updateNotification(getString(R.string.notif_reconnecting))
 
-    /** 对指定配置按退避尝试建链若干次；成功返回 true，配置已不存在返回 false。 */
-    private suspend fun tryEstablish(profileId: String, attempts: Int): Boolean {
-        for (attempt in 1..attempts) {
-            delay(ReconnectBackoff.delayMs(attempt))
-            try {
+            var attempt = 1
+            var index = 0
+            while (true) {
+                delay(ReconnectBackoff.delayMs(attempt))
+                val candidateId = candidates[index]
+                try {
                     val (repository, profile) = loadActiveProfile()
-                    // 候选配置在重连期间被删除：跳过该候选
-                    if (profile.id != profileId) return false
+                    // 候选在重连期间被删除：从轮换列表移除
+                    if (profile.id != candidateId) {
+                        candidates.removeAt(index)
+                        if (candidates.isEmpty()) {
+                            persistSessionTraffic()
+                            finishHistory(com.esrrhs.spp.client.data.HistoryReason.ERROR)
+                            VpnStateHolder.set(VpnState.Error(getString(R.string.error_no_profile)))
+                            finishService()
+                            return
+                        }
+                        index %= candidates.size
+                        continue
+                    }
                     if (historyProfileId != profile.id) beginHistory(profile)
                     establishSession(repository, profile)
-                    return true
+                    return
                 } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "reconnect attempt $attempt failed: ${e.message}")
-                stopDataPlaneAndCount()
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "reconnect attempt $attempt (candidate=$candidateId) failed: ${e.message}")
+                    stopDataPlaneAndCount()
+                }
+                attempt++
+                // 当前候选连续失败一个周期：轮换到下一个配置（环状）
+                if (candidates.size > 1 && (attempt - 1) % FAILOVER_CYCLE == 0) {
+                    val next = (index + 1) % candidates.size
+                    if (next != index) {
+                        index = next
+                        ConfigRepository(this).setActive(candidates[index])
+                        Log.i(TAG, "failover to profile ${candidates[index]}")
+                        finishHistory(com.esrrhs.spp.client.data.HistoryReason.FAILOVER)
+                        updateNotification(getString(R.string.notif_failover))
+                    }
+                }
             }
         }
-        return false
     }
 
     private suspend fun teardown(
@@ -598,8 +606,8 @@ class SppVpnService : VpnService() {
         private const val NOTIFICATION_ID = 1
         private const val TAG = "SppVpnService"
 
-        /** 故障切换到的备用配置尝试次数（少于首选，避免长时间不可用）。 */
-        private const val FAILOVER_ATTEMPTS = 3
+        /** 每个配置连续失败多少次后轮换到下一个候选。 */
+        private const val FAILOVER_CYCLE = 5
 
         /** CN IPv6 段扩展到对齐 /26 块，使路由数适配 Binder parcel 上限。 */
         private const val CN_V6_EXPAND_PREFIX = 26

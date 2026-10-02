@@ -7,6 +7,9 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 
 private val Context.settingsStore by preferencesDataStore(name = "spp_settings")
@@ -25,19 +28,38 @@ class SettingsRepository(context: Context) {
         val TRUSTED_WIFI_SSIDS = stringSetPreferencesKey("trusted_wifi_ssids")
         val DOMAIN_DIRECT_ENABLED = booleanPreferencesKey("domain_direct_enabled")
         val DOMAIN_DIRECT_RULES = stringPreferencesKey("domain_direct_rules")
+
+        /** 一次性迁移标记：把「智能连接」类开关的历史默认值刷为开启。 */
+        val MIGRATED_SMART_DEFAULTS = booleanPreferencesKey("migrated_smart_defaults_v1")
     }
 
-    val settings: Flow<AppSettings> = store.data.map { prefs ->
-        AppSettings(
-            bootStart = prefs[Keys.BOOT_START] ?: false,
-            autoReconnect = prefs[Keys.AUTO_RECONNECT] ?: false,
-            failover = prefs[Keys.FAILOVER] ?: false,
-            defaultBypassLan = prefs[Keys.DEFAULT_BYPASS_LAN] ?: false,
-            trustedWifiEnabled = prefs[Keys.TRUSTED_WIFI_ENABLED] ?: false,
-            trustedWifiSsids = prefs[Keys.TRUSTED_WIFI_SSIDS] ?: emptySet(),
-            domainDirectEnabled = prefs[Keys.DOMAIN_DIRECT_ENABLED] ?: false,
-            domainDirectRulesText = prefs[Keys.DOMAIN_DIRECT_RULES] ?: "",
-        )
+    private val migrated = flow {
+        store.edit { prefs ->
+            if (prefs[Keys.MIGRATED_SMART_DEFAULTS] != true) {
+                prefs[Keys.BOOT_START] = true
+                prefs[Keys.AUTO_RECONNECT] = true
+                prefs[Keys.FAILOVER] = true
+                prefs[Keys.DEFAULT_BYPASS_LAN] = true
+                prefs[Keys.DOMAIN_DIRECT_ENABLED] = true
+                prefs[Keys.MIGRATED_SMART_DEFAULTS] = true
+            }
+        }
+        emit(Unit)
+    }
+
+    val settings: Flow<AppSettings> = migrated.flatMapLatest {
+        store.data.map { prefs ->
+            AppSettings(
+                bootStart = prefs[Keys.BOOT_START] ?: true,
+                autoReconnect = prefs[Keys.AUTO_RECONNECT] ?: true,
+                failover = prefs[Keys.FAILOVER] ?: true,
+                defaultBypassLan = prefs[Keys.DEFAULT_BYPASS_LAN] ?: true,
+                trustedWifiEnabled = prefs[Keys.TRUSTED_WIFI_ENABLED] ?: false,
+                trustedWifiSsids = prefs[Keys.TRUSTED_WIFI_SSIDS] ?: emptySet(),
+                domainDirectEnabled = prefs[Keys.DOMAIN_DIRECT_ENABLED] ?: true,
+                domainDirectRulesText = prefs[Keys.DOMAIN_DIRECT_RULES] ?: "",
+            )
+        }
     }
 
     suspend fun save(settings: AppSettings) {
@@ -52,4 +74,7 @@ class SettingsRepository(context: Context) {
             prefs[Keys.DOMAIN_DIRECT_RULES] = settings.domainDirectRulesText
         }
     }
+
+    /** 供一次性读取使用。 */
+    suspend fun current(): AppSettings = settings.first()
 }
