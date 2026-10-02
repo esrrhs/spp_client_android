@@ -137,9 +137,9 @@ spp_client_android/
 
 ## Development Environment
 
-- JDK 17
-- Android SDK (platform 35 / build-tools 35 / NDK r27+ / cmake)
-- Go 1.26+
+- JDK 17+
+- Android SDK (platform 37.2 / build-tools 37 / NDK r27+ / cmake)
+- Go 1.26+ (the native build script pulls the latest spp master and runs `go get github.com/esrrhs/gohome@latest`)
 
 ```bash
 # 1. Build native artifacts (clones spp / hev-socks5-tunnel and cross-compiles on first run)

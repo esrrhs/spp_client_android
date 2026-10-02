@@ -25,6 +25,17 @@ if [ ! -d "$SPP_DIR" ]; then
     git clone --depth 1 https://github.com/esrrhs/spp.git "$SPP_DIR"
 fi
 
+# 更新到上游默认分支的最新提交，并把 gohome 等 Go 依赖升到最新
+cd "$SPP_DIR"
+BRANCH="$(git ls-remote --symref origin HEAD | head -1 | sed -E 's#ref: refs/heads/##; s#[[:space:]].*##')"
+echo "==> 更新 spp（origin/${BRANCH:-HEAD}）"
+git fetch --depth 1 origin "${BRANCH:-master}"
+git reset --hard FETCH_HEAD
+echo "==> 更新 gohome 等 Go 依赖"
+go get github.com/esrrhs/gohome@latest
+go mod tidy
+cd "$ROOT"
+
 NDK="${ANDROID_NDK_HOME:-}"
 if [ -z "$NDK" ]; then
     NDK=$(ls -d "${ANDROID_HOME:-$HOME/Library/Android/sdk}/ndk/"* 2>/dev/null | sort -V | tail -1)
