@@ -23,8 +23,8 @@
     <string name="error_hev_missing">缺少 libhev-socks5-tunnel.so，请先运行 scripts/build_native.sh 再打包</string>
     <string name="error_rule_proxy">域名分流代理启动失败</string>
     <string name="setting_domain_direct_title">域名直连规则</string>
-    <string name="setting_domain_direct_subtitle">命中的域名（含子域名）绕过 SPP 直连，其余走代理；UDP/IP 流量不受规则影响仍走代理</string>
-    <string name="domain_rules_hint">每行一个域名，例如 baidu.com；# 开头为注释</string>
+    <string name="setting_domain_direct_subtitle">内置约 11 万个大陆域名直连（dnsmasq-china-list，含子域名），其余走代理；下方可追加自定义域名，UDP/IP 流量仍走代理</string>
+    <string name="domain_rules_hint">追加自定义直连域名，每行一个，例如 baidu.com；# 开头为注释</string>
     <string name="error_no_profile">请先添加配置</string>
     <string name="error_connect_failed">连接失败</string>
     <string name="error_tunnel_lost">SPP 连接已断开，请检查网络后重连</string>
@@ -82,6 +82,8 @@
     <string name="state_paused">已暂停（可信网络）</string>
     <string name="state_error">错误</string>
     <string name="action_add_profile">添加配置</string>
+    <string name="empty_profiles_short">未选择配置</string>
+    <string name="sheet_choose_profile">选择配置</string>
     <string name="ping_untested">未测</string>
     <string name="ping_ms">%1$d ms</string>
     <string name="action_ping">延迟</string>
