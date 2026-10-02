@@ -96,9 +96,35 @@ fun SettingsScreen(
                 onCheckedChange = { onChange(settings.copy(defaultBypassLan = it)) },
             )
 
+            DomainDirectSection(settings = settings, onChange = onChange)
             TrustedWifiSection(settings = settings, onChange = onChange)
             AlwaysOnCard()
         }
+    }
+}
+
+@Composable
+private fun DomainDirectSection(
+    settings: AppSettings,
+    onChange: (AppSettings) -> Unit,
+) {
+    ToggleRow(
+        title = stringResource(R.string.setting_domain_direct_title),
+        subtitle = stringResource(R.string.setting_domain_direct_subtitle),
+        checked = settings.domainDirectEnabled,
+        onCheckedChange = { onChange(settings.copy(domainDirectEnabled = it)) },
+    )
+    if (settings.domainDirectEnabled) {
+        OutlinedTextField(
+            value = settings.domainDirectRulesText,
+            onValueChange = { onChange(settings.copy(domainDirectRulesText = it)) },
+            label = { Text(stringResource(R.string.domain_rules_hint)) },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 8.dp),
+            minLines = 4,
+            maxLines = 8,
+        )
     }
 }
 

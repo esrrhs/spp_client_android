@@ -21,6 +21,10 @@
     <string name="error_establish">无法建立 VPN 接口（establish 返回 null，请重试或检查系统 VPN 设置）</string>
     <string name="error_hev_start">hev-socks5-tunnel 启动失败</string>
     <string name="error_hev_missing">缺少 libhev-socks5-tunnel.so，请先运行 scripts/build_native.sh 再打包</string>
+    <string name="error_rule_proxy">域名分流代理启动失败</string>
+    <string name="setting_domain_direct_title">域名直连规则</string>
+    <string name="setting_domain_direct_subtitle">命中的域名（含子域名）绕过 SPP 直连，其余走代理；UDP/IP 流量不受规则影响仍走代理</string>
+    <string name="domain_rules_hint">每行一个域名，例如 baidu.com；# 开头为注释</string>
     <string name="error_no_profile">请先添加配置</string>
     <string name="error_connect_failed">连接失败</string>
     <string name="error_tunnel_lost">SPP 连接已断开，请检查网络后重连</string>
@@ -164,6 +168,18 @@
     <string name="qr_share_chooser">分享配置</string>
     <string name="qr_content_description">QR code</string>
 
+    <!-- 连接历史 -->
+    <string name="history_title">连接历史</string>
+    <string name="history_empty">暂无连接记录</string>
+    <string name="history_clear">清空历史</string>
+    <string name="history_clear_title">清空连接历史？</string>
+    <string name="history_clear_msg">全部连接记录将被删除，此操作不可撤销。</string>
+    <string name="history_reason_disconnected">已断开</string>
+    <string name="history_reason_error">异常结束</string>
+    <string name="history_reason_paused">可信网络暂停</string>
+    <string name="history_reason_failover">切换到备用</string>
+    <string name="action_history">历史</string>
+
     <!-- 连接自检 -->
     <string name="check_running_title">正在自检…</string>
     <string name="check_running_text">正在对比直连与经隧道的出口 IP，并检查远端 DNS 路径</string>
@@ -181,4 +197,24 @@
     <string name="check_dns_bad">远端 DNS 路径：不可用</string>
     <string name="check_latency">隧道建连：%1$d ms</string>
     <string name="value_dash">—</string>
+
+    <!-- 防泄漏检测 -->
+    <string name="leak_title">防泄漏检测</string>
+    <string name="leak_run">开始检测（IPv4 / IPv6 / DNS）</string>
+    <string name="leak_need_connection">需要先连接 VPN 后才能检测。</string>
+    <string name="leak_running">正在经隧道检测，请稍候…</string>
+    <string name="leak_ipv4_title">IPv4 出口</string>
+    <string name="leak_ipv6_title">IPv6</string>
+    <string name="leak_ipv6_direct">直连 IPv6：%1$s</string>
+    <string name="leak_ipv6_proxy">隧道 IPv6：%1$s</string>
+    <string name="leak_ipv6_tunnel_ok">隧道具备 IPv6 出口；确认系统/浏览器无直连 IPv6 泄漏</string>
+    <string name="leak_dns_title">DNS 解析器（经隧道探测）</string>
+    <string name="leak_dns_ok">检测到 %1$d 个解析器，DNS 由 SPP Server 端解析，未走本地运营商</string>
+    <string name="leak_dns_none">未检测到解析器，请重试或更换支持 UDP 的网络</string>
+    <string name="leak_dns_failed">DNS 检测服务不可达，请稍后重试</string>
+    <string name="leak_webrtc_title">WebRTC</string>
+    <string name="leak_webrtc_text">本 App 自身被排除在 VPN 之外，App 内 WebView 的 WebRTC 不经过隧道，检测结果无效。请用系统浏览器（流量在 VPN 内）打开下面网站查看 STUN 候选地址：</string>
+    <string name="leak_webrtc_browserleaks">browserleaks.com/webrtc</string>
+    <string name="leak_webrtc_ipleak">ipleak.net</string>
+    <string name="action_leak">防泄漏</string>
 </resources>
