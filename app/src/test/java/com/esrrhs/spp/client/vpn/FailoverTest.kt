@@ -39,4 +39,21 @@ class FailoverTest {
         val profiles = listOf(p("a"), p("b", 300), p("c"))
         assertEquals("b", Failover.pickNext(profiles, "a")?.id)
     }
+
+    @Test
+    fun orderedOthers_measuredFirstByLatencyThenOriginalOrder() {
+        val profiles = listOf(
+            p("a", 100),
+            p("b"),
+            p("c", 500),
+            p("d", 200),
+        )
+        assertEquals(listOf("d", "c", "b"), Failover.orderedOthers(profiles, "a").map { it.id })
+    }
+
+    @Test
+    fun orderedOthers_unmeasuredKeepListOrder() {
+        val profiles = listOf(p("a"), p("b"), p("c"), p("d"))
+        assertEquals(listOf("b", "c", "d"), Failover.orderedOthers(profiles, "a").map { it.id })
+    }
 }
