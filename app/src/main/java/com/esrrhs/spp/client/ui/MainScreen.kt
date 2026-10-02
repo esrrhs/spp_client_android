@@ -64,6 +64,8 @@ fun MainScreen(
     onTestAll: () -> Unit,
     onSelectFastest: () -> Unit,
     onShowStats: () -> Unit,
+    onShowHistory: () -> Unit,
+    onShowLeak: () -> Unit,
     onRunCheck: () -> Unit,
     onDismissCheck: () -> Unit,
     selfCheckState: SelfCheckState,
@@ -99,6 +101,8 @@ fun MainScreen(
             onTestAll = onTestAll,
             onSelectFastest = onSelectFastest,
             onStats = onShowStats,
+            onHistory = onShowHistory,
+            onLeak = onShowLeak,
             onCheck = onRunCheck,
             onSettings = onSettings,
         )
@@ -161,6 +165,8 @@ private fun ToolsRow(
     onTestAll: () -> Unit,
     onSelectFastest: () -> Unit,
     onStats: () -> Unit,
+    onHistory: () -> Unit,
+    onLeak: () -> Unit,
     onCheck: () -> Unit,
     onSettings: () -> Unit,
 ) {
@@ -181,6 +187,8 @@ private fun ToolsRow(
         )
         ToolButton(stringResource(R.string.action_fastest), onSelectFastest)
         ToolButton(stringResource(R.string.action_stats), onStats)
+        ToolButton(stringResource(R.string.action_history), onHistory)
+        ToolButton(stringResource(R.string.action_leak), onLeak)
         ToolButton(stringResource(R.string.action_check), onCheck, enabled = connected)
         ToolButton(stringResource(R.string.action_settings), onSettings)
     }

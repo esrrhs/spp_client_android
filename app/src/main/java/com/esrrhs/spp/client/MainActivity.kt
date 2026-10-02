@@ -22,6 +22,8 @@ import androidx.core.content.ContextCompat
 import com.esrrhs.spp.client.R
 import com.esrrhs.spp.client.spp.Profile
 import com.esrrhs.spp.client.ui.AppPickerScreen
+import com.esrrhs.spp.client.ui.HistoryScreen
+import com.esrrhs.spp.client.ui.LeakScreen
 import com.esrrhs.spp.client.ui.LogsScreen
 import androidx.lifecycle.lifecycleScope
 import com.esrrhs.spp.client.ui.MainScreen
@@ -140,9 +142,24 @@ class MainActivity : ComponentActivity() {
                 val settings by viewModel.settings.collectAsState()
                 val testingPings by viewModel.testingPings.collectAsState()
                 val selfCheckState by viewModel.selfCheck.collectAsState()
+                val leakState by viewModel.leak.collectAsState()
+                val history by viewModel.history.collectAsState()
 
                 when (screen) {
                     "logs" -> LogsScreen(onBack = { screen = "list" })
+
+                    "history" -> HistoryScreen(
+                        records = history,
+                        onClear = viewModel::clearHistory,
+                        onBack = { screen = "list" },
+                    )
+
+                    "leak" -> LeakScreen(
+                        state = leakState,
+                        connected = vpnState is VpnState.Connected,
+                        onRun = viewModel::runLeakCheck,
+                        onBack = { screen = "list" },
+                    )
 
                     "stats" -> StatsScreen(
                         profiles = profiles,
@@ -219,6 +236,8 @@ class MainActivity : ComponentActivity() {
                         onTestAll = viewModel::testAllPings,
                         onSelectFastest = viewModel::selectFastest,
                         onShowStats = { screen = "stats" },
+                        onShowHistory = { screen = "history" },
+                        onShowLeak = { screen = "leak" },
                         onRunCheck = viewModel::runSelfCheck,
                         onDismissCheck = viewModel::dismissSelfCheck,
                         selfCheckState = selfCheckState,

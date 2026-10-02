@@ -14,4 +14,8 @@ data class AppSettings(
     val trustedWifiEnabled: Boolean = false,
     /** 可信 WiFi SSID 集合（精确匹配，去掉系统返回的引号）。 */
     val trustedWifiSsids: Set<String> = emptySet(),
+    /** 启用域名直连规则（位于 hev 与 socks5_client 之间的本地分流）。 */
+    val domainDirectEnabled: Boolean = false,
+    /** 域名直连规则原文（每行一个域名，保存时不解析；启动时规整）。 */
+    val domainDirectRulesText: String = "",
 )

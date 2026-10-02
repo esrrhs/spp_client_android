@@ -21,6 +21,10 @@
     <string name="error_establish">Cannot create the VPN interface (establish returned null). Retry or check system VPN settings.</string>
     <string name="error_hev_start">Failed to start hev-socks5-tunnel</string>
     <string name="error_hev_missing">libhev-socks5-tunnel.so is missing. Run scripts/build_native.sh before packaging.</string>
+    <string name="error_rule_proxy">Failed to start the domain rule proxy</string>
+    <string name="setting_domain_direct_title">Direct domain rules</string>
+    <string name="setting_domain_direct_subtitle">Matching domains (including subdomains) bypass SPP and connect directly; the rest is proxied. UDP/IP traffic is unaffected and stays proxied</string>
+    <string name="domain_rules_hint">One domain per line, e.g. baidu.com; lines starting with # are comments</string>
     <string name="error_no_profile">Please add a profile first</string>
     <string name="error_connect_failed">Connection failed</string>
     <string name="error_tunnel_lost">SPP connection lost. Check your network and reconnect.</string>
@@ -164,6 +168,18 @@
     <string name="qr_share_chooser">Share profile</string>
     <string name="qr_content_description">QR code</string>
 
+    <!-- Connection history -->
+    <string name="history_title">Connection history</string>
+    <string name="history_empty">No connections yet</string>
+    <string name="history_clear">Clear history</string>
+    <string name="history_clear_title">Clear connection history?</string>
+    <string name="history_clear_msg">All connection records will be deleted. This cannot be undone.</string>
+    <string name="history_reason_disconnected">Disconnected</string>
+    <string name="history_reason_error">Ended with error</string>
+    <string name="history_reason_paused">Paused on trusted network</string>
+    <string name="history_reason_failover">Switched to backup</string>
+    <string name="action_history">History</string>
+
     <!-- Connection check -->
     <string name="check_running_title">Checking…</string>
     <string name="check_running_text">Comparing direct and tunnel exit IPs, and checking the remote DNS path</string>
@@ -181,4 +197,24 @@
     <string name="check_dns_bad">Remote DNS path: unavailable</string>
     <string name="check_latency">Tunnel connect: %1$d ms</string>
     <string name="value_dash">—</string>
+
+    <!-- Leak checks -->
+    <string name="leak_title">Leak checks</string>
+    <string name="leak_run">Run checks (IPv4 / IPv6 / DNS)</string>
+    <string name="leak_need_connection">Connect the VPN before running checks.</string>
+    <string name="leak_running">Checking through the tunnel…</string>
+    <string name="leak_ipv4_title">IPv4 exit</string>
+    <string name="leak_ipv6_title">IPv6</string>
+    <string name="leak_ipv6_direct">Direct IPv6: %1$s</string>
+    <string name="leak_ipv6_proxy">Tunnel IPv6: %1$s</string>
+    <string name="leak_ipv6_tunnel_ok">The tunnel has an IPv6 exit; confirm the system/browser do not leak direct IPv6</string>
+    <string name="leak_dns_title">DNS resolvers (probed through tunnel)</string>
+    <string name="leak_dns_ok">%1$d resolver(s) detected — DNS is resolved at the SPP server, not your local ISP</string>
+    <string name="leak_dns_none">No resolvers detected. Retry or switch to a network that supports UDP</string>
+    <string name="leak_dns_failed">DNS test service unreachable. Try again later</string>
+    <string name="leak_webrtc_title">WebRTC</string>
+    <string name="leak_webrtc_text">This app itself is excluded from the VPN, so WebRTC in an in-app WebView bypasses the tunnel and results would be invalid. Open the sites below in a system browser (whose traffic goes through the VPN) and inspect STUN candidates:</string>
+    <string name="leak_webrtc_browserleaks">browserleaks.com/webrtc</string>
+    <string name="leak_webrtc_ipleak">ipleak.net</string>
+    <string name="action_leak">Leak</string>
 </resources>

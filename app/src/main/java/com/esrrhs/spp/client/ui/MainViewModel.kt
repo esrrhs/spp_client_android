@@ -5,11 +5,13 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.esrrhs.spp.client.data.AppSettings
 import com.esrrhs.spp.client.data.ConfigRepository
+import com.esrrhs.spp.client.data.HistoryRepository
 import com.esrrhs.spp.client.data.SettingsRepository
 import com.esrrhs.spp.client.spp.Profile
 import com.esrrhs.spp.client.spp.SppProcess
 import com.esrrhs.spp.client.spp.ValidationError
 import com.esrrhs.spp.client.tun.HevTunnel
+import com.esrrhs.spp.client.util.LeakCheck
 import com.esrrhs.spp.client.util.SocksProbe
 import com.esrrhs.spp.client.util.TrafficMeter
 import com.esrrhs.spp.client.util.TunnelCheck
@@ -34,6 +36,13 @@ sealed interface SelfCheckState {
     data class Done(val result: TunnelCheck.Result) : SelfCheckState
 }
 
+/** 防泄漏检测状态。 */
+sealed interface LeakState {
+    data object Idle : LeakState
+    data object Running : LeakState
+    data class Done(val report: LeakCheck.Report) : LeakState
+}
+
 /**
  * 当前会话的实时数据（叠加在 profile 已累计值之上显示）。
  * [tx]/[rx] 为本轮隧道累计字节；[txRate]/[rxRate] 为实时速率（字节/秒）；
@@ -51,6 +60,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val repository = ConfigRepository(app)
     private val settingsRepository = SettingsRepository(app)
+    private val historyRepository = HistoryRepository(app)
+
+    val history = historyRepository.records
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     val profiles: StateFlow<List<Profile>> = repository.profiles
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
@@ -87,6 +100,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun dismissSelfCheck() {
         _selfCheck.value = SelfCheckState.Idle
+    }
+
+    private val _leak = MutableStateFlow<LeakState>(LeakState.Idle)
+    val leak: StateFlow<LeakState> = _leak
+
+    /** IPv4/IPv6/DNS 防泄漏专项检测（经当前隧道）。 */
+    fun runLeakCheck() {
+        val port = ActiveSession.socksPort
+        if (VpnStateHolder.state.value !is VpnState.Connected || port == null) return
+        viewModelScope.launch {
+            _leak.value = LeakState.Running
+            val report = withContext(Dispatchers.IO) { LeakCheck.run(port) }
+            _leak.value = LeakState.Done(report)
+        }
     }
 
     init {
@@ -210,6 +237,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 清空指定配置的累计流量统计。 */
     fun resetTrafficFor(id: String) {
         viewModelScope.launch { repository.resetTrafficFor(id) }
+    }
+
+    /** 清空连接历史。 */
+    fun clearHistory() {
+        viewModelScope.launch { historyRepository.clear() }
     }
 
     /** 返回当前选中配置 id（无显式选择时取第一条）；无配置返回 null。 */
