@@ -1,6 +1,7 @@
 package com.esrrhs.spp.client
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Build
@@ -18,6 +19,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
+import com.esrrhs.spp.client.R
 import com.esrrhs.spp.client.spp.Profile
 import com.esrrhs.spp.client.ui.AppPickerScreen
 import com.esrrhs.spp.client.ui.LogsScreen
@@ -30,6 +32,7 @@ import com.esrrhs.spp.client.ui.StatsScreen
 import com.esrrhs.spp.client.ui.theme.SppClientTheme
 import com.esrrhs.spp.client.util.ProfileShare
 import com.esrrhs.spp.client.util.ProfilesFile
+import com.esrrhs.spp.client.util.ValidationMessages
 import com.esrrhs.spp.client.vpn.VpnController
 import com.esrrhs.spp.client.vpn.VpnState
 import com.esrrhs.spp.client.vpn.VpnStateHolder
@@ -48,7 +51,7 @@ class MainActivity : ComponentActivity() {
             if (result.resultCode == RESULT_OK) {
                 startVpnService()
             } else {
-                toast("未授予 VPN 权限，无法连接")
+                toast(getString(R.string.toast_vpn_permission_denied))
             }
         }
 
@@ -63,10 +66,10 @@ class MainActivity : ComponentActivity() {
         if (contents.isNullOrBlank()) return@registerForActivityResult
         val profile = ProfileShare.decode(contents)
         if (profile == null) {
-            toast("二维码内容不是有效的 SPP 配置")
+            toast(getString(R.string.toast_invalid_qr))
         } else {
             viewModel.importScanned(profile)
-            toast("已导入配置：${profile.name}")
+            toast(getString(R.string.toast_imported, profile.name))
         }
     }
 
@@ -77,9 +80,9 @@ class MainActivity : ComponentActivity() {
             try {
                 val text = ProfilesFile.encode(viewModel.profiles.value)
                 contentResolver.openOutputStream(uri)?.use { it.write(text.toByteArray()) }
-                toast("已导出 ${viewModel.profiles.value.size} 个配置")
+                toast(getString(R.string.toast_exported, viewModel.profiles.value.size))
             } catch (e: Exception) {
-                toast("导出失败：${e.message}")
+                toast(getString(R.string.toast_export_failed, e.message ?: ""))
             }
         }
 
@@ -93,13 +96,13 @@ class MainActivity : ComponentActivity() {
                 } ?: return@registerForActivityResult
                 val list = ProfilesFile.decode(text)
                 if (list.isEmpty()) {
-                    toast("文件中没有有效配置")
+                    toast(getString(R.string.toast_import_empty))
                 } else {
                     lifecycleScope.launch { viewModel.importProfiles(list) }
-                    toast("已导入 ${list.size} 个配置")
+                    toast(getString(R.string.toast_imported_count, list.size))
                 }
             } catch (e: Exception) {
-                toast("导入失败：${e.message}")
+                toast(getString(R.string.toast_import_failed, e.message ?: ""))
             }
         }
 
@@ -111,9 +114,16 @@ class MainActivity : ComponentActivity() {
         if (intent?.getBooleanExtra(EXTRA_CONNECT, false) == true) {
             lifecycleScope.launch {
                 val id = viewModel.awaitActiveProfileId()
-                if (id != null) prepareConnectOrDisconnect(id) else toast("请先添加配置")
+                if (id != null) {
+                    prepareConnectOrDisconnect(id)
+                } else {
+                    toast(getString(R.string.toast_add_profile_first))
+                }
             }
         }
+
+        // spp:// 深度链接冷启动导入
+        handleProfileLink(intent)
 
         setContent {
             SppClientTheme {
@@ -129,6 +139,7 @@ class MainActivity : ComponentActivity() {
                 val session by viewModel.session.collectAsState()
                 val settings by viewModel.settings.collectAsState()
                 val testingPings by viewModel.testingPings.collectAsState()
+                val selfCheckState by viewModel.selfCheck.collectAsState()
 
                 when (screen) {
                     "logs" -> LogsScreen(onBack = { screen = "list" })
@@ -139,6 +150,7 @@ class MainActivity : ComponentActivity() {
                         vpnState = vpnState,
                         session = session,
                         onResetTraffic = viewModel::resetTraffic,
+                        onResetProfileTraffic = viewModel::resetTrafficFor,
                         onBack = { screen = "list" },
                     )
 
@@ -162,7 +174,9 @@ class MainActivity : ComponentActivity() {
                         isNew = editorIsNew,
                         onSave = { profile, callback ->
                             viewModel.saveProfile(profile) { error ->
-                                if (error != null) toast(error)
+                                if (error != null) {
+                                    toast(ValidationMessages.text(this@MainActivity, error))
+                                }
                                 callback(error)
                                 if (error == null) screen = "list"
                             }
@@ -205,6 +219,9 @@ class MainActivity : ComponentActivity() {
                         onTestAll = viewModel::testAllPings,
                         onSelectFastest = viewModel::selectFastest,
                         onShowStats = { screen = "stats" },
+                        onRunCheck = viewModel::runSelfCheck,
+                        onDismissCheck = viewModel::dismissSelfCheck,
+                        selfCheckState = selfCheckState,
                         onShowQr = { qrId = it },
                         onDismissQr = { qrId = null },
                     )
@@ -216,7 +233,7 @@ class MainActivity : ComponentActivity() {
     private fun startScan() {
         val options = ScanOptions()
             .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-            .setPrompt("将配置二维码对准取景框")
+            .setPrompt(getString(R.string.scan_prompt))
             .setBeepEnabled(false)
             .setOrientationLocked(false)
         scanLauncher.launch(options)
@@ -255,6 +272,25 @@ class MainActivity : ComponentActivity() {
     private fun startVpnService() {
         val id = pendingConnectProfileId ?: return
         viewModel.onProfileClicked(id)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleProfileLink(intent)
+    }
+
+    /** 处理 spp:// 配置链接（网页/分享/剪贴板），与扫码共用同一编解码。 */
+    private fun handleProfileLink(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_VIEW) return
+        val text = intent.dataString ?: return
+        val profile = ProfileShare.decode(text)
+        if (profile == null) {
+            toast(getString(R.string.toast_bad_link))
+        } else {
+            viewModel.importScanned(profile)
+            toast(getString(R.string.toast_imported, profile.name))
+        }
     }
 
     private fun toast(message: String) {

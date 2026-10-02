@@ -2,12 +2,183 @@
 <resources>
     <string name="app_name">SPP Client</string>
 
+    <!-- 通知 / 磁贴 -->
     <string name="notif_channel_name">VPN 状态</string>
     <string name="notif_connecting">正在连接…</string>
     <string name="notif_connected">已连接 · %1$s</string>
     <string name="notif_disconnecting">正在断开…</string>
     <string name="notif_reconnecting">连接已断开，正在重连…</string>
-    <string name="error_establish">无法建立 VPN 接口（establish 返回 null，请重试或检查系统 VPN 设置）</string>
-
+    <string name="notif_failover">正在切换到备用配置…</string>
+    <string name="notif_paused_trusted">可信网络中，VPN 已暂停</string>
     <string name="tile_label">SPP VPN</string>
+    <string name="tile_disconnected">未连接</string>
+    <string name="tile_connecting">连接中…</string>
+    <string name="tile_connected">已连接</string>
+    <string name="tile_disconnecting">断开中…</string>
+    <string name="tile_paused">已暂停</string>
+
+    <!-- 错误 -->
+    <string name="error_establish">无法建立 VPN 接口（establish 返回 null，请重试或检查系统 VPN 设置）</string>
+    <string name="error_hev_start">hev-socks5-tunnel 启动失败</string>
+    <string name="error_hev_missing">缺少 libhev-socks5-tunnel.so，请先运行 scripts/build_native.sh 再打包</string>
+    <string name="error_no_profile">请先添加配置</string>
+    <string name="error_connect_failed">连接失败</string>
+    <string name="error_tunnel_lost">SPP 连接已断开，请检查网络后重连</string>
+    <string name="error_reconnect_failed">多次重连失败，请检查网络或 Server</string>
+    <string name="err_name_required">请填写配置名称</string>
+    <string name="err_apps_required">「仅代理选中」模式至少勾选一个 App</string>
+    <string name="err_host_required">请填写服务器地址</string>
+    <string name="err_port_range">端口需在 1~65535 之间</string>
+    <string name="err_key_required">请填写认证 Key</string>
+    <string name="error_missing_native">缺少 libspp.so，请先运行 scripts/build_native.sh 再打包</string>
+    <string name="error_spp_session">无法建立 SPP 会话（15s 超时），请检查 server 地址、key/encrypt 与网络：\n%1$s</string>
+    <string name="error_spp_exited">SPP 客户端进程提前退出：\n%1$s</string>
+    <string name="log_no_output">无日志</string>
+
+    <!-- 通用 -->
+    <string name="action_back">返回</string>
+    <string name="action_save">保存</string>
+    <string name="action_cancel">取消</string>
+    <string name="action_clear">清空</string>
+    <string name="action_close">关闭</string>
+    <string name="action_send">发送</string>
+    <string name="action_add">添加</string>
+    <string name="action_confirm">确定</string>
+
+    <!-- MainActivity 提示 -->
+    <string name="toast_vpn_permission_denied">未授予 VPN 权限，无法连接</string>
+    <string name="toast_add_profile_first">请先添加配置</string>
+    <string name="toast_invalid_qr">二维码内容不是有效的 SPP 配置</string>
+    <string name="toast_imported">已导入配置：%1$s</string>
+    <string name="toast_bad_link">链接内容不是有效的 SPP 配置</string>
+    <string name="toast_exported">已导出 %1$d 个配置</string>
+    <string name="toast_export_failed">导出失败：%1$s</string>
+    <string name="toast_import_empty">文件中没有有效配置</string>
+    <string name="toast_imported_count">已导入 %1$d 个配置</string>
+    <string name="toast_import_failed">导入失败：%1$s</string>
+
+    <string name="scan_prompt">将配置二维码对准取景框</string>
+
+    <!-- 主界面 -->
+    <string name="menu_logs">运行日志</string>
+    <string name="empty_profiles">暂无配置，点下方按钮添加，或扫码 / 从文件导入。</string>
+    <string name="action_scan">扫码</string>
+    <string name="action_import">导入</string>
+    <string name="action_export">导出</string>
+    <string name="action_test_all">全部延迟</string>
+    <string name="action_testing">测延迟…</string>
+    <string name="action_fastest">最快</string>
+    <string name="action_stats">统计</string>
+    <string name="action_check">自检</string>
+    <string name="action_settings">设置</string>
+    <string name="state_disconnected">未连接</string>
+    <string name="state_connecting">连接中…</string>
+    <string name="state_connected">已连接</string>
+    <string name="state_disconnecting">断开中…</string>
+    <string name="state_paused">已暂停（可信网络）</string>
+    <string name="state_error">错误</string>
+    <string name="action_add_profile">添加配置</string>
+    <string name="ping_untested">未测</string>
+    <string name="ping_ms">%1$d ms</string>
+    <string name="action_ping">延迟</string>
+    <string name="action_qr">二维码</string>
+    <string name="action_edit">编辑</string>
+    <string name="action_delete">删除</string>
+    <string name="format_traffic">↑ %1$s    ↓ %2$s</string>
+
+    <!-- 流量统计页 -->
+    <string name="stats_title">流量统计</string>
+    <string name="stats_current_session">当前会话</string>
+    <string name="stats_reconnecting">重连中…</string>
+    <string name="stats_duration">连接时长：%1$s</string>
+    <string name="stats_up_rate">↑ %1$s（%2$s）</string>
+    <string name="stats_down_rate">↓ %1$s（%2$s）</string>
+    <string name="stats_totals">累计流量（全部配置）</string>
+    <string name="stats_total_line">↑ %1$s    ↓ %2$s    合计 %3$s</string>
+    <string name="stats_per_profile">分配置统计</string>
+    <string name="action_reset_all">清空全部累计流量</string>
+    <string name="stats_reset_all_title">清空累计流量？</string>
+    <string name="stats_reset_all_msg">各配置的累计上下行将被清零，配置本身不受影响。此操作不可撤销。</string>
+    <string name="stats_reset_one_title">清空该配置流量？</string>
+    <string name="stats_reset_one_msg">该配置的累计上下行将被清零，配置本身不受影响。</string>
+    <string name="action_reset_short">清零</string>
+
+    <!-- 设置页 -->
+    <string name="settings_title">全局设置</string>
+    <string name="setting_boot_title">开机自动连接</string>
+    <string name="setting_boot_subtitle">设备重启后自动连接上次使用的配置</string>
+    <string name="setting_reconnect_title">断线自动重连</string>
+    <string name="setting_reconnect_subtitle">连接意外中断或切换 WiFi/蜂窝网络时按 1s/2s/4s… 退避自动重连（最多 5 次）</string>
+    <string name="setting_failover_title">故障自动切换</string>
+    <string name="setting_failover_subtitle">当前配置多次重连失败后，自动切到延迟最低的其它配置</string>
+    <string name="setting_bypass_lan_title">新配置默认绕过局域网</string>
+    <string name="setting_bypass_lan_subtitle">新建配置时默认开启「绕过私有网段」智能分流</string>
+    <string name="setting_trusted_title">可信 WiFi 自动暂停</string>
+    <string name="setting_trusted_subtitle">连到下列 WiFi 时暂停 VPN，离开后自动恢复；需保持 VPN 已连接过一次以启用监听</string>
+    <string name="ssid_field_label">WiFi 名称（SSID）</string>
+    <string name="trusted_empty">尚未添加可信 WiFi</string>
+    <string name="action_add_current_wifi">添加当前连接的 WiFi</string>
+    <string name="toast_location_required">需要定位权限才能读取当前 WiFi 名称</string>
+    <string name="toast_wifi_unavailable">无法获取当前 WiFi 名称（需定位权限且已连 WiFi）</string>
+    <string name="toast_wifi_added">已添加：%1$s</string>
+    <string name="trusted_chip_remove">✕ %1$s</string>
+    <string name="alwayson_title">系统常驻 VPN（Always-on）</string>
+    <string name="alwayson_steps">Android 不允许 App 自行开启常驻 VPN，需要手动设置：\n1. 点下方按钮打开系统 VPN 设置；\n2. 找到「SPP Client」，点旁边的齿轮/设置图标；\n3. 开启「始终开启的 VPN」；\n4. 如需全程防泄漏，再开启「阻止未使用 VPN 的连接」。\n\n也可以在通知栏 Quick Settings 的编辑页把「SPP VPN」磁贴拖到常用位置，一键启停。</string>
+    <string name="action_open_vpn_settings">打开系统 VPN 设置</string>
+    <string name="toast_vpn_settings_unavailable">无法打开系统设置，请手动进入 VPN 设置</string>
+
+    <!-- 配置编辑页 -->
+    <string name="field_name">配置名称</string>
+    <string name="editor_add_title">添加配置</string>
+    <string name="editor_edit_title">编辑配置</string>
+    <string name="section_per_app">分应用代理</string>
+    <string name="per_app_all">全部</string>
+    <string name="per_app_allowed">仅选中</string>
+    <string name="per_app_disallowed">排除选中</string>
+    <string name="action_choose_apps">选择应用（%1$d）</string>
+    <string name="section_smart_split">智能分流</string>
+    <string name="split_bypass_lan_title">绕过局域网</string>
+    <string name="split_bypass_lan_subtitle">私有网段直连，其余走代理（含 IPv6 全球单播）</string>
+    <string name="split_bypass_cn_title">CN 直连（chnroute）</string>
+    <string name="split_bypass_cn_subtitle">中国大陆 IP 直连，其它地址走代理；数据来自 APNIC</string>
+    <string name="field_server_host">服务器地址</string>
+    <string name="field_port">端口</string>
+    <string name="field_proto">传输协议</string>
+    <string name="field_key">认证 Key</string>
+    <string name="field_encrypt">加密 Key（留空则不加密）</string>
+    <string name="field_compress">压缩阈值（0=关闭）</string>
+    <string name="field_ipv6_title">接管 IPv6 流量</string>
+    <string name="field_ipv6_subtitle">关闭则仅代理 IPv4（IPv6 可能直连）</string>
+
+    <!-- 应用选择页 -->
+    <string name="app_picker_title">选择应用（已选 %1$d）</string>
+    <string name="app_picker_search">搜索应用名称或包名</string>
+
+    <!-- 日志页 -->
+    <string name="logs_empty">（暂无日志）</string>
+    <string name="logs_history_marker">……（历史日志截断）……</string>
+
+    <!-- 二维码分享 -->
+    <string name="qr_title">分享配置 · %1$s</string>
+    <string name="qr_hint">用其它设备扫码添加，或点右侧发送文本</string>
+    <string name="qr_share_chooser">分享配置</string>
+    <string name="qr_content_description">QR code</string>
+
+    <!-- 连接自检 -->
+    <string name="check_running_title">正在自检…</string>
+    <string name="check_running_text">正在对比直连与经隧道的出口 IP，并检查远端 DNS 路径</string>
+    <string name="check_ok_title">自检通过</string>
+    <string name="check_ok_text">流量已走 SPP Server 出口，域名经远端解析。</string>
+    <string name="check_same_title">出口相同</string>
+    <string name="check_same_text">隧道出口 IP 与直连一致，请检查分流/服务器配置。</string>
+    <string name="check_proxy_failed_title">隧道不可用</string>
+    <string name="check_proxy_failed_text">直连正常，但经隧道无法访问外网，请查看运行日志。</string>
+    <string name="check_network_failed_title">检测失败</string>
+    <string name="check_network_failed_text">直连也无法访问检测服务，请检查网络。</string>
+    <string name="check_direct_ip">直连出口：%1$s</string>
+    <string name="check_proxy_ip">隧道出口：%1$s</string>
+    <string name="check_dns_ok">远端 DNS 路径：正常</string>
+    <string name="check_dns_bad">远端 DNS 路径：不可用</string>
+    <string name="check_latency">隧道建连：%1$d ms</string>
+    <string name="value_dash">—</string>
 </resources>

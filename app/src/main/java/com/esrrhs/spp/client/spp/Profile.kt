@@ -37,11 +37,11 @@ data class Profile(
     val bypassCn: Boolean = false,
     val pingMs: Int = -1,
 ) {
-    /** 返回首个校验错误（名称与连接参数）；null 表示合法。 */
-    fun validate(): String? = when {
-        name.isBlank() -> "请填写配置名称"
+    /** 返回首个校验错误码（名称与连接参数）；null 表示合法。 */
+    fun validate(): ValidationError? = when {
+        name.isBlank() -> ValidationError.NAME_REQUIRED
         perAppMode == PerAppMode.ALLOWED && perAppPackages.isEmpty() ->
-            "「仅代理选中」模式至少勾选一个 App"
+            ValidationError.APPS_REQUIRED
         else -> config.validate()
     }
 }

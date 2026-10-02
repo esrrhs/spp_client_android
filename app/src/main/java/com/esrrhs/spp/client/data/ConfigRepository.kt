@@ -130,6 +130,16 @@ class ConfigRepository(context: Context) {
         }
     }
 
+    /** 清空指定配置的累计流量。 */
+    suspend fun resetTrafficFor(id: String) {
+        dataStore.edit { prefs ->
+            val list = decodeList(prefs[Keys.PROFILES_JSON]).map { p ->
+                if (p.id == id) p.copy(txBytes = 0L, rxBytes = 0L) else p
+            }
+            prefs[Keys.PROFILES_JSON] = json.encodeToString(listSerializer, list)
+        }
+    }
+
     /** 清空所有配置的累计流量（不影响配置本身）。 */
     suspend fun resetTraffic() {
         dataStore.edit { prefs ->

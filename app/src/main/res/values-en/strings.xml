@@ -1,0 +1,184 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SPP Client</string>
+
+    <!-- Notification / tile -->
+    <string name="notif_channel_name">VPN status</string>
+    <string name="notif_connecting">Connecting…</string>
+    <string name="notif_connected">Connected · %1$s</string>
+    <string name="notif_disconnecting">Disconnecting…</string>
+    <string name="notif_reconnecting">Connection lost, reconnecting…</string>
+    <string name="notif_failover">Switching to backup profile…</string>
+    <string name="notif_paused_trusted">VPN paused on a trusted network</string>
+    <string name="tile_label">SPP VPN</string>
+    <string name="tile_disconnected">Disconnected</string>
+    <string name="tile_connecting">Connecting…</string>
+    <string name="tile_connected">Connected</string>
+    <string name="tile_disconnecting">Disconnecting…</string>
+    <string name="tile_paused">Paused</string>
+
+    <!-- Errors -->
+    <string name="error_establish">Cannot create the VPN interface (establish returned null). Retry or check system VPN settings.</string>
+    <string name="error_hev_start">Failed to start hev-socks5-tunnel</string>
+    <string name="error_hev_missing">libhev-socks5-tunnel.so is missing. Run scripts/build_native.sh before packaging.</string>
+    <string name="error_no_profile">Please add a profile first</string>
+    <string name="error_connect_failed">Connection failed</string>
+    <string name="error_tunnel_lost">SPP connection lost. Check your network and reconnect.</string>
+    <string name="error_reconnect_failed">Reconnect failed after multiple attempts. Check your network or server.</string>
+    <string name="err_name_required">Please enter a profile name</string>
+    <string name="err_apps_required">Select at least one app for the \"selected apps only\" mode</string>
+    <string name="err_host_required">Please enter the server address</string>
+    <string name="err_port_range">Port must be between 1 and 65535</string>
+    <string name="err_key_required">Please enter the auth key</string>
+    <string name="error_missing_native">libspp.so is missing. Run scripts/build_native.sh before packaging.</string>
+    <string name="error_spp_session">Cannot establish an SPP session (15s timeout). Check the server address, key/encrypt and network:\n%1$s</string>
+    <string name="error_spp_exited">The SPP client exited early:\n%1$s</string>
+    <string name="log_no_output">no logs</string>
+
+    <!-- Common -->
+    <string name="action_back">Back</string>
+    <string name="action_save">Save</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_clear">Clear</string>
+    <string name="action_close">Close</string>
+    <string name="action_send">Send</string>
+    <string name="action_add">Add</string>
+    <string name="action_confirm">OK</string>
+
+    <!-- MainActivity toasts -->
+    <string name="toast_vpn_permission_denied">VPN permission denied, cannot connect</string>
+    <string name="toast_add_profile_first">Please add a profile first</string>
+    <string name="toast_invalid_qr">The QR code is not a valid SPP profile</string>
+    <string name="toast_imported">Profile imported: %1$s</string>
+    <string name="toast_bad_link">The link is not a valid SPP profile</string>
+    <string name="toast_exported">Exported %1$d profile(s)</string>
+    <string name="toast_export_failed">Export failed: %1$s</string>
+    <string name="toast_import_empty">No valid profiles found in the file</string>
+    <string name="toast_imported_count">Imported %1$d profile(s)</string>
+    <string name="toast_import_failed">Import failed: %1$s</string>
+
+    <string name="scan_prompt">Point the SPP profile QR code at the frame</string>
+
+    <!-- Main screen -->
+    <string name="menu_logs">Logs</string>
+    <string name="empty_profiles">No profiles yet. Use the button below to add one, or scan / import from a file.</string>
+    <string name="action_scan">Scan</string>
+    <string name="action_import">Import</string>
+    <string name="action_export">Export</string>
+    <string name="action_test_all">Test all</string>
+    <string name="action_testing">Testing…</string>
+    <string name="action_fastest">Fastest</string>
+    <string name="action_stats">Stats</string>
+    <string name="action_check">Check</string>
+    <string name="action_settings">Settings</string>
+    <string name="state_disconnected">Disconnected</string>
+    <string name="state_connecting">Connecting…</string>
+    <string name="state_connected">Connected</string>
+    <string name="state_disconnecting">Disconnecting…</string>
+    <string name="state_paused">Paused (trusted network)</string>
+    <string name="state_error">Error</string>
+    <string name="action_add_profile">Add profile</string>
+    <string name="ping_untested">Not tested</string>
+    <string name="ping_ms">%1$d ms</string>
+    <string name="action_ping">Ping</string>
+    <string name="action_qr">QR</string>
+    <string name="action_edit">Edit</string>
+    <string name="action_delete">Delete</string>
+    <string name="format_traffic">↑ %1$s    ↓ %2$s</string>
+
+    <!-- Stats screen -->
+    <string name="stats_title">Traffic stats</string>
+    <string name="stats_current_session">Current session</string>
+    <string name="stats_reconnecting">Reconnecting…</string>
+    <string name="stats_duration">Duration: %1$s</string>
+    <string name="stats_up_rate">↑ %1$s (%2$s)</string>
+    <string name="stats_down_rate">↓ %1$s (%2$s)</string>
+    <string name="stats_totals">Total traffic (all profiles)</string>
+    <string name="stats_total_line">↑ %1$s    ↓ %2$s    Total %3$s</string>
+    <string name="stats_per_profile">Per-profile stats</string>
+    <string name="action_reset_all">Clear all traffic counters</string>
+    <string name="stats_reset_all_title">Clear all traffic counters?</string>
+    <string name="stats_reset_all_msg">Cumulative upload/download counters of every profile will be reset. Profiles themselves are untouched. This cannot be undone.</string>
+    <string name="stats_reset_one_title">Clear this profile\'s counters?</string>
+    <string name="stats_reset_one_msg">This profile\'s cumulative upload/download counters will be reset. The profile itself is untouched.</string>
+    <string name="action_reset_short">Clear</string>
+
+    <!-- Settings screen -->
+    <string name="settings_title">Settings</string>
+    <string name="setting_boot_title">Connect on boot</string>
+    <string name="setting_boot_subtitle">Automatically connect to the last used profile after reboot</string>
+    <string name="setting_reconnect_title">Auto reconnect</string>
+    <string name="setting_reconnect_subtitle">Reconnect with 1s/2s/4s… backoff (up to 5 times) on unexpected disconnect or WiFi/cellular switch</string>
+    <string name="setting_failover_title">Automatic failover</string>
+    <string name="setting_failover_subtitle">After repeated failures, automatically switch to the profile with the lowest latency</string>
+    <string name="setting_bypass_lan_title">Bypass LAN by default for new profiles</string>
+    <string name="setting_bypass_lan_subtitle">New profiles enable \"bypass private ranges\" smart split by default</string>
+    <string name="setting_trusted_title">Pause on trusted WiFi</string>
+    <string name="setting_trusted_subtitle">Pause the VPN on the Wi-Fi networks below and resume after leaving them. Connect once with the VPN on to activate monitoring.</string>
+    <string name="ssid_field_label">Wi-Fi name (SSID)</string>
+    <string name="trusted_empty">No trusted Wi-Fi yet</string>
+    <string name="action_add_current_wifi">Add the currently connected Wi-Fi</string>
+    <string name="toast_location_required">Location permission is required to read the current Wi-Fi name</string>
+    <string name="toast_wifi_unavailable">Cannot read the current Wi-Fi name (location permission required and Wi-Fi connected)</string>
+    <string name="toast_wifi_added">Added: %1$s</string>
+    <string name="trusted_chip_remove">✕ %1$s</string>
+    <string name="alwayson_title">System always-on VPN</string>
+    <string name="alwayson_steps">Android does not allow apps to enable always-on VPN themselves. Set it up manually:\n1. Tap the button below to open system VPN settings;\n2. Find \"SPP Client\" and tap the gear icon next to it;\n3. Enable \"Always-on VPN\";\n4. For full leak protection, also enable \"Block connections without VPN\".\n\nYou can also drag the \"SPP VPN\" Quick Settings tile to your preferred position for one-tap control.</string>
+    <string name="action_open_vpn_settings">Open system VPN settings</string>
+    <string name="toast_vpn_settings_unavailable">Cannot open system settings. Please open VPN settings manually.</string>
+
+    <!-- Profile editor -->
+    <string name="field_name">Profile name</string>
+    <string name="editor_add_title">Add profile</string>
+    <string name="editor_edit_title">Edit profile</string>
+    <string name="section_per_app">Per-app proxy</string>
+    <string name="per_app_all">All apps</string>
+    <string name="per_app_allowed">Selected only</string>
+    <string name="per_app_disallowed">Exclude selected</string>
+    <string name="action_choose_apps">Choose apps (%1$d)</string>
+    <string name="section_smart_split">Smart split</string>
+    <string name="split_bypass_lan_title">Bypass LAN</string>
+    <string name="split_bypass_lan_subtitle">Private ranges go direct, everything else is proxied (including IPv6 global unicast)</string>
+    <string name="split_bypass_cn_title">Direct for CN (chnroute)</string>
+    <string name="split_bypass_cn_subtitle">Mainland China IPs go direct; other addresses are proxied. Data from APNIC</string>
+    <string name="field_server_host">Server address</string>
+    <string name="field_port">Port</string>
+    <string name="field_proto">Transport protocol</string>
+    <string name="field_key">Auth key</string>
+    <string name="field_encrypt">Encrypt key (leave empty to disable)</string>
+    <string name="field_compress">Compression threshold (0 = off)</string>
+    <string name="field_ipv6_title">Capture IPv6 traffic</string>
+    <string name="field_ipv6_subtitle">When off, only IPv4 is proxied (IPv6 may go direct)</string>
+
+    <!-- App picker -->
+    <string name="app_picker_title">Choose apps (%1$d selected)</string>
+    <string name="app_picker_search">Search app name or package</string>
+
+    <!-- Logs -->
+    <string name="logs_empty">(no logs yet)</string>
+    <string name="logs_history_marker">…… (history truncated) ……</string>
+
+    <!-- QR share -->
+    <string name="qr_title">Share profile · %1$s</string>
+    <string name="qr_hint">Scan with another device to add it, or send the text on the right</string>
+    <string name="qr_share_chooser">Share profile</string>
+    <string name="qr_content_description">QR code</string>
+
+    <!-- Connection check -->
+    <string name="check_running_title">Checking…</string>
+    <string name="check_running_text">Comparing direct and tunnel exit IPs, and checking the remote DNS path</string>
+    <string name="check_ok_title">Check passed</string>
+    <string name="check_ok_text">Traffic exits through the SPP server and domains are resolved remotely.</string>
+    <string name="check_same_title">Same exit IP</string>
+    <string name="check_same_text">The tunnel exit IP is the same as direct. Check split rules / server config.</string>
+    <string name="check_proxy_failed_title">Tunnel unusable</string>
+    <string name="check_proxy_failed_text">Direct works, but the tunnel cannot reach the internet. Check the logs.</string>
+    <string name="check_network_failed_title">Check failed</string>
+    <string name="check_network_failed_text">Direct access to the check service also failed. Check your network.</string>
+    <string name="check_direct_ip">Direct exit: %1$s</string>
+    <string name="check_proxy_ip">Tunnel exit: %1$s</string>
+    <string name="check_dns_ok">Remote DNS path: OK</string>
+    <string name="check_dns_bad">Remote DNS path: unavailable</string>
+    <string name="check_latency">Tunnel connect: %1$d ms</string>
+    <string name="value_dash">—</string>
+</resources>

@@ -23,7 +23,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.esrrhs.spp.client.R
 import com.esrrhs.spp.client.data.InstalledApp
 import com.esrrhs.spp.client.data.InstalledApps
 import kotlinx.coroutines.Dispatchers
@@ -57,10 +59,16 @@ fun AppPickerScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("选择应用（已选 ${selected.size}）") },
-                navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
+                title = { Text(stringResource(R.string.app_picker_title, selected.size)) },
+                navigationIcon = {
+                    TextButton(onClick = onBack) {
+                        Text(stringResource(R.string.action_back))
+                    }
+                },
                 actions = {
-                    TextButton(onClick = { onConfirm(selected) }) { Text("确定") }
+                    TextButton(onClick = { onConfirm(selected) }) {
+                        Text(stringResource(R.string.action_confirm))
+                    }
                 },
             )
         },
@@ -69,7 +77,7 @@ fun AppPickerScreen(
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
-                label = { Text("搜索应用名称或包名") },
+                label = { Text(stringResource(R.string.app_picker_search)) },
                 singleLine = true,
                 modifier = Modifier
                     .fillMaxWidth()

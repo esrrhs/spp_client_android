@@ -15,7 +15,7 @@ class ProfileTest {
     @Test
     fun blankName_isRejected() {
         val profile = Profile(name = "", config = validConfig())
-        assertEquals("请填写配置名称", profile.validate())
+        assertEquals(ValidationError.NAME_REQUIRED, profile.validate())
     }
 
     @Test
@@ -27,7 +27,17 @@ class ProfileTest {
     @Test
     fun invalidConfig_surfacesConfigError() {
         val profile = Profile(name = "home", config = validConfig().copy(key = ""))
-        assertEquals("请填写认证 Key", profile.validate())
+        assertEquals(ValidationError.KEY_REQUIRED, profile.validate())
+    }
+
+    @Test
+    fun allowedModeWithoutApps_isRejected() {
+        val profile = Profile(
+            name = "home",
+            config = validConfig(),
+            perAppMode = PerAppMode.ALLOWED,
+        )
+        assertEquals(ValidationError.APPS_REQUIRED, profile.validate())
     }
 
     @Test

@@ -12,6 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import com.esrrhs.spp.client.R
 
 /**
  * 下拉通知栏的 Quick Settings 磁贴：一键启停 VPN。
@@ -85,11 +86,12 @@ class SppTileService : TileService() {
             VpnTileState.Tile.INACTIVE -> Tile.STATE_INACTIVE
         }
         tile.subtitle = when (state) {
-            VpnState.Disconnected -> "未连接"
-            VpnState.Connecting -> "连接中…"
-            VpnState.Connected -> "已连接"
-            VpnState.Disconnecting -> "断开中…"
-            is VpnState.Error -> "未连接"
+            VpnState.Disconnected -> getString(R.string.tile_disconnected)
+            VpnState.Connecting -> getString(R.string.tile_connecting)
+            VpnState.Connected -> getString(R.string.tile_connected)
+            VpnState.Disconnecting -> getString(R.string.tile_disconnecting)
+            VpnState.Paused -> getString(R.string.tile_paused)
+            is VpnState.Error -> getString(R.string.tile_disconnected)
         }
         tile.updateTile()
     }

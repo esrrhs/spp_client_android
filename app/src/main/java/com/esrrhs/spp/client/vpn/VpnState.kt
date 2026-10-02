@@ -9,6 +9,8 @@ sealed interface VpnState {
     data object Connecting : VpnState
     data object Connected : VpnState
     data object Disconnecting : VpnState
+    /** 接入可信 WiFi 后数据面暂停，Service 仍在监听网络变化以便自动恢复。 */
+    data object Paused : VpnState
     data class Error(val message: String) : VpnState
 }
 

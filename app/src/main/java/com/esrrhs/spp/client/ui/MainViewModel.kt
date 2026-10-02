@@ -7,9 +7,13 @@ import com.esrrhs.spp.client.data.AppSettings
 import com.esrrhs.spp.client.data.ConfigRepository
 import com.esrrhs.spp.client.data.SettingsRepository
 import com.esrrhs.spp.client.spp.Profile
+import com.esrrhs.spp.client.spp.SppProcess
+import com.esrrhs.spp.client.spp.ValidationError
 import com.esrrhs.spp.client.tun.HevTunnel
-import com.esrrhs.spp.client.util.ServerPing
+import com.esrrhs.spp.client.util.SocksProbe
 import com.esrrhs.spp.client.util.TrafficMeter
+import com.esrrhs.spp.client.util.TunnelCheck
+import com.esrrhs.spp.client.vpn.ActiveSession
 import com.esrrhs.spp.client.vpn.VpnController
 import com.esrrhs.spp.client.vpn.VpnState
 import com.esrrhs.spp.client.vpn.VpnStateHolder
@@ -22,6 +26,13 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+/** 连接自检状态。 */
+sealed interface SelfCheckState {
+    data object Idle : SelfCheckState
+    data object Running : SelfCheckState
+    data class Done(val result: TunnelCheck.Result) : SelfCheckState
+}
 
 /**
  * 当前会话的实时数据（叠加在 profile 已累计值之上显示）。
@@ -60,6 +71,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _testingPings = MutableStateFlow(false)
     val testingPings: StateFlow<Boolean> = _testingPings
 
+    private val _selfCheck = MutableStateFlow<SelfCheckState>(SelfCheckState.Idle)
+    val selfCheck: StateFlow<SelfCheckState> = _selfCheck
+
+    /** 已连接时对当前隧道做出口 IP / DNS 路径自检。 */
+    fun runSelfCheck() {
+        val port = ActiveSession.socksPort
+        if (VpnStateHolder.state.value !is VpnState.Connected || port == null) return
+        viewModelScope.launch {
+            _selfCheck.value = SelfCheckState.Running
+            val result = withContext(Dispatchers.IO) { TunnelCheck.run(port) }
+            _selfCheck.value = SelfCheckState.Done(result)
+        }
+    }
+
+    fun dismissSelfCheck() {
+        _selfCheck.value = SelfCheckState.Idle
+    }
+
     init {
         viewModelScope.launch { pollSessionTraffic() }
     }
@@ -81,7 +110,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun saveProfile(profile: Profile, onResult: (String?) -> Unit) {
+    fun saveProfile(profile: Profile, onResult: (ValidationError?) -> Unit) {
         viewModelScope.launch {
             // 新建配置套用全局默认「绕过局域网」
             val toSave = if (profiles.value.none { it.id == profile.id } &&
@@ -105,34 +134,58 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { settingsRepository.save(settings) }
     }
 
-    /** 单个配置延迟测试。 */
+    /**
+     * 单个配置延迟测试：经 SPP 隧道发起真实 SOCKS5 建连（含认证与远端 DNS）。
+     * 已连接的当前配置直接走运行中的隧道；其它配置临时拉起 socks5_client 实测后关闭。
+     */
     fun testPing(id: String) {
         viewModelScope.launch {
             val profile = profiles.value.firstOrNull { it.id == id } ?: return@launch
-            val ms = withContext(Dispatchers.IO) {
-                ServerPing.measure(profile.config.serverHost, profile.config.serverPort)
-            }
+            val ms = measureRealLatency(profile)
             repository.updatePing(id, ms)
         }
     }
 
-    /** 测全部配置延迟。 */
+    /** 测全部配置延迟（逐个临时建隧道）。 */
     fun testAllPings() {
         if (_testingPings.value) return
         viewModelScope.launch {
             _testingPings.value = true
             try {
                 profiles.value.forEach { profile ->
-                    val ms = withContext(Dispatchers.IO) {
-                        ServerPing.measure(profile.config.serverHost, profile.config.serverPort)
-                    }
-                    repository.updatePing(profile.id, ms)
+                    repository.updatePing(profile.id, measureRealLatency(profile))
                 }
             } finally {
                 _testingPings.value = false
             }
         }
     }
+
+    /**
+     * 返回经隧道 CONNECT 到稳定目标的耗时（ms），失败 -1。
+     * 当前活动配置复用已运行端口；其余配置临时拉起 socks5_client，
+     * 因此错误的 key/encrypt 或不可达 server 都会得到 -1。
+     */
+    private suspend fun measureRealLatency(profile: Profile): Int =
+        withContext(Dispatchers.IO) {
+            val activePort = ActiveSession.socksPort
+            val isActive = profile.id == activeId.value &&
+                VpnStateHolder.state.value is VpnState.Connected && activePort != null
+            if (isActive) {
+                SocksProbe.measure(activePort!!)
+            } else {
+                var proc: SppProcess? = null
+                try {
+                    proc = SppProcess(getApplication())
+                    val port = proc.start(profile.config)
+                    SocksProbe.measure(port)
+                } catch (e: Exception) {
+                    -1
+                } finally {
+                    proc?.stop()
+                }
+            }
+        }
 
     /** 选中延迟最低的配置（忽略未测/失败）。 */
     fun selectFastest() {
@@ -152,6 +205,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 清空所有配置的累计流量统计。 */
     fun resetTraffic() {
         viewModelScope.launch { repository.resetTraffic() }
+    }
+
+    /** 清空指定配置的累计流量统计。 */
+    fun resetTrafficFor(id: String) {
+        viewModelScope.launch { repository.resetTrafficFor(id) }
     }
 
     /** 返回当前选中配置 id（无显式选择时取第一条）；无配置返回 null。 */
