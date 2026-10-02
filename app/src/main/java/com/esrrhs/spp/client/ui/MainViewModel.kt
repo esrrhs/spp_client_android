@@ -9,6 +9,7 @@ import com.esrrhs.spp.client.data.SettingsRepository
 import com.esrrhs.spp.client.spp.Profile
 import com.esrrhs.spp.client.tun.HevTunnel
 import com.esrrhs.spp.client.util.ServerPing
+import com.esrrhs.spp.client.util.TrafficMeter
 import com.esrrhs.spp.client.vpn.VpnController
 import com.esrrhs.spp.client.vpn.VpnState
 import com.esrrhs.spp.client.vpn.VpnStateHolder
@@ -17,12 +18,23 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** 当前会话的实时字节增量（叠加在 profile 已累计值之上显示）。 */
-data class SessionTraffic(val tx: Long, val rx: Long)
+/**
+ * 当前会话的实时数据（叠加在 profile 已累计值之上显示）。
+ * [tx]/[rx] 为本轮隧道累计字节；[txRate]/[rxRate] 为实时速率（字节/秒）；
+ * [connectedAtMs] 为本次连接建立时刻，用于时长展示。
+ */
+data class SessionTraffic(
+    val tx: Long = 0,
+    val rx: Long = 0,
+    val txRate: Long = 0,
+    val rxRate: Long = 0,
+    val connectedAtMs: Long? = null,
+)
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -38,9 +50,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val settings: StateFlow<AppSettings> = settingsRepository.settings
         .stateIn(viewModelScope, SharingStarted.Eagerly, AppSettings())
 
-    private val emptySession = SessionTraffic(0, 0)
+    private val emptySession = SessionTraffic()
     private val _session = MutableStateFlow(emptySession)
     val session: StateFlow<SessionTraffic> = _session
+
+    private val trafficMeter = TrafficMeter()
+    private var connectedAtMs: Long? = null
 
     private val _testingPings = MutableStateFlow(false)
     val testingPings: StateFlow<Boolean> = _testingPings
@@ -134,17 +149,54 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     suspend fun importProfiles(list: List<Profile>) = repository.importProfiles(list)
 
-    /** 已连接时每秒取隧道计数，展示本会话实时字节；断开则清零。 */
+    /** 清空所有配置的累计流量统计。 */
+    fun resetTraffic() {
+        viewModelScope.launch { repository.resetTraffic() }
+    }
+
+    /** 返回当前选中配置 id（无显式选择时取第一条）；无配置返回 null。 */
+    suspend fun awaitActiveProfileId(): String? {
+        val list = repository.profiles.first()
+        val active = repository.activeId.first()
+        return list.firstOrNull { it.id == active }?.id ?: list.firstOrNull()?.id
+    }
+
+    /**
+     * 已连接时每秒取隧道计数，展示本会话字节与实时速率；
+     * 重连中保持上一次数据；断开/出错则清零。
+     */
     private suspend fun pollSessionTraffic() {
         while (true) {
             delay(POLL_INTERVAL_MS)
-            val raw = if (VpnStateHolder.state.value is VpnState.Connected) {
-                HevTunnel.stats()
-            } else null
-            _session.value = if (raw == null) {
-                emptySession
-            } else {
-                SessionTraffic(raw.getOrNull(1) ?: 0L, raw.getOrNull(3) ?: 0L)
+            val state = VpnStateHolder.state.value
+            when {
+                state is VpnState.Connected -> {
+                    val raw = HevTunnel.stats()
+                    if (raw != null) {
+                        val now = System.currentTimeMillis()
+                        val tx = raw.getOrNull(1) ?: 0L
+                        val rx = raw.getOrNull(3) ?: 0L
+                        if (connectedAtMs == null) {
+                            connectedAtMs = now
+                            trafficMeter.rebaseline(tx, rx, now)
+                        }
+                        val rates = trafficMeter.update(tx, rx, now)
+                        _session.value = SessionTraffic(
+                            tx = tx,
+                            rx = rx,
+                            txRate = rates.txBytesPerSec,
+                            rxRate = rates.rxBytesPerSec,
+                            connectedAtMs = connectedAtMs,
+                        )
+                    }
+                }
+                // 重连过渡态：保留上一次的会话数据
+                state is VpnState.Connecting || state is VpnState.Disconnecting -> Unit
+                else -> {
+                    trafficMeter.reset()
+                    connectedAtMs = null
+                    _session.value = emptySession
+                }
             }
         }
     }

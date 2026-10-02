@@ -130,6 +130,15 @@ class ConfigRepository(context: Context) {
         }
     }
 
+    /** 清空所有配置的累计流量（不影响配置本身）。 */
+    suspend fun resetTraffic() {
+        dataStore.edit { prefs ->
+            val list = decodeList(prefs[Keys.PROFILES_JSON])
+                .map { it.copy(txBytes = 0L, rxBytes = 0L) }
+            prefs[Keys.PROFILES_JSON] = json.encodeToString(listSerializer, list)
+        }
+    }
+
     private fun decodeList(stored: String?): List<Profile> =
         if (stored == null) emptyList()
         else runCatching { json.decodeFromString(listSerializer, stored) }.getOrDefault(emptyList())

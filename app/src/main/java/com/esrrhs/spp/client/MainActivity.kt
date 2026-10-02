@@ -26,6 +26,7 @@ import com.esrrhs.spp.client.ui.MainScreen
 import com.esrrhs.spp.client.ui.MainViewModel
 import com.esrrhs.spp.client.ui.ProfileEditorScreen
 import com.esrrhs.spp.client.ui.SettingsScreen
+import com.esrrhs.spp.client.ui.StatsScreen
 import com.esrrhs.spp.client.ui.theme.SppClientTheme
 import com.esrrhs.spp.client.util.ProfileShare
 import com.esrrhs.spp.client.util.ProfilesFile
@@ -105,6 +106,15 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+
+        // 来自 Quick Settings 磁贴：VPN 尚未授权时先打开本页，授权后立即连接
+        if (intent?.getBooleanExtra(EXTRA_CONNECT, false) == true) {
+            lifecycleScope.launch {
+                val id = viewModel.awaitActiveProfileId()
+                if (id != null) prepareConnectOrDisconnect(id) else toast("请先添加配置")
+            }
+        }
+
         setContent {
             SppClientTheme {
                 var screen by rememberSaveable { mutableStateOf("list") }
@@ -122,6 +132,15 @@ class MainActivity : ComponentActivity() {
 
                 when (screen) {
                     "logs" -> LogsScreen(onBack = { screen = "list" })
+
+                    "stats" -> StatsScreen(
+                        profiles = profiles,
+                        activeId = activeId,
+                        vpnState = vpnState,
+                        session = session,
+                        onResetTraffic = viewModel::resetTraffic,
+                        onBack = { screen = "list" },
+                    )
 
                     "settings" -> SettingsScreen(
                         settings = settings,
@@ -185,6 +204,7 @@ class MainActivity : ComponentActivity() {
                         onTestPing = viewModel::testPing,
                         onTestAll = viewModel::testAllPings,
                         onSelectFastest = viewModel::selectFastest,
+                        onShowStats = { screen = "stats" },
                         onShowQr = { qrId = it },
                         onDismissQr = { qrId = null },
                     )
@@ -239,5 +259,10 @@ class MainActivity : ComponentActivity() {
 
     private fun toast(message: String) {
         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+    }
+
+    companion object {
+        /** 由 Quick Settings 磁贴在需要 VPN 授权时携带：进页面后自动发起连接。 */
+        const val EXTRA_CONNECT = "com.esrrhs.spp.client.extra.CONNECT"
     }
 }
