@@ -3,6 +3,7 @@ package com.esrrhs.spp.client.data
 import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -17,14 +18,20 @@ class SettingsRepository(context: Context) {
     private object Keys {
         val BOOT_START = booleanPreferencesKey("boot_start")
         val AUTO_RECONNECT = booleanPreferencesKey("auto_reconnect")
+        val FAILOVER = booleanPreferencesKey("failover")
         val DEFAULT_BYPASS_LAN = booleanPreferencesKey("default_bypass_lan")
+        val TRUSTED_WIFI_ENABLED = booleanPreferencesKey("trusted_wifi_enabled")
+        val TRUSTED_WIFI_SSIDS = stringSetPreferencesKey("trusted_wifi_ssids")
     }
 
     val settings: Flow<AppSettings> = store.data.map { prefs ->
         AppSettings(
             bootStart = prefs[Keys.BOOT_START] ?: false,
             autoReconnect = prefs[Keys.AUTO_RECONNECT] ?: false,
+            failover = prefs[Keys.FAILOVER] ?: false,
             defaultBypassLan = prefs[Keys.DEFAULT_BYPASS_LAN] ?: false,
+            trustedWifiEnabled = prefs[Keys.TRUSTED_WIFI_ENABLED] ?: false,
+            trustedWifiSsids = prefs[Keys.TRUSTED_WIFI_SSIDS] ?: emptySet(),
         )
     }
 
@@ -32,7 +39,10 @@ class SettingsRepository(context: Context) {
         store.edit { prefs ->
             prefs[Keys.BOOT_START] = settings.bootStart
             prefs[Keys.AUTO_RECONNECT] = settings.autoReconnect
+            prefs[Keys.FAILOVER] = settings.failover
             prefs[Keys.DEFAULT_BYPASS_LAN] = settings.defaultBypassLan
+            prefs[Keys.TRUSTED_WIFI_ENABLED] = settings.trustedWifiEnabled
+            prefs[Keys.TRUSTED_WIFI_SSIDS] = settings.trustedWifiSsids
         }
     }
 }

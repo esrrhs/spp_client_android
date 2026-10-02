@@ -1,33 +1,51 @@
+@file:OptIn(
+    androidx.compose.material3.ExperimentalMaterial3Api::class,
+    androidx.compose.foundation.layout.ExperimentalLayoutApi::class,
+)
+
 package com.esrrhs.spp.client.ui
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.provider.Settings
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import com.esrrhs.spp.client.R
 import com.esrrhs.spp.client.data.AppSettings
+import com.esrrhs.spp.client.util.WifiNames
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     settings: AppSettings,
@@ -37,8 +55,12 @@ fun SettingsScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("全局设置") },
-                navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
+                title = { Text(stringResource(R.string.settings_title)) },
+                navigationIcon = {
+                    TextButton(onClick = onBack) {
+                        Text(stringResource(R.string.action_back))
+                    }
+                },
             )
         },
     ) { innerPadding ->
@@ -50,26 +72,141 @@ fun SettingsScreen(
                 .padding(16.dp),
         ) {
             ToggleRow(
-                title = "开机自动连接",
-                subtitle = "设备重启后自动连接上次使用的配置",
+                title = stringResource(R.string.setting_boot_title),
+                subtitle = stringResource(R.string.setting_boot_subtitle),
                 checked = settings.bootStart,
                 onCheckedChange = { onChange(settings.copy(bootStart = it)) },
             )
             ToggleRow(
-                title = "断线自动重连",
-                subtitle = "连接意外中断或切换 WiFi/蜂窝网络时按 1s/2s/4s… 退避自动重连（最多 5 次）",
+                title = stringResource(R.string.setting_reconnect_title),
+                subtitle = stringResource(R.string.setting_reconnect_subtitle),
                 checked = settings.autoReconnect,
                 onCheckedChange = { onChange(settings.copy(autoReconnect = it)) },
             )
             ToggleRow(
-                title = "新配置默认绕过局域网",
-                subtitle = "新建配置时默认开启「绕过私有网段」智能分流",
+                title = stringResource(R.string.setting_failover_title),
+                subtitle = stringResource(R.string.setting_failover_subtitle),
+                checked = settings.failover,
+                onCheckedChange = { onChange(settings.copy(failover = it)) },
+            )
+            ToggleRow(
+                title = stringResource(R.string.setting_bypass_lan_title),
+                subtitle = stringResource(R.string.setting_bypass_lan_subtitle),
                 checked = settings.defaultBypassLan,
                 onCheckedChange = { onChange(settings.copy(defaultBypassLan = it)) },
             )
 
+            TrustedWifiSection(settings = settings, onChange = onChange)
             AlwaysOnCard()
         }
+    }
+}
+
+@Composable
+private fun TrustedWifiSection(
+    settings: AppSettings,
+    onChange: (AppSettings) -> Unit,
+) {
+    val context = LocalContext.current
+    var newSsid by remember { mutableStateOf("") }
+
+    val locationPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            addCurrentWifi(context, settings, onChange)
+        } else {
+            Toast
+                .makeText(context, context.getString(R.string.toast_location_required), Toast.LENGTH_LONG)
+                .show()
+        }
+    }
+
+    ToggleRow(
+        title = stringResource(R.string.setting_trusted_title),
+        subtitle = stringResource(R.string.setting_trusted_subtitle),
+        checked = settings.trustedWifiEnabled,
+        onCheckedChange = { onChange(settings.copy(trustedWifiEnabled = it)) },
+    )
+
+    if (settings.trustedWifiEnabled) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OutlinedTextField(
+                value = newSsid,
+                onValueChange = { newSsid = it },
+                label = { Text(stringResource(R.string.ssid_field_label)) },
+                singleLine = true,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = {
+                val name = newSsid.trim()
+                if (name.isNotEmpty()) {
+                    onChange(settings.copy(trustedWifiSsids = settings.trustedWifiSsids + name))
+                    newSsid = ""
+                }
+            }) { Text(stringResource(R.string.action_add)) }
+        }
+
+        OutlinedButton(
+            onClick = {
+                val granted = ContextCompat.checkSelfPermission(
+                    context, Manifest.permission.ACCESS_FINE_LOCATION,
+                ) == PackageManager.PERMISSION_GRANTED
+                if (granted) {
+                    addCurrentWifi(context, settings, onChange)
+                } else {
+                    locationPermission.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+                }
+            },
+            modifier = Modifier.padding(top = 8.dp),
+        ) { Text(stringResource(R.string.action_add_current_wifi)) }
+
+        if (settings.trustedWifiSsids.isEmpty()) {
+            Text(
+                text = stringResource(R.string.trusted_empty),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+        } else {
+            FlowRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                settings.trustedWifiSsids.forEach { ssid ->
+                    AssistChip(
+                        onClick = {
+                            onChange(settings.copy(trustedWifiSsids = settings.trustedWifiSsids - ssid))
+                        },
+                        label = { Text(stringResource(R.string.trusted_chip_remove, ssid)) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun addCurrentWifi(
+    context: Context,
+    settings: AppSettings,
+    onChange: (AppSettings) -> Unit,
+) {
+    val ssid = WifiNames.currentSsid(context)
+    if (ssid == null) {
+        Toast
+            .makeText(context, context.getString(R.string.toast_wifi_unavailable), Toast.LENGTH_LONG)
+            .show()
+    } else {
+        onChange(settings.copy(trustedWifiSsids = settings.trustedWifiSsids + ssid))
+        Toast
+            .makeText(context, context.getString(R.string.toast_wifi_added, ssid), Toast.LENGTH_SHORT)
+            .show()
     }
 }
 
@@ -87,21 +224,16 @@ private fun AlwaysOnCard() {
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text(
-            text = "系统常驻 VPN（Always-on）",
+            text = stringResource(R.string.alwayson_title),
             style = MaterialTheme.typography.bodyLarge,
         )
         Text(
-            text = "Android 不允许 App 自行开启常驻 VPN，需要手动设置：\n" +
-                "1. 点下方按钮打开系统 VPN 设置；\n" +
-                "2. 找到「SPP Client」，点旁边的齿轮/设置图标；\n" +
-                "3. 开启「始终开启的 VPN」；\n" +
-                "4. 如需全程防泄漏，再开启「阻止未使用 VPN 的连接」。\n\n" +
-                "也可以在通知栏 Quick Settings 的编辑页把「SPP VPN」磁贴拖到常用位置，一键启停。",
+            text = stringResource(R.string.alwayson_steps),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         OutlinedButton(onClick = { openSystemVpnSettings(context) }) {
-            Text("打开系统 VPN 设置")
+            Text(stringResource(R.string.action_open_vpn_settings))
         }
     }
 }
@@ -115,7 +247,9 @@ private fun openSystemVpnSettings(context: Context) {
         val fallback = Intent(Settings.ACTION_WIRELESS_SETTINGS)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         runCatching { context.startActivity(fallback) }.onFailure {
-            Toast.makeText(context, "无法打开系统设置，请手动进入 VPN 设置", Toast.LENGTH_LONG).show()
+            Toast
+                .makeText(context, context.getString(R.string.toast_vpn_settings_unavailable), Toast.LENGTH_LONG)
+                .show()
         }
     }
 }

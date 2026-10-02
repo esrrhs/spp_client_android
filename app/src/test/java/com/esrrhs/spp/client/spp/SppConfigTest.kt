@@ -17,26 +17,26 @@ class SppConfigTest {
 
     @Test
     fun defaultConfig_isInvalidBecauseHostMissing() {
-        assertEquals("请填写服务器地址", SppConfig().validate())
+        assertEquals(ValidationError.HOST_REQUIRED, SppConfig().validate())
     }
 
     @Test
     fun hostFilledButKeyBlank_reportsKeyError() {
         val config = validConfig().copy(key = "")
-        assertEquals("请填写认证 Key", config.validate())
+        assertEquals(ValidationError.KEY_REQUIRED, config.validate())
     }
 
     @Test
     fun blankHost_reportsHostError() {
         val config = validConfig().copy(serverHost = "   ")
-        assertEquals("请填写服务器地址", config.validate())
+        assertEquals(ValidationError.HOST_REQUIRED, config.validate())
     }
 
     @Test
     fun portOutOfRange_isRejected() {
-        assertEquals("端口需在 1~65535 之间", validConfig().copy(serverPort = 0).validate())
-        assertEquals("端口需在 1~65535 之间", validConfig().copy(serverPort = -1).validate())
-        assertEquals("端口需在 1~65535 之间", validConfig().copy(serverPort = 65536).validate())
+        assertEquals(ValidationError.PORT_RANGE, validConfig().copy(serverPort = 0).validate())
+        assertEquals(ValidationError.PORT_RANGE, validConfig().copy(serverPort = -1).validate())
+        assertEquals(ValidationError.PORT_RANGE, validConfig().copy(serverPort = 65536).validate())
     }
 
     @Test

@@ -21,10 +21,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.material3.MaterialTheme.typography
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.esrrhs.spp.client.R
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -42,9 +44,13 @@ fun LogsScreen(onBack: () -> Unit) {
     var content by remember { mutableStateOf("") }
     val context = LocalContext.current
 
+    val emptyHint = stringResource(R.string.logs_empty)
+    val historyMarker = stringResource(R.string.logs_history_marker)
     LaunchedEffect(source) {
         while (true) {
-            content = withContext(Dispatchers.IO) { readLog(context.filesDir, source.fileName) }
+            content = withContext(Dispatchers.IO) {
+                readLog(context.filesDir, source.fileName, historyMarker)
+            }
             delay(REFRESH_INTERVAL_MS)
         }
     }
@@ -52,9 +58,11 @@ fun LogsScreen(onBack: () -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("运行日志") },
+                title = { Text(stringResource(R.string.menu_logs)) },
                 navigationIcon = {
-                    TextButton(onClick = onBack) { Text("返回") }
+                    TextButton(onClick = onBack) {
+                        Text(stringResource(R.string.action_back))
+                    }
                 },
             )
         },
@@ -77,7 +85,7 @@ fun LogsScreen(onBack: () -> Unit) {
                 }
             }
             Text(
-                text = content.ifBlank { "（暂无日志）" },
+                text = content.ifBlank { emptyHint },
                 style = typography.bodySmall,
                 fontFamily = FontFamily.Monospace,
                 fontSize = 11.sp,
@@ -90,13 +98,13 @@ fun LogsScreen(onBack: () -> Unit) {
 }
 
 /** 读取日志文件尾部；spp.log 附带滚动的 .1 历史段。 */
-private fun readLog(filesDir: File, fileName: String): String {
+private fun readLog(filesDir: File, fileName: String, historyMarker: String): String {
     val main = File(filesDir, fileName)
     val rotated = File(filesDir, "$fileName.1")
     return buildString {
         if (rotated.exists()) {
             append(tailOf(rotated, MAX_CHARS / 2))
-            appendLine("……（历史日志截断）……")
+            appendLine(historyMarker)
         }
         append(tailOf(main, MAX_CHARS / 2))
     }.trimEnd()

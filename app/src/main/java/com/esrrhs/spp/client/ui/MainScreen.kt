@@ -30,8 +30,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.esrrhs.spp.client.R
 import com.esrrhs.spp.client.spp.Profile
 import com.esrrhs.spp.client.util.Formatters
 import com.esrrhs.spp.client.vpn.VpnState
@@ -62,6 +64,9 @@ fun MainScreen(
     onTestAll: () -> Unit,
     onSelectFastest: () -> Unit,
     onShowStats: () -> Unit,
+    onRunCheck: () -> Unit,
+    onDismissCheck: () -> Unit,
+    selfCheckState: SelfCheckState,
     onShowQr: (String) -> Unit,
     onDismissQr: () -> Unit,
 ) {
@@ -77,27 +82,31 @@ fun MainScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(text = "SPP Client", style = typography.headlineSmall)
-            TextButton(onClick = onShowLogs) { Text("运行日志") }
+            Text(text = stringResource(R.string.app_name), style = typography.headlineSmall)
+            TextButton(onClick = onShowLogs) {
+                Text(stringResource(R.string.menu_logs))
+            }
         }
 
         GlobalState(vpnState)
 
         ToolsRow(
             testingPings = testingPings,
+            connected = vpnState is VpnState.Connected,
             onScan = onScan,
             onImport = onImport,
             onExport = onExport,
             onTestAll = onTestAll,
             onSelectFastest = onSelectFastest,
             onStats = onShowStats,
+            onCheck = onRunCheck,
             onSettings = onSettings,
         )
 
         Box(modifier = Modifier.weight(1f)) {
             if (profiles.isEmpty()) {
                 Text(
-                    text = "暂无配置，点下方按钮添加，或扫码 / 从文件导入。",
+                    text = stringResource(R.string.empty_profiles),
                     style = typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 40.dp),
@@ -131,24 +140,28 @@ fun MainScreen(
                 .padding(bottom = 12.dp)
                 .height(48.dp),
         ) {
-            Text("添加配置", style = typography.titleMedium)
+            Text(stringResource(R.string.action_add_profile), style = typography.titleMedium)
         }
     }
 
     if (qrProfile != null) {
         QrShareDialog(profile = qrProfile, onDismiss = onDismissQr)
     }
+
+    SelfCheckDialog(state = selfCheckState, onDismiss = onDismissCheck)
 }
 
 @Composable
 private fun ToolsRow(
     testingPings: Boolean,
+    connected: Boolean,
     onScan: () -> Unit,
     onImport: () -> Unit,
     onExport: () -> Unit,
     onTestAll: () -> Unit,
     onSelectFastest: () -> Unit,
     onStats: () -> Unit,
+    onCheck: () -> Unit,
     onSettings: () -> Unit,
 ) {
     Row(
@@ -157,32 +170,40 @@ private fun ToolsRow(
             .horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        ToolButton("扫码", onScan)
-        ToolButton("导入", onImport)
-        ToolButton("导出", onExport)
-        ToolButton(if (testingPings) "测延迟…" else "全部延迟", onTestAll)
-        ToolButton("最快", onSelectFastest)
-        ToolButton("统计", onStats)
-        ToolButton("设置", onSettings)
+        ToolButton(stringResource(R.string.action_scan), onScan)
+        ToolButton(stringResource(R.string.action_import), onImport)
+        ToolButton(stringResource(R.string.action_export), onExport)
+        ToolButton(
+            stringResource(
+                if (testingPings) R.string.action_testing else R.string.action_test_all,
+            ),
+            onTestAll,
+        )
+        ToolButton(stringResource(R.string.action_fastest), onSelectFastest)
+        ToolButton(stringResource(R.string.action_stats), onStats)
+        ToolButton(stringResource(R.string.action_check), onCheck, enabled = connected)
+        ToolButton(stringResource(R.string.action_settings), onSettings)
     }
 }
 
 @Composable
-private fun ToolButton(text: String, onClick: () -> Unit) {
+private fun ToolButton(text: String, onClick: () -> Unit, enabled: Boolean = true) {
     TextButton(
         onClick = onClick,
+        enabled = enabled,
         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
     ) { Text(text, style = typography.labelLarge) }
 }
 
 @Composable
 private fun GlobalState(state: VpnState) {
-    val (color, label) = when (state) {
-        VpnState.Disconnected -> StateGray to "未连接"
-        VpnState.Connecting -> StateAmber to "连接中…"
-        VpnState.Connected -> StateGreen to "已连接"
-        VpnState.Disconnecting -> StateAmber to "断开中…"
-        is VpnState.Error -> StateRed to "错误"
+    val (color, labelRes) = when (state) {
+        VpnState.Disconnected -> StateGray to R.string.state_disconnected
+        VpnState.Connecting -> StateAmber to R.string.state_connecting
+        VpnState.Connected -> StateGreen to R.string.state_connected
+        VpnState.Disconnecting -> StateAmber to R.string.state_disconnecting
+        VpnState.Paused -> StateAmber to R.string.state_paused
+        is VpnState.Error -> StateRed to R.string.state_error
     }
     Row(verticalAlignment = Alignment.CenterVertically) {
         Box(
@@ -191,7 +212,7 @@ private fun GlobalState(state: VpnState) {
                 .background(color, CircleShape),
         )
         Spacer(modifier = Modifier.width(8.dp))
-        Text(text = label, style = typography.bodyMedium)
+        Text(text = stringResource(labelRes), style = typography.bodyMedium)
         if (state is VpnState.Error && state.message.isNotBlank()) {
             Text(
                 text = "：${state.message}",
@@ -254,15 +275,19 @@ private fun ProfileItem(
             val tx = profile.txBytes + if (active) session.tx else 0
             val rx = profile.rxBytes + if (active) session.rx else 0
             Text(
-                text = "↑ ${Formatters.formatBytes(tx)}    ↓ ${Formatters.formatBytes(rx)}",
+                text = stringResource(
+                    R.string.format_traffic,
+                    Formatters.formatBytes(tx),
+                    Formatters.formatBytes(rx),
+                ),
                 style = typography.bodySmall,
             )
 
             Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                ItemButton("延迟", onTestPing)
-                ItemButton("二维码", onShowQr)
-                ItemButton("编辑", onEdit)
-                ItemButton("删除", onDelete, color = StateRed)
+                ItemButton(stringResource(R.string.action_ping), onTestPing)
+                ItemButton(stringResource(R.string.action_qr), onShowQr)
+                ItemButton(stringResource(R.string.action_edit), onEdit)
+                ItemButton(stringResource(R.string.action_delete), onDelete, color = StateRed)
             }
         }
     }
@@ -271,8 +296,9 @@ private fun ProfileItem(
 @Composable
 private fun PingLabel(pingMs: Int) {
     val (text, color) = when {
-        pingMs < 0 -> "未测" to StateGray
-        else -> "$pingMs ms" to if (pingMs < 200) StateGreen else StateRed
+        pingMs < 0 -> stringResource(R.string.ping_untested) to StateGray
+        else -> stringResource(R.string.ping_ms, pingMs) to
+            if (pingMs < 200) StateGreen else StateRed
     }
     Text(text = text, style = typography.labelMedium, color = color)
 }

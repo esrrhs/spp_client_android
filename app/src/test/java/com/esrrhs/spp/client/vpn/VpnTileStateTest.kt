@@ -15,6 +15,7 @@ class VpnTileStateTest {
     @Test
     fun terminalStates_renderInactiveTile() {
         assertEquals(VpnTileState.Tile.INACTIVE, VpnTileState.of(VpnState.Disconnected))
+        assertEquals(VpnTileState.Tile.INACTIVE, VpnTileState.of(VpnState.Paused))
         assertEquals(
             VpnTileState.Tile.INACTIVE,
             VpnTileState.of(VpnState.Error("boom")),

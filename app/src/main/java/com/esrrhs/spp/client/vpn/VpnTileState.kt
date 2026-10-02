@@ -15,6 +15,7 @@ object VpnTileState {
         VpnState.Connecting,
         VpnState.Disconnecting -> Tile.ACTIVE
         VpnState.Disconnected,
+        VpnState.Paused,
         is VpnState.Error -> Tile.INACTIVE
     }
 }

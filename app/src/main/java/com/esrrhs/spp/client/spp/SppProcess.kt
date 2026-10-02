@@ -1,6 +1,7 @@
 package com.esrrhs.spp.client.spp
 
 import android.content.Context
+import com.esrrhs.spp.client.R
 import java.io.File
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -42,7 +43,7 @@ class SppProcess(context: Context) {
     fun start(config: SppConfig): Int {
         val binary = File(appContext.applicationInfo.nativeLibraryDir, "libspp.so")
         if (!binary.exists() || !binary.canExecute()) {
-            throw SppException("缺少 libspp.so，请先运行 scripts/build_native.sh 再打包")
+            throw SppException(appContext.getString(R.string.error_missing_native))
         }
 
         val port = findFreeLoopbackPort()
@@ -101,12 +102,13 @@ class SppProcess(context: Context) {
             val alive = proc.isAlive
             val tail = synchronized(outputLines) { outputLines.joinToString("\n") }
             stop()
+            val detail = tail.ifBlank { appContext.getString(R.string.log_no_output) }
             throw SppException(
                 when {
                     // SOCKS 端口只在到 server 的会话（认证+加密）建立后才绑定
-                    alive -> "无法建立 SPP 会话（15s 超时），请检查 server 地址、key/encrypt 与网络：\n${tail.ifBlank { "无日志" }}"
-                    else -> "SPP 客户端进程提前退出：\n${tail.ifBlank { "无日志" }}"
-                }
+                    alive -> appContext.getString(R.string.error_spp_session, detail)
+                    else -> appContext.getString(R.string.error_spp_exited, detail)
+                },
             )
         }
         return port

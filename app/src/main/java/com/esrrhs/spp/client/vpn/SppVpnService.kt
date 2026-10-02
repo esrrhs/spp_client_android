@@ -19,6 +19,7 @@ import com.esrrhs.spp.client.spp.PerAppMode
 import com.esrrhs.spp.client.spp.Profile
 import com.esrrhs.spp.client.spp.SppException
 import com.esrrhs.spp.client.spp.SppProcess
+import com.esrrhs.spp.client.spp.ValidationError
 import com.esrrhs.spp.client.tun.HevTunnel
 import com.esrrhs.spp.client.util.Cidr6Routes
 import com.esrrhs.spp.client.util.CidrRoutes
@@ -51,6 +52,11 @@ class SppVpnService : VpnService() {
     private var sessionGeneration = 0
 
     private lateinit var networkWatchdog: NetworkWatchdog
+    private lateinit var trustedWifiMonitor: TrustedWifiMonitor
+
+    /** 设置快照，供网络回调即时判断可信规则。 */
+    @Volatile
+    private var cachedSettings = com.esrrhs.spp.client.data.AppSettings()
 
     /** 本次会话（含重连）所属配置及统计。 */
     private var activeProfileId: String? = null
@@ -69,6 +75,23 @@ class SppVpnService : VpnService() {
             if (id != null && VpnStateHolder.state.value is VpnState.Connected) {
                 reconnectJob = scope.launch { recoverTunnel(id) }
             }
+        }
+        trustedWifiMonitor = TrustedWifiMonitor(
+            context = applicationContext,
+            evaluate = { ssid ->
+                val s = cachedSettings
+                s.trustedWifiEnabled &&
+                    com.esrrhs.spp.client.util.TrustedWifi.isTrusted(ssid, s.trustedWifiSsids)
+            },
+            onTrustedChanged = { trusted ->
+                scope.launch {
+                    if (trusted) pauseForTrustedWifi() else resumeFromTrustedWifi()
+                }
+            },
+        )
+        // 缓存全局设置供回调使用
+        scope.launch {
+            SettingsRepository(this@SppVpnService).settings.collect { cachedSettings = it }
         }
     }
 
@@ -91,6 +114,7 @@ class SppVpnService : VpnService() {
     override fun onDestroy() {
         reconnectJob?.cancel()
         if (::networkWatchdog.isInitialized) networkWatchdog.stop()
+        if (::trustedWifiMonitor.isInitialized) trustedWifiMonitor.stop()
         runCatching { HevTunnel.stop() }
         tunInterface?.let { pfd -> runCatching { pfd.close() } }
         sppProcess?.stop()
@@ -138,7 +162,9 @@ class SppVpnService : VpnService() {
                 Log.e(TAG, "connect failed: ${e.message}")
                 stopDataPlaneAndCount()
                 persistSessionTraffic()
-                VpnStateHolder.set(VpnState.Error(e.message ?: "连接失败"))
+                VpnStateHolder.set(
+                    VpnState.Error(e.message ?: getString(R.string.error_connect_failed)),
+                )
                 finishService()
             }
         }
@@ -146,7 +172,7 @@ class SppVpnService : VpnService() {
 
     /** 建立一次完整数据面（spp → TUN → hev）；成功后状态为 Connected。 */
     private suspend fun establishSession(repository: ConfigRepository, profile: Profile) {
-        profile.validate()?.let { throw SppException(it) }
+        profile.validate()?.let { throw SppException(validationText(it)) }
         val config = profile.config
         activeProfileId = profile.id
 
@@ -164,6 +190,7 @@ class SppVpnService : VpnService() {
         val socksPort = spp.start(config)
         Log.i(TAG, "spp socks5 listening on 127.0.0.1:$socksPort")
         sppProcess = spp
+        ActiveSession.socksPort = socksPort
 
         // 2. 建立 TUN（含分应用 / 智能分流路由）
         val tun = buildTun(profile)
@@ -173,8 +200,13 @@ class SppVpnService : VpnService() {
 
         // 3. hev：getFd() 只传 int，PFD 所有权保留在本类
         val configFile = writeHevConfig(socksPort, config.enableIpv6)
-        if (!HevTunnel.start(configFile.absolutePath, tun.fd)) {
-            throw SppException("hev-socks5-tunnel 启动失败")
+        val hevStarted = try {
+            HevTunnel.start(configFile.absolutePath, tun.fd)
+        } catch (e: IllegalStateException) {
+            throw SppException(getString(R.string.error_hev_missing))
+        }
+        if (!hevStarted) {
+            throw SppException(getString(R.string.error_hev_start))
         }
         Log.i(TAG, "hev tunnel started")
 
@@ -188,11 +220,34 @@ class SppVpnService : VpnService() {
 
         // 4. 监视默认网络切换（WiFi↔蜂窝），切换后主动重建数据面
         networkWatchdog.start()
+        // 可信 WiFi：本次建链的网络作为基线，之后翻转才暂停/恢复
+        trustedWifiMonitor.start()
+    }
+
+    /** 接入可信 WiFi：结账数据面并进入暂停态（Service 保留，监听离开后恢复）。 */
+    private suspend fun pauseForTrustedWifi() {
+        lifecycleMutex.withLock {
+            if (VpnStateHolder.state.value !is VpnState.Connected) return
+            sessionGeneration++
+            stopDataPlaneAndCount()
+            persistSessionTraffic()
+            VpnStateHolder.set(VpnState.Paused)
+            updateNotification(getString(R.string.notif_paused_trusted))
+        }
+    }
+
+    /** 离开可信网络：从暂停态自动重连。 */
+    private fun resumeFromTrustedWifi() {
+        if (VpnStateHolder.state.value !is VpnState.Paused) return
+        startAsForeground(getString(R.string.notif_connecting))
+        VpnStateHolder.set(VpnState.Connecting)
+        scope.launch { connect() }
     }
 
     /**
      * 数据面丢失恢复：spp 意外退出或默认网络切换共用。
-     * 按设置自动重连（指数退避），否则报错停止。
+     * 按设置自动重连（指数退避）；开启故障切换时，当前配置尝试耗尽后
+     * 自动切到延迟最低的备用配置再试；否则报错停止。
      */
     private suspend fun recoverTunnel(profileId: String) {
         lifecycleMutex.withLock {
@@ -200,48 +255,73 @@ class SppVpnService : VpnService() {
             if (VpnStateHolder.state.value !is VpnState.Connected) return
             if (activeProfileId != profileId) return
 
-            val autoReconnect = runCatching {
-                SettingsRepository(this@SppVpnService).settings.first().autoReconnect
-            }.getOrDefault(false)
+            val settings = runCatching {
+                SettingsRepository(this@SppVpnService).settings.first()
+            }.getOrNull()
 
             // 主动停旧数据面（网络切换）前作废旧 spp 的退出回调，避免重复恢复
             sessionGeneration++
             stopDataPlaneAndCount()
 
-            if (!autoReconnect) {
+            if (settings?.autoReconnect != true) {
                 persistSessionTraffic()
                 VpnStateHolder.set(
-                    VpnState.Error("SPP 连接已断开，请检查网络后重连"),
+                    VpnState.Error(getString(R.string.error_tunnel_lost)),
                 )
                 finishService()
                 return
             }
 
-            VpnStateHolder.set(VpnState.Connecting)
-            updateNotification(getString(R.string.notif_reconnecting))
-            for (attempt in 1..ReconnectBackoff.MAX_ATTEMPTS) {
-                delay(ReconnectBackoff.delayMs(attempt))
-                try {
-                    val (repository, profile) = loadActiveProfile()
-                    // 选中项已变化或已非本配置：不再重连
-                    if (profile.id != profileId) {
-                        persistSessionTraffic()
-                        finishService()
-                        return
-                    }
-                    establishSession(repository, profile)
-                    return
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.w(TAG, "reconnect attempt $attempt failed: ${e.message}")
-                    stopDataPlaneAndCount()
+            // 候选：当前配置优先；开启故障切换时追加一个最优备用配置
+            val candidates = mutableListOf(profileId)
+            if (settings.failover) {
+                val repository = ConfigRepository(this)
+                val profiles = repository.profiles.first()
+                Failover.pickNext(profiles, profileId)?.let {
+                    candidates.add(it.id)
                 }
             }
+
+            VpnStateHolder.set(VpnState.Connecting)
+            for ((index, candidateId) in candidates.withIndex()) {
+                if (index > 0) {
+                    ConfigRepository(this).setActive(candidateId)
+                    Log.i(TAG, "failover to profile $candidateId")
+                    updateNotification(getString(R.string.notif_failover))
+                } else {
+                    updateNotification(getString(R.string.notif_reconnecting))
+                }
+                val attempts = if (index == 0) {
+                    ReconnectBackoff.MAX_ATTEMPTS
+                } else {
+                    FAILOVER_ATTEMPTS
+                }
+                if (tryEstablish(candidateId, attempts)) return
+            }
             persistSessionTraffic()
-            VpnStateHolder.set(VpnState.Error("多次重连失败，请检查网络或 Server"))
+            VpnStateHolder.set(VpnState.Error(getString(R.string.error_reconnect_failed)))
             finishService()
         }
+    }
+
+    /** 对指定配置按退避尝试建链若干次；成功返回 true，配置已不存在返回 false。 */
+    private suspend fun tryEstablish(profileId: String, attempts: Int): Boolean {
+        for (attempt in 1..attempts) {
+            delay(ReconnectBackoff.delayMs(attempt))
+            try {
+                val (repository, profile) = loadActiveProfile()
+                // 候选配置在重连期间被删除：跳过该候选
+                if (profile.id != profileId) return false
+                establishSession(repository, profile)
+                return true
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "reconnect attempt $attempt failed: ${e.message}")
+                stopDataPlaneAndCount()
+            }
+        }
+        return false
     }
 
     private suspend fun teardown(
@@ -249,6 +329,7 @@ class SppVpnService : VpnService() {
         notifyDisconnected: Boolean = false,
     ) {
         lifecycleMutex.withLock {
+            trustedWifiMonitor.stop()
             stopDataPlaneAndCount()
             persistSessionTraffic()
             when {
@@ -270,6 +351,7 @@ class SppVpnService : VpnService() {
         tunInterface = null
         sppProcess?.stop()
         sppProcess = null
+        ActiveSession.socksPort = null
         if (finalStats != null) {
             sessionTxTotal += ((finalStats.getOrNull(1) ?: 0L) - baselineTx).coerceAtLeast(0)
             sessionRxTotal += ((finalStats.getOrNull(3)  ?: 0L) - baselineRx).coerceAtLeast(0)
@@ -302,7 +384,7 @@ class SppVpnService : VpnService() {
         val activeId = repository.activeId.first()
         val profile = profiles.firstOrNull { it.id == activeId } ?: profiles.firstOrNull()
         return if (profile == null) {
-            throw SppException("请先添加配置")
+            throw SppException(getString(R.string.error_no_profile))
         } else {
             repository to profile
         }
@@ -391,6 +473,16 @@ class SppVpnService : VpnService() {
         return File(filesDir, "hev.yml").apply { writeText(yaml) }
     }
 
+    private fun validationText(error: ValidationError): String = getString(
+        when (error) {
+            ValidationError.NAME_REQUIRED -> R.string.err_name_required
+            ValidationError.APPS_REQUIRED -> R.string.err_apps_required
+            ValidationError.HOST_REQUIRED -> R.string.err_host_required
+            ValidationError.PORT_RANGE -> R.string.err_port_range
+            ValidationError.KEY_REQUIRED -> R.string.err_key_required
+        },
+    )
+
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
             CHANNEL_ID,
@@ -440,6 +532,9 @@ class SppVpnService : VpnService() {
         private const val CHANNEL_ID = "spp_vpn"
         private const val NOTIFICATION_ID = 1
         private const val TAG = "SppVpnService"
+
+        /** 故障切换到的备用配置尝试次数（少于首选，避免长时间不可用）。 */
+        private const val FAILOVER_ATTEMPTS = 3
 
         /** CN IPv6 段扩展到对齐 /26 块，使路由数适配 Binder parcel 上限。 */
         private const val CN_V6_EXPAND_PREFIX = 26

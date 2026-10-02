@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
@@ -17,6 +18,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.esrrhs.spp.client.R
 import com.esrrhs.spp.client.util.ProfileShare
 import com.esrrhs.spp.client.util.QrCodes
 import com.esrrhs.spp.client.spp.Profile
@@ -33,7 +35,7 @@ fun QrShareDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("分享配置 · ${profile.name}") },
+        title = { Text(stringResource(R.string.qr_title, profile.name)) },
         text = {
             Column(
                 modifier = Modifier.fillMaxWidth(),
@@ -41,11 +43,11 @@ fun QrShareDialog(
             ) {
                 Image(
                     bitmap = bitmap.asImageBitmap(),
-                    contentDescription = "QR code",
+                    contentDescription = stringResource(R.string.qr_content_description),
                     modifier = Modifier.size(260.dp),
                 )
                 Text(
-                    text = "用其它设备扫码添加，或点右侧发送文本",
+                    text = stringResource(R.string.qr_hint),
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.padding(top = 8.dp),
                 )
@@ -57,11 +59,13 @@ fun QrShareDialog(
                     type = "text/plain"
                     putExtra(Intent.EXTRA_TEXT, payload)
                 }
-                context.startActivity(Intent.createChooser(send, "分享配置"))
-            }) { Text("发送") }
+                context.startActivity(
+                    Intent.createChooser(send, context.getString(R.string.qr_share_chooser)),
+                )
+            }) { Text(stringResource(R.string.action_send)) }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("关闭") }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_close)) }
         },
     )
 }

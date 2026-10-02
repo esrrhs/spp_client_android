@@ -19,11 +19,11 @@ data class SppConfig(
     val serverAddr: String
         get() = "$serverHost:$serverPort"
 
-    /** 返回首个校验错误；null 表示合法。 */
-    fun validate(): String? = when {
-        serverHost.isBlank() -> "请填写服务器地址"
-        serverPort !in 1..65535 -> "端口需在 1~65535 之间"
-        key.isBlank() -> "请填写认证 Key"
+    /** 返回首个校验错误码；null 表示合法。 */
+    fun validate(): ValidationError? = when {
+        serverHost.isBlank() -> ValidationError.HOST_REQUIRED
+        serverPort !in 1..65535 -> ValidationError.PORT_RANGE
+        key.isBlank() -> ValidationError.KEY_REQUIRED
         else -> null
     }
 

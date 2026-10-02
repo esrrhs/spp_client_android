@@ -32,19 +32,22 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.esrrhs.spp.client.R
 import com.esrrhs.spp.client.spp.PerAppMode
 import com.esrrhs.spp.client.spp.Profile
 import com.esrrhs.spp.client.spp.SppConfig
+import com.esrrhs.spp.client.spp.ValidationError
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ProfileEditorScreen(
     initial: Profile,
     isNew: Boolean,
-    onSave: (Profile, (String?) -> Unit) -> Unit,
+    onSave: (Profile, (ValidationError?) -> Unit) -> Unit,
     onPickApps: (Set<String>) -> Unit,
     onBack: () -> Unit,
 ) {
@@ -53,11 +56,21 @@ fun ProfileEditorScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(if (isNew) "添加配置" else "编辑配置") },
-                navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
+                title = {
+                    Text(
+                        stringResource(
+                            if (isNew) R.string.editor_add_title else R.string.editor_edit_title,
+                        ),
+                    )
+                },
+                navigationIcon = {
+                    TextButton(onClick = onBack) {
+                        Text(stringResource(R.string.action_back))
+                    }
+                },
                 actions = {
                     TextButton(onClick = { onSave(profile) { error -> if (error == null) onBack() } }) {
-                        Text("保存")
+                        Text(stringResource(R.string.action_save))
                     }
                 },
             )
@@ -74,7 +87,7 @@ fun ProfileEditorScreen(
             OutlinedTextField(
                 value = profile.name,
                 onValueChange = { profile = profile.copy(name = it) },
-                label = { Text("配置名称") },
+                label = { Text(stringResource(R.string.field_name)) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -104,7 +117,7 @@ private fun PerAppSection(
     onChange: (Profile) -> Unit,
     onPickApps: (Set<String>) -> Unit,
 ) {
-    Text(text = "分应用代理", style = typography.titleMedium)
+    Text(text = stringResource(R.string.section_per_app), style = typography.titleMedium)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         PerAppMode.entries.forEach { mode ->
             FilterChip(
@@ -112,11 +125,13 @@ private fun PerAppSection(
                 onClick = { onChange(profile.copy(perAppMode = mode)) },
                 label = {
                     Text(
-                        when (mode) {
-                            PerAppMode.ALL -> "全部"
-                            PerAppMode.ALLOWED -> "仅选中"
-                            PerAppMode.DISALLOWED -> "排除选中"
-                        },
+                        stringResource(
+                            when (mode) {
+                                PerAppMode.ALL -> R.string.per_app_all
+                                PerAppMode.ALLOWED -> R.string.per_app_allowed
+                                PerAppMode.DISALLOWED -> R.string.per_app_disallowed
+                            },
+                        ),
                     )
                 },
             )
@@ -124,7 +139,7 @@ private fun PerAppSection(
     }
     if (profile.perAppMode != PerAppMode.ALL) {
         OutlinedButton(onClick = { onPickApps(profile.perAppPackages.toSet()) }) {
-            Text("选择应用（${profile.perAppPackages.size}）")
+            Text(stringResource(R.string.action_choose_apps, profile.perAppPackages.size))
         }
     }
 }
@@ -134,17 +149,17 @@ private fun SmartSplitSection(
     profile: Profile,
     onChange: (Profile) -> Unit,
 ) {
-    Text(text = "智能分流", style = typography.titleMedium)
+    Text(text = stringResource(R.string.section_smart_split), style = typography.titleMedium)
 
     SplitToggle(
-        title = "绕过局域网",
-        subtitle = "私有网段直连，其余走代理（含 IPv6 全球单播）",
+        title = stringResource(R.string.split_bypass_lan_title),
+        subtitle = stringResource(R.string.split_bypass_lan_subtitle),
         checked = profile.bypassLan,
         onCheckedChange = { v -> onChange(profile.copy(bypassLan = v)) },
     )
     SplitToggle(
-        title = "CN 直连（chnroute）",
-        subtitle = "中国大陆 IP 直连，其它地址走代理；数据来自 APNIC",
+        title = stringResource(R.string.split_bypass_cn_title),
+        subtitle = stringResource(R.string.split_bypass_cn_subtitle),
         checked = profile.bypassCn,
         onCheckedChange = { v -> onChange(profile.copy(bypassCn = v)) },
     )
@@ -181,7 +196,7 @@ fun ConnectionFields(
     OutlinedTextField(
         value = config.serverHost,
         onValueChange = { onChange(config.copy(serverHost = it)) },
-        label = { Text("服务器地址") },
+        label = { Text(stringResource(R.string.field_server_host)) },
         singleLine = true,
         modifier = Modifier.fillMaxWidth(),
     )
@@ -189,7 +204,7 @@ fun ConnectionFields(
     OutlinedTextField(
         value = config.serverPort.takeIf { it > 0 }?.toString() ?: "",
         onValueChange = { text -> onChange(config.copy(serverPort = text.toIntOrNull() ?: 0)) },
-        label = { Text("端口") },
+        label = { Text(stringResource(R.string.field_port)) },
         singleLine = true,
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
         modifier = Modifier.fillMaxWidth(),
@@ -203,7 +218,7 @@ fun ConnectionFields(
             value = config.proto,
             onValueChange = {},
             readOnly = true,
-            label = { Text("传输协议") },
+            label = { Text(stringResource(R.string.field_proto)) },
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = protoExpanded) },
             modifier = Modifier
                 .menuAnchor(MenuAnchorType.PrimaryNotEditable)
@@ -228,7 +243,7 @@ fun ConnectionFields(
     OutlinedTextField(
         value = config.key,
         onValueChange = { onChange(config.copy(key = it)) },
-        label = { Text("认证 Key") },
+        label = { Text(stringResource(R.string.field_key)) },
         singleLine = true,
         visualTransformation = PasswordVisualTransformation(),
         modifier = Modifier.fillMaxWidth(),
@@ -237,7 +252,7 @@ fun ConnectionFields(
     OutlinedTextField(
         value = config.encrypt,
         onValueChange = { onChange(config.copy(encrypt = it)) },
-        label = { Text("加密 Key（留空则不加密）") },
+        label = { Text(stringResource(R.string.field_encrypt)) },
         singleLine = true,
         visualTransformation = PasswordVisualTransformation(),
         modifier = Modifier.fillMaxWidth(),
@@ -246,7 +261,7 @@ fun ConnectionFields(
     OutlinedTextField(
         value = config.compress.toString(),
         onValueChange = { text -> onChange(config.copy(compress = text.toIntOrNull() ?: 0)) },
-        label = { Text("压缩阈值（0=关闭）") },
+        label = { Text(stringResource(R.string.field_compress)) },
         singleLine = true,
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
         modifier = Modifier.fillMaxWidth(),
@@ -257,9 +272,9 @@ fun ConnectionFields(
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         Column {
-            Text(text = "接管 IPv6 流量", style = typography.bodyLarge)
+            Text(text = stringResource(R.string.field_ipv6_title), style = typography.bodyLarge)
             Text(
-                text = "关闭则仅代理 IPv4（IPv6 可能直连）",
+                text = stringResource(R.string.field_ipv6_subtitle),
                 style = typography.bodySmall,
             )
         }
