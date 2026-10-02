@@ -1,41 +1,46 @@
 package com.esrrhs.spp.client.ui.theme
 
 import android.os.Build
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 
-private val BrandBlue = Color(0xFF1565C0)
-
-private val LightColors = lightColorScheme(
-    primary = BrandBlue,
-    secondary = Color(0xFF00838F),
-)
-
-private val DarkColors = darkColorScheme(
+// 固定黑色系：AMOLED 纯黑背景 + 近黑层级表面
+private val BlackColors = darkColorScheme(
     primary = Color(0xFF90CAF9),
     secondary = Color(0xFF80CBC4),
+    background = Color.Black,
+    surface = Color.Black,
+    surfaceContainerLowest = Color(0xFF000000),
+    surfaceContainerLow = Color(0xFF0A0A0A),
+    surfaceContainer = Color(0xFF111111),
+    surfaceContainerHigh = Color(0xFF181818),
+    surfaceContainerHighest = Color(0xFF1F1F1F),
 )
 
 @Composable
 fun SppClientTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
-    // Android 12+ 跟随系统壁纸的 Material You 动态配色；低版本回退品牌色
+    // App 固定深色黑色系，忽略系统明暗设置
     dynamicColor: Boolean = true,
     content: @Composable () -> Unit,
 ) {
     val context = LocalContext.current
-    val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        darkTheme -> DarkColors
-        else -> LightColors
+    // Android 12+ 保留壁纸动态取色，但强制暗色并把表面覆盖为黑色层级
+    val colorScheme = if (dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        dynamicDarkColorScheme(context).copy(
+            background = BlackColors.background,
+            surface = BlackColors.surface,
+            surfaceContainerLowest = BlackColors.surfaceContainerLowest,
+            surfaceContainerLow = BlackColors.surfaceContainerLow,
+            surfaceContainer = BlackColors.surfaceContainer,
+            surfaceContainerHigh = BlackColors.surfaceContainerHigh,
+            surfaceContainerHighest = BlackColors.surfaceContainerHighest,
+        )
+    } else {
+        BlackColors
     }
     MaterialTheme(
         colorScheme = colorScheme,

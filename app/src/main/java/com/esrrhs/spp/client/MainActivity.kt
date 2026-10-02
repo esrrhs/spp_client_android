@@ -212,6 +212,7 @@ class MainActivity : ComponentActivity() {
                         testingPings = testingPings,
                         qrProfile = profiles.firstOrNull { it.id == qrId },
                         onProfileClick = ::prepareConnectOrDisconnect,
+                        onSelectProfile = viewModel::selectProfile,
                         onEdit = { id ->
                             profiles.firstOrNull { it.id == id }?.let {
                                 draft = it

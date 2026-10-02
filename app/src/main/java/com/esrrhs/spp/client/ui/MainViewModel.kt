@@ -137,6 +137,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** 仅切换选中配置，不自动连接（Shadowsocks 风格：选完再按大圆钮）。 */
+    fun selectProfile(id: String) {
+        viewModelScope.launch { repository.setActive(id) }
+    }
+
     fun saveProfile(profile: Profile, onResult: (ValidationError?) -> Unit) {
         viewModelScope.launch {
             // 新建配置套用全局默认「绕过局域网」

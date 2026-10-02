@@ -23,8 +23,8 @@
     <string name="error_hev_missing">libhev-socks5-tunnel.so is missing. Run scripts/build_native.sh before packaging.</string>
     <string name="error_rule_proxy">Failed to start the domain rule proxy</string>
     <string name="setting_domain_direct_title">Direct domain rules</string>
-    <string name="setting_domain_direct_subtitle">Matching domains (including subdomains) bypass SPP and connect directly; the rest is proxied. UDP/IP traffic is unaffected and stays proxied</string>
-    <string name="domain_rules_hint">One domain per line, e.g. baidu.com; lines starting with # are comments</string>
+    <string name="setting_domain_direct_subtitle">~110k built-in mainland China domains (dnsmasq-china-list, including subdomains) go direct; everything else is proxied. Add your own domains below. UDP/IP traffic stays proxied</string>
+    <string name="domain_rules_hint">Extra direct domains, one per line, e.g. baidu.com; lines starting with # are comments</string>
     <string name="error_no_profile">Please add a profile first</string>
     <string name="error_connect_failed">Connection failed</string>
     <string name="error_tunnel_lost">SPP connection lost. Check your network and reconnect.</string>
@@ -82,6 +82,8 @@
     <string name="state_paused">Paused (trusted network)</string>
     <string name="state_error">Error</string>
     <string name="action_add_profile">Add profile</string>
+    <string name="empty_profiles_short">No profile selected</string>
+    <string name="sheet_choose_profile">Choose profile</string>
     <string name="ping_untested">Not tested</string>
     <string name="ping_ms">%1$d ms</string>
     <string name="action_ping">Ping</string>
