@@ -2,7 +2,7 @@ import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
+    // AGP 9 内置 Kotlin（com.android.application 自带），不再应用 kotlin.android
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
 }
@@ -15,12 +15,14 @@ val keystoreProperties = Properties().apply {
 
 android {
     namespace = "com.esrrhs.spp.client"
-    compileSdk = 35
+    compileSdk = 37
+    // Android 16+ QPR 次版本 SDK（最新 AndroidX 要求 compileSdk 37.2）
+    compileSdkMinor = 2
 
     defaultConfig {
         applicationId = "com.esrrhs.spp.client"
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 37
         versionCode = 1
         versionName = "0.1.0"
 
@@ -68,12 +70,15 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
-    }
-
     buildFeatures {
         compose = true
+    }
+}
+
+// AGP 9 内置 Kotlin：jvmTarget 通过 Kotlin DSL 设置
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
 
