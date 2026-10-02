@@ -47,6 +47,11 @@ class SppVpnService : VpnService() {
     private var sppProcess: SppProcess? = null
     private var tunInterface: ParcelFileDescriptor? = null
 
+    /** 每次成功建会话自增，用于让旧 spp 的意外退出回调失效。 */
+    private var sessionGeneration = 0
+
+    private lateinit var networkWatchdog: NetworkWatchdog
+
     /** 本次会话（含重连）所属配置及统计。 */
     private var activeProfileId: String? = null
     private var baselineTx = 0L
@@ -59,6 +64,12 @@ class SppVpnService : VpnService() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        networkWatchdog = NetworkWatchdog(applicationContext) {
+            val id = activeProfileId
+            if (id != null && VpnStateHolder.state.value is VpnState.Connected) {
+                reconnectJob = scope.launch { recoverTunnel(id) }
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -79,6 +90,7 @@ class SppVpnService : VpnService() {
 
     override fun onDestroy() {
         reconnectJob?.cancel()
+        if (::networkWatchdog.isInitialized) networkWatchdog.stop()
         runCatching { HevTunnel.stop() }
         tunInterface?.let { pfd -> runCatching { pfd.close() } }
         sppProcess?.stop()
@@ -139,12 +151,14 @@ class SppVpnService : VpnService() {
         activeProfileId = profile.id
 
         // 1. 拉起本地 SOCKS5
+        val generation = ++sessionGeneration
         val spp = SppProcess(this)
         spp.onUnexpectedExit = {
-            if (VpnStateHolder.state.value is VpnState.Connected &&
+            if (generation == sessionGeneration &&
+                VpnStateHolder.state.value is VpnState.Connected &&
                 activeProfileId == profile.id
             ) {
-                scope.launch { handleTunnelLost(profile.id) }
+                reconnectJob = scope.launch { recoverTunnel(profile.id) }
             }
         }
         val socksPort = spp.start(config)
@@ -171,16 +185,27 @@ class SppVpnService : VpnService() {
 
         updateNotification(getString(R.string.notif_connected, config.serverAddr))
         VpnStateHolder.set(VpnState.Connected)
+
+        // 4. 监视默认网络切换（WiFi↔蜂窝），切换后主动重建数据面
+        networkWatchdog.start()
     }
 
-    /** spp 意外退出：按设置自动重连，否则报错停止。 */
-    private suspend fun handleTunnelLost(profileId: String) {
+    /**
+     * 数据面丢失恢复：spp 意外退出或默认网络切换共用。
+     * 按设置自动重连（指数退避），否则报错停止。
+     */
+    private suspend fun recoverTunnel(profileId: String) {
         lifecycleMutex.withLock {
+            // 可能在等锁期间已被用户断开 / 已被其他恢复流程处理
+            if (VpnStateHolder.state.value !is VpnState.Connected) return
+            if (activeProfileId != profileId) return
+
             val autoReconnect = runCatching {
                 SettingsRepository(this@SppVpnService).settings.first().autoReconnect
             }.getOrDefault(false)
 
-            // 先把当前数据面计数结账
+            // 主动停旧数据面（网络切换）前作废旧 spp 的退出回调，避免重复恢复
+            sessionGeneration++
             stopDataPlaneAndCount()
 
             if (!autoReconnect) {
@@ -194,8 +219,8 @@ class SppVpnService : VpnService() {
 
             VpnStateHolder.set(VpnState.Connecting)
             updateNotification(getString(R.string.notif_reconnecting))
-            for (attempt in 1..MAX_RECONNECT_ATTEMPTS) {
-                delay(backoffMs(attempt))
+            for (attempt in 1..ReconnectBackoff.MAX_ATTEMPTS) {
+                delay(ReconnectBackoff.delayMs(attempt))
                 try {
                     val (repository, profile) = loadActiveProfile()
                     // 选中项已变化或已非本配置：不再重连
@@ -238,6 +263,7 @@ class SppVpnService : VpnService() {
 
     /** 停数据面并把本段字节计入会话累计。 */
     private fun stopDataPlaneAndCount() {
+        if (::networkWatchdog.isInitialized) networkWatchdog.stop()
         val finalStats = HevTunnel.stats()
         runCatching { HevTunnel.stop() }
         tunInterface?.let { pfd -> runCatching { pfd.close() } }
@@ -365,9 +391,6 @@ class SppVpnService : VpnService() {
         return File(filesDir, "hev.yml").apply { writeText(yaml) }
     }
 
-    private fun backoffMs(attempt: Int): Long =
-        (1000L shl (attempt - 1).coerceAtMost(4))
-
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
             CHANNEL_ID,
@@ -417,7 +440,6 @@ class SppVpnService : VpnService() {
         private const val CHANNEL_ID = "spp_vpn"
         private const val NOTIFICATION_ID = 1
         private const val TAG = "SppVpnService"
-        private const val MAX_RECONNECT_ATTEMPTS = 5
 
         /** CN IPv6 段扩展到对齐 /26 块，使路由数适配 Binder parcel 上限。 */
         private const val CN_V6_EXPAND_PREFIX = 26

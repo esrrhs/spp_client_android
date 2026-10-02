@@ -61,6 +61,7 @@ fun MainScreen(
     onTestPing: (String) -> Unit,
     onTestAll: () -> Unit,
     onSelectFastest: () -> Unit,
+    onShowStats: () -> Unit,
     onShowQr: (String) -> Unit,
     onDismissQr: () -> Unit,
 ) {
@@ -89,6 +90,7 @@ fun MainScreen(
             onExport = onExport,
             onTestAll = onTestAll,
             onSelectFastest = onSelectFastest,
+            onStats = onShowStats,
             onSettings = onSettings,
         )
 
@@ -146,6 +148,7 @@ private fun ToolsRow(
     onExport: () -> Unit,
     onTestAll: () -> Unit,
     onSelectFastest: () -> Unit,
+    onStats: () -> Unit,
     onSettings: () -> Unit,
 ) {
     Row(
@@ -159,6 +162,7 @@ private fun ToolsRow(
         ToolButton("导出", onExport)
         ToolButton(if (testingPings) "测延迟…" else "全部延迟", onTestAll)
         ToolButton("最快", onSelectFastest)
+        ToolButton("统计", onStats)
         ToolButton("设置", onSettings)
     }
 }

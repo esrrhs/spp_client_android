@@ -8,4 +8,6 @@
     <string name="notif_disconnecting">正在断开…</string>
     <string name="notif_reconnecting">连接已断开，正在重连…</string>
     <string name="error_establish">无法建立 VPN 接口（establish 返回 null，请重试或检查系统 VPN 设置）</string>
+
+    <string name="tile_label">SPP VPN</string>
 </resources>
