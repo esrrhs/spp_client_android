@@ -177,24 +177,30 @@ class SppVpnService : VpnService() {
         val config = profile.config
         activeProfileId = profile.id
 
-        // 1. 拉起本地 SOCKS5
+        // 1. 拉起上游。SPP 在本机起 socks5_client；SOCKS5 直接连远端代理。
         val generation = ++sessionGeneration
-        val spp = SppProcess(this)
-        spp.onUnexpectedExit = {
-            if (generation == sessionGeneration &&
-                VpnStateHolder.state.value is VpnState.Connected &&
-                activeProfileId == profile.id
-            ) {
-                reconnectJob = scope.launch { recoverTunnel(profile.id) }
+        val socksPort = if (config.isSocks5) {
+            Log.i(TAG, "socks5 upstream ${config.serverAddr}")
+            null
+        } else {
+            val spp = SppProcess(this)
+            spp.onUnexpectedExit = {
+                if (generation == sessionGeneration &&
+                    VpnStateHolder.state.value is VpnState.Connected &&
+                    activeProfileId == profile.id
+                ) {
+                    reconnectJob = scope.launch { recoverTunnel(profile.id) }
+                }
             }
+            val port = spp.start(config)
+            Log.i(TAG, "spp socks5 listening on 127.0.0.1:$port")
+            sppProcess = spp
+            port
         }
-        val socksPort = spp.start(config)
-        Log.i(TAG, "spp socks5 listening on 127.0.0.1:$socksPort")
-        sppProcess = spp
-        ActiveSession.socksPort = socksPort
 
-        // 1b. 域名直连规则：hev 先接本地分流器，再由其转发 socks5_client
+        // 1b. 域名直连规则：hev 先接本地分流器，再由其转发上游
         //     生效集合 = 内置大陆域名表 + 用户自定义规则
+        //     SOCKS5 模式必须经过分流器，才能在这里完成用户名密码认证。
         val directRules: Set<String> = if (cachedSettings.domainDirectEnabled) {
             LinkedHashSet<String>(
                 com.esrrhs.spp.client.util.BundledDirectDomains.load(this),
@@ -207,15 +213,28 @@ class SppVpnService : VpnService() {
         } else {
             emptySet()
         }
-        val hevSocksPort = if (cachedSettings.domainDirectEnabled) {
-            Log.i(TAG, "domain direct rules: ${directRules.size} domains")
-            val server = com.esrrhs.spp.client.proxy.RuleSocksServer(socksPort, directRules)
+        val hevSocksPort = if (config.isSocks5 || cachedSettings.domainDirectEnabled) {
+            if (cachedSettings.domainDirectEnabled) {
+                Log.i(TAG, "domain direct rules: ${directRules.size} domains")
+            }
+            val upstream = if (config.isSocks5) {
+                com.esrrhs.spp.client.proxy.SocksUpstream(
+                    host = config.serverHost,
+                    port = config.serverPort,
+                    username = config.username,
+                    password = config.password,
+                )
+            } else {
+                com.esrrhs.spp.client.proxy.SocksUpstream("127.0.0.1", socksPort!!)
+            }
+            val server = com.esrrhs.spp.client.proxy.RuleSocksServer(upstream, directRules)
             server.start()
             ruleServer = server
             server.port ?: throw SppException(getString(R.string.error_rule_proxy))
         } else {
-            socksPort
+            socksPort!!
         }
+        ActiveSession.socksPort = hevSocksPort
 
         // 2. 建立 TUN（含分应用 / 智能分流路由）
         val tun = buildTun(profile)

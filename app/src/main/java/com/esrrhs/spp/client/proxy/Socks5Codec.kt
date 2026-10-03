@@ -31,7 +31,41 @@ object Socks5Codec {
         val raw: ByteArray,
     )
 
-    fun greeting(): ByteArray = byteArrayOf(VER, 0x01, 0x00)
+    const val METHOD_NO_AUTH: Byte = 0x00
+    const val METHOD_USERPASS: Byte = 0x02
+
+    fun greeting(): ByteArray = byteArrayOf(VER, 0x01, METHOD_NO_AUTH)
+
+    /**
+     * 作为 SOCKS5 客户端完成方法协商；[username] 非空时走 RFC 1929 用户名密码。
+     * 成功返回 true。用户名或密码超过 255 字节视为失败。
+     */
+    fun authenticateClient(
+        input: DataInputStream,
+        out: OutputStream,
+        username: String,
+        password: String,
+    ): Boolean {
+        val user = username.toByteArray(Charsets.UTF_8)
+        val pass = password.toByteArray(Charsets.UTF_8)
+        val useAuth = user.isNotEmpty()
+        if (useAuth && (user.size > 255 || pass.size > 255)) return false
+        out.write(
+            if (useAuth) byteArrayOf(VER, 0x01, METHOD_USERPASS)
+            else byteArrayOf(VER, 0x01, METHOD_NO_AUTH),
+        )
+        out.flush()
+        if (input.readUnsignedByte() != 0x05) return false
+        val method = input.readUnsignedByte()
+        if (!useAuth) return method == METHOD_NO_AUTH.toInt()
+        if (method != METHOD_USERPASS.toInt()) return false
+        out.write(byteArrayOf(0x01, user.size.toByte()))
+        out.write(user)
+        out.write(byteArrayOf(pass.size.toByte()))
+        out.write(pass)
+        out.flush()
+        return input.readUnsignedByte() == 0x01 && input.readUnsignedByte() == 0x00
+    }
 
     /** 读取服务端侧的方法协商，仅接受 NO-AUTH；不支持时回复 0xFF 并返回 false。 */
     fun acceptMethod(input: DataInputStream, out: OutputStream): Boolean {
@@ -150,8 +184,13 @@ object Socks5Codec {
                 String(b, Charsets.US_ASCII)
             }
             0x04 -> {
-                val b = ByteArray(16); input.readFully(b)
-                b.joinToString(":") { String.format("%02x%02x", b[0], b[1]) }
+                val b = ByteArray(16)
+                input.readFully(b)
+                (0 until 8).joinToString(":") { i ->
+                    val v = ((b[i * 2].toInt() and 0xFF) shl 8) or
+                        (b[i * 2 + 1].toInt() and 0xFF)
+                    "%x".format(v)
+                }
             }
             else -> return null
         }

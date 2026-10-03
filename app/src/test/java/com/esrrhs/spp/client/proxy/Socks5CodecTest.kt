@@ -2,7 +2,12 @@ package com.esrrhs.spp.client.proxy
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
 
 class Socks5CodecTest {
 
@@ -53,6 +58,50 @@ class Socks5CodecTest {
         assertEquals(0x01.toByte(), bytes[15])
         // 中间全 0
         for (i in 4..13) assertEquals(0.toByte(), bytes[i])
+    }
+
+    @Test
+    fun readReply_parsesIpv6BindAddress() {
+        val raw = byteArrayOf(5, 0, 0, 4) +
+            byteArrayOf(0x20, 0x01, 0x0d, 0xb8.toByte(), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1) +
+            byteArrayOf(0x01, 0xBB.toByte())
+        val reply = Socks5Codec.readReply(DataInputStream(ByteArrayInputStream(raw)))
+        assertEquals("2001:db8:0:0:0:0:0:1", reply?.first)
+        assertEquals(443, reply?.second)
+    }
+
+    @Test
+    fun authenticateClient_userPassRoundTrip() {
+        val serverIn = ByteArrayOutputStream()
+        // server script: method 0x02, then auth status 0
+        val fromServer = ByteArrayInputStream(byteArrayOf(0x05, 0x02, 0x01, 0x00))
+        val ok = Socks5Codec.authenticateClient(
+            DataInputStream(fromServer),
+            serverIn,
+            "esrrhs",
+            "secret",
+        )
+        assertTrue(ok)
+        val sent = serverIn.toByteArray()
+        assertEquals(0x05.toByte(), sent[0])
+        assertEquals(0x02.toByte(), sent[2])
+        // 方法协商 3 字节后是 RFC 1929：VER ULEN user PLEN pass
+        assertEquals(0x01.toByte(), sent[3])
+        assertEquals(6, sent[4].toInt())
+        assertEquals("esrrhs", sent.copyOfRange(5, 11).toString(Charsets.UTF_8))
+    }
+
+    @Test
+    fun authenticateClient_rejectsOversizedUser() {
+        val out = ByteArrayOutputStream()
+        val ok = Socks5Codec.authenticateClient(
+            DataInputStream(ByteArrayInputStream(byteArrayOf())),
+            out,
+            "a".repeat(256),
+            "x",
+        )
+        assertFalse(ok)
+        assertEquals(0, out.size())
     }
 
     @Test

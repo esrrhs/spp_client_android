@@ -277,6 +277,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 VpnStateHolder.state.value is VpnState.Connected && activePort != null
             if (isActive) {
                 SocksProbe.measure(activePort!!, samples = 1, timeoutMs = PING_TIMEOUT_MS)
+            } else if (profile.config.isSocks5) {
+                SocksProbe.measureRemote(
+                    profile.config.serverHost,
+                    profile.config.serverPort,
+                    profile.config.username,
+                    profile.config.password,
+                    samples = 1,
+                    timeoutMs = PING_TIMEOUT_MS,
+                )
             } else {
                 var proc: SppProcess? = null
                 try {
@@ -301,7 +310,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 导入扫码得到的配置。 */
     fun importScanned(profile: Profile) {
-        viewModelScope.launch { repository.importProfiles(listOf(profile)) }
+        viewModelScope.launch {
+            repository.importProfiles(listOf(profile))
+            val stored = repository.profiles.first()
+            val match = stored.lastOrNull {
+                it.name == profile.name && it.config.serverAddr == profile.config.serverAddr
+            }
+            if (match != null) repository.setActive(match.id)
+        }
     }
 
     suspend fun importProfiles(list: List<Profile>) = repository.importProfiles(list)

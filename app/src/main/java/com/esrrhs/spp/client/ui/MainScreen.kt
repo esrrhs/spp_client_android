@@ -419,7 +419,7 @@ private fun ProfileSelector(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = profile?.let { "${it.config.proto}  ${it.config.serverAddr}" } ?: "",
+                    text = profile?.let { "${it.config.displayProto}  ${it.config.serverAddr}" } ?: "",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,

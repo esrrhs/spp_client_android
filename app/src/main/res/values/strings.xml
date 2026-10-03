@@ -149,6 +149,11 @@
     <string name="split_bypass_lan_subtitle">私有网段直连，其余走代理（含 IPv6 全球单播）</string>
     <string name="split_bypass_cn_title">CN 直连（chnroute）</string>
     <string name="split_bypass_cn_subtitle">中国大陆 IP 直连，其它地址走代理；数据来自 APNIC</string>
+    <string name="field_kind">代理类型</string>
+    <string name="kind_spp">SPP</string>
+    <string name="kind_socks5">SOCKS5</string>
+    <string name="field_username">用户名（留空则不认证）</string>
+    <string name="field_password">密码</string>
     <string name="field_server_host">服务器地址</string>
     <string name="field_port">端口</string>
     <string name="field_proto">传输协议</string>

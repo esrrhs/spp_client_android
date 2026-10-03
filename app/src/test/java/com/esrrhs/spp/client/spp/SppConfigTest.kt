@@ -64,6 +64,20 @@ class SppConfigTest {
     }
 
     @Test
+    fun socks5_doesNotRequireKey() {
+        val config = SppConfig(
+            serverHost = "proxy.example",
+            serverPort = 1080,
+            kind = SppConfig.KIND_SOCKS5,
+            username = "user",
+            password = "secret",
+        )
+        assertNull(config.validate())
+        assertTrue(config.isSocks5)
+        assertEquals("socks5", config.displayProto)
+    }
+
+    @Test
     fun protos_excludeRootOnlyRicmp() {
         assertTrue(SppConfig.PROTOS.contains("tcp"))
         assertTrue(SppConfig.PROTOS.contains("quic"))

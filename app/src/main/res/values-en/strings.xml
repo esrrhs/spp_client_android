@@ -149,6 +149,11 @@
     <string name="split_bypass_lan_subtitle">Private ranges go direct, everything else is proxied (including IPv6 global unicast)</string>
     <string name="split_bypass_cn_title">Direct for CN (chnroute)</string>
     <string name="split_bypass_cn_subtitle">Mainland China IPs go direct; other addresses are proxied. Data from APNIC</string>
+    <string name="field_kind">Proxy type</string>
+    <string name="kind_spp">SPP</string>
+    <string name="kind_socks5">SOCKS5</string>
+    <string name="field_username">Username (empty = no auth)</string>
+    <string name="field_password">Password</string>
     <string name="field_server_host">Server address</string>
     <string name="field_port">Port</string>
     <string name="field_proto">Transport protocol</string>
