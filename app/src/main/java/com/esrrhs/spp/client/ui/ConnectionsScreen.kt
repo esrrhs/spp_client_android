@@ -16,7 +16,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Scaffold
@@ -44,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.graphics.drawable.toBitmap
 import com.esrrhs.spp.client.R
+import com.esrrhs.spp.client.spp.Profile
 import com.esrrhs.spp.client.util.AppConnectionGroup
 import com.esrrhs.spp.client.util.Formatters
 import com.esrrhs.spp.client.util.LiveConnection
@@ -59,6 +63,7 @@ import java.util.Locale
 fun ConnectionsScreen(
     groups: List<AppConnectionGroup>,
     vpnState: VpnState,
+    activeProfile: Profile?,
     onBack: () -> Unit,
 ) {
     // 每秒刷新一次，让「已连接时长」走动
@@ -88,10 +93,6 @@ fun ConnectionsScreen(
                 text = stringResource(R.string.conn_disconnected_hint),
                 modifier = Modifier.padding(innerPadding),
             )
-            groups.isEmpty() -> EmptyHint(
-                text = stringResource(R.string.conn_empty),
-                modifier = Modifier.padding(innerPadding),
-            )
             else -> LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
@@ -100,6 +101,19 @@ fun ConnectionsScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 12.dp),
             ) {
+                item {
+                    ProxyBanner(activeProfile)
+                }
+                if (groups.isEmpty()) {
+                    item {
+                        Text(
+                            text = stringResource(R.string.conn_empty),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(32.dp),
+                        )
+                    }
+                }
                 items(groups, key = { it.uid }) { group ->
                     AppConnectionCard(group, nowMs)
                 }
@@ -107,6 +121,42 @@ fun ConnectionsScreen(
         }
     }
 }
+
+/** 当前活动代理（隧道出口）信息条。 */
+@Composable
+private fun ProxyBanner(profile: Profile?) {
+    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Filled.VpnKey,
+                contentDescription = null,
+                tint = SsGreenBadge,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.size(8.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = stringResource(R.string.conn_proxy_label),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = profile?.let { "${it.name} · ${it.config.proto} ${it.config.serverAddr}" }
+                        ?: stringResource(R.string.conn_proxy_none),
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+private val SsGreenBadge = androidx.compose.ui.graphics.Color(0xFF5FB878)
 
 @Composable
 private fun EmptyHint(text: String, modifier: Modifier = Modifier) {

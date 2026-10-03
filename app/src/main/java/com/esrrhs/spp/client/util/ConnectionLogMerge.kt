@@ -44,6 +44,8 @@ object ConnectionLogMerge {
         rows: List<HistoryRow>,
         nowMs: Long,
         finder: ConnectEventFinder,
+        proxyName: String? = null,
+        proxyServer: String? = null,
     ): Tick {
         val nextActive = LinkedHashMap<String, ConnectionLogEntry>(state.active.size + rows.size)
         val finished = ArrayList<ConnectionLogEntry>()
@@ -52,7 +54,7 @@ object ConnectionLogMerge {
         for (row in rows) {
             rowKeys.add(row.key)
             val existing = state.active[row.key]
-            val entry = mergeRow(existing, row, finder)
+            val entry = mergeRow(existing, row, finder, proxyName, proxyServer)
             nextActive[row.key] = entry
         }
 
@@ -71,6 +73,8 @@ object ConnectionLogMerge {
         existing: ConnectionLogEntry?,
         row: HistoryRow,
         finder: ConnectEventFinder,
+        proxyName: String?,
+        proxyServer: String?,
     ): ConnectionLogEntry {
         val startMs = existing?.startMs ?: row.createdMs
         val event = finder.find(row.domain ?: row.remoteIp, row.remotePort, startMs - EVENT_LOOKBACK_MS)
@@ -102,6 +106,9 @@ object ConnectionLogMerge {
             label = row.label,
             domain = row.domain ?: existing?.domain,
             route = route,
+            // 仅代理流记录所属配置；直连流置空。故障切换到另一配置时随当前采样刷新
+            proxyName = if (route == ROUTE_PROXY) proxyName else null,
+            proxyServer = if (route == ROUTE_PROXY) proxyServer else null,
             result = result,
             reason = reason,
             connectMs = connectMs,

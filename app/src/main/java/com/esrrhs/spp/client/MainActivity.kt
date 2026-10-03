@@ -132,6 +132,8 @@ class MainActivity : ComponentActivity() {
         setContent {
             SppClientTheme {
                 var screen by rememberSaveable { mutableStateOf("list") }
+                // 配置弹窗开关提升到 Activity：进入统计/编辑等页再返回时弹窗仍在
+                var sheetOpen by rememberSaveable { mutableStateOf(false) }
                 // 编辑中的草稿提升到 Activity，供 App 勾选器返回后保留
                 var draft by remember { mutableStateOf(Profile()) }
                 var editorIsNew by rememberSaveable { mutableStateOf(true) }
@@ -164,6 +166,7 @@ class MainActivity : ComponentActivity() {
                     "connections" -> ConnectionsScreen(
                         groups = connections,
                         vpnState = vpnState,
+                        activeProfile = profiles.firstOrNull { it.id == activeId },
                         onBack = { screen = "list" },
                     )
 
@@ -225,6 +228,8 @@ class MainActivity : ComponentActivity() {
                         testingPings = testingPings,
                         testingPingId = testingPingId,
                         qrProfile = profiles.firstOrNull { it.id == qrId },
+                        sheetOpen = sheetOpen,
+                        onSheetOpenChange = { sheetOpen = it },
                         onProfileClick = ::prepareConnectOrDisconnect,
                         onSelectProfile = viewModel::selectProfile,
                         onEdit = { id ->

@@ -60,7 +60,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -76,7 +75,6 @@ import com.esrrhs.spp.client.R
 import com.esrrhs.spp.client.spp.Profile
 import com.esrrhs.spp.client.util.Formatters
 import com.esrrhs.spp.client.vpn.VpnState
-import kotlinx.coroutines.launch
 
 // Shadowsocks 风格的状态色
 private val SsGreen = Color(0xFF5FB878)
@@ -95,6 +93,8 @@ fun MainScreen(
     testingPings: Boolean,
     testingPingId: String?,
     qrProfile: Profile?,
+    sheetOpen: Boolean,
+    onSheetOpenChange: (Boolean) -> Unit,
     onProfileClick: (String) -> Unit,
     onSelectProfile: (String) -> Unit,
     onEdit: (String) -> Unit,
@@ -120,7 +120,6 @@ fun MainScreen(
     onDismissQr: () -> Unit,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
-    var sheetOpen by remember { mutableStateOf(false) }
     val activeProfile = profiles.firstOrNull { it.id == activeId } ?: profiles.firstOrNull()
     val connected = vpnState is VpnState.Connected
     val busy = vpnState is VpnState.Connecting || vpnState is VpnState.Disconnecting
@@ -160,6 +159,7 @@ fun MainScreen(
                             onExport = onExport,
                             onTestAll = onTestAll,
                             onFastest = onSelectFastest,
+                            onConnections = onShowConnections,
                             onLogs = onShowLogs,
                             onHistory = onShowHistory,
                         )
@@ -195,7 +195,7 @@ fun MainScreen(
             ProfileSelector(
                 profile = activeProfile,
                 connected = connected,
-                onClick = { sheetOpen = true },
+                onClick = { onSheetOpenChange(true) },
             )
 
             Spacer(Modifier.height(16.dp))
@@ -245,7 +245,7 @@ fun MainScreen(
             activeId = activeProfile?.id,
             connected = connected,
             testingPingId = testingPingId,
-            onDismiss = { sheetOpen = false },
+            onDismiss = { onSheetOpenChange(false) },
             onSelect = onSelectProfile,
             onTestPing = onTestPing,
             onShowQr = onShowQr,
@@ -253,7 +253,6 @@ fun MainScreen(
             onDelete = onDelete,
             onCheck = onRunCheck,
             onStats = onShowStats,
-            onConnections = onShowConnections,
             onIp = onShowIp,
         )
     }
@@ -274,6 +273,7 @@ private fun OverflowMenu(
     onExport: () -> Unit,
     onTestAll: () -> Unit,
     onFastest: () -> Unit,
+    onConnections: () -> Unit,
     onLogs: () -> Unit,
     onHistory: () -> Unit,
 ) {
@@ -287,6 +287,7 @@ private fun OverflowMenu(
         ) { onTestAll(); onDismiss() }
         MenuItem(Icons.Filled.Bolt, R.string.action_fastest) { onFastest(); onDismiss() }
         HorizontalDivider()
+        MenuItem(Icons.Filled.Lan, R.string.action_connections) { onConnections(); onDismiss() }
         MenuItem(Icons.Filled.History, R.string.action_history) { onHistory(); onDismiss() }
         MenuItem(Icons.Filled.Description, R.string.menu_logs) { onLogs(); onDismiss() }
     }
@@ -476,19 +477,9 @@ private fun ProfileSheet(
     onDelete: (String) -> Unit,
     onCheck: () -> Unit,
     onStats: () -> Unit,
-    onConnections: () -> Unit,
     onIp: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val scope = rememberCoroutineScope()
-    // 所有离开弹窗的操作都先等下滑关闭动画结束，再移除弹窗并跳转，避免主界面闪烁。
-    fun closeThen(action: () -> Unit) {
-        scope.launch {
-            runCatching { sheetState.hide() }
-            onDismiss()
-            action()
-        }
-    }
 
     val target = profiles.firstOrNull { it.id == activeId } ?: profiles.firstOrNull()
     val hasProfile = target != null
@@ -548,14 +539,14 @@ private fun ProfileSheet(
                         icon = Icons.Filled.QrCode,
                         labelRes = R.string.action_qr,
                         enabled = hasProfile,
-                        onClick = { closeThen { target?.let { onShowQr(it.id) } } },
+                        onClick = { target?.let { onShowQr(it.id) } },
                         modifier = Modifier.weight(1f),
                     )
                     SheetFunctionItem(
                         icon = Icons.Filled.Edit,
                         labelRes = R.string.action_edit,
                         enabled = hasProfile,
-                        onClick = { closeThen { target?.let { onEdit(it.id) } } },
+                        onClick = { target?.let { onEdit(it.id) } },
                         modifier = Modifier.weight(1f),
                     )
                     SheetFunctionItem(
@@ -580,21 +571,16 @@ private fun ProfileSheet(
                         icon = Icons.Filled.BarChart,
                         labelRes = R.string.action_stats,
                         enabled = hasProfile,
-                        onClick = { closeThen(onStats) },
-                        modifier = Modifier.weight(1f),
-                    )
-                    SheetFunctionItem(
-                        icon = Icons.Filled.Lan,
-                        labelRes = R.string.action_connections,
-                        enabled = hasProfile,
-                        onClick = { closeThen(onConnections) },
+                        // 进入统计页，返回时配置弹窗仍在
+                        onClick = onStats,
                         modifier = Modifier.weight(1f),
                     )
                     SheetFunctionItem(
                         icon = Icons.Filled.TravelExplore,
                         labelRes = R.string.action_ip_query,
                         enabled = hasProfile,
-                        onClick = { closeThen(onIp) },
+                        // 结果以弹窗覆盖显示，配置弹窗保持打开
+                        onClick = onIp,
                         modifier = Modifier.weight(1f),
                     )
                 }

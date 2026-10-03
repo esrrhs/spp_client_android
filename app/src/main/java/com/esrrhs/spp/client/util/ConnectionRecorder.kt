@@ -73,7 +73,14 @@ object ConnectionRecorder {
                     directDomains = directDomains,
                 )
                 _liveGroups.value = sample.groups
-                val tick = ConnectionLogMerge.tick(state, sample.liveRows, now, eventFinder)
+                val tick = ConnectionLogMerge.tick(
+                    state,
+                    sample.liveRows,
+                    now,
+                    eventFinder,
+                    proxyName = profile.name,
+                    proxyServer = profile.config.serverAddr,
+                )
                 state = tick.state
                 if (tick.finished.isNotEmpty()) {
                     pending.addAll(tick.finished)
