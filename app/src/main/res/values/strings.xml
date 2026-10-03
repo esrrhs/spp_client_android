@@ -69,9 +69,6 @@
     <string name="action_scan">扫码</string>
     <string name="action_import">导入</string>
     <string name="action_export">导出</string>
-    <string name="action_test_all">全部延迟</string>
-    <string name="action_testing">测延迟…</string>
-    <string name="action_fastest">最快</string>
     <string name="action_stats">统计</string>
     <string name="action_check">自检</string>
     <string name="action_settings">设置</string>

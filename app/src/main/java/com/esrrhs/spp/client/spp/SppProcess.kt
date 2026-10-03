@@ -159,20 +159,17 @@ class SppProcess(context: Context) {
     private fun findFreeLoopbackPort(): Int =
         ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { it.localPort }
 
-    /** 追加到 spp.log，超限时滚动为 spp.log.1（供日志页查看）。 */
+    /** 追加到 spp.log；超出上限时只保留尾部，避免长时间运行占满存储。 */
     private fun appendToLogFile(line: String) {
         runCatching {
             val file = File(appContext.filesDir, LOG_FILE)
-            if (file.length() > MAX_LOG_BYTES) {
-                file.renameTo(File(appContext.filesDir, "$LOG_FILE.1"))
-            }
+            com.esrrhs.spp.client.util.RuntimeLogs.trim(file)
             file.appendText(line + "\n")
         }
     }
 
     private companion object {
         const val MAX_OUTPUT_LINES = 50
-        const val MAX_LOG_BYTES = 256L * 1024
         const val LOG_FILE = "spp.log"
         const val TAG = "SppProcess"
     }

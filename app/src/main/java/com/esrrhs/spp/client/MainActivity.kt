@@ -144,7 +144,6 @@ class MainActivity : ComponentActivity() {
                 val vpnState by VpnStateHolder.state.collectAsState()
                 val session by viewModel.session.collectAsState()
                 val settings by viewModel.settings.collectAsState()
-                val testingPings by viewModel.testingPings.collectAsState()
                 val testingPingId by viewModel.testingPingId.collectAsState()
                 val selfCheckState by viewModel.selfCheck.collectAsState()
                 val leakState by viewModel.leak.collectAsState()
@@ -225,7 +224,6 @@ class MainActivity : ComponentActivity() {
                         activeId = activeId,
                         vpnState = vpnState,
                         session = session,
-                        testingPings = testingPings,
                         testingPingId = testingPingId,
                         qrProfile = profiles.firstOrNull { it.id == qrId },
                         sheetOpen = sheetOpen,
@@ -257,8 +255,6 @@ class MainActivity : ComponentActivity() {
                                 if (ms < 0) toast(getString(R.string.toast_ping_failed))
                             }
                         },
-                        onTestAll = viewModel::testAllPings,
-                        onSelectFastest = viewModel::selectFastest,
                         onShowStats = { screen = "stats" },
                         onShowConnections = { screen = "connections" },
                         onShowIp = viewModel::runIpQuery,

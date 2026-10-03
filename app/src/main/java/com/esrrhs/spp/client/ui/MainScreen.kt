@@ -22,7 +22,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BarChart
-import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
@@ -90,7 +89,6 @@ fun MainScreen(
     activeId: String?,
     vpnState: VpnState,
     session: SessionTraffic,
-    testingPings: Boolean,
     testingPingId: String?,
     qrProfile: Profile?,
     sheetOpen: Boolean,
@@ -106,8 +104,6 @@ fun MainScreen(
     onImport: () -> Unit,
     onExport: () -> Unit,
     onTestPing: (String) -> Unit,
-    onTestAll: () -> Unit,
-    onSelectFastest: () -> Unit,
     onShowStats: () -> Unit,
     onShowConnections: () -> Unit,
     onShowIp: () -> Unit,
@@ -153,12 +149,9 @@ fun MainScreen(
                         }
                         OverflowMenu(
                             expanded = menuExpanded,
-                            testingPings = testingPings,
                             onDismiss = { menuExpanded = false },
                             onImport = onImport,
                             onExport = onExport,
-                            onTestAll = onTestAll,
-                            onFastest = onSelectFastest,
                             onConnections = onShowConnections,
                             onLogs = onShowLogs,
                             onHistory = onShowHistory,
@@ -267,12 +260,9 @@ fun MainScreen(
 @Composable
 private fun OverflowMenu(
     expanded: Boolean,
-    testingPings: Boolean,
     onDismiss: () -> Unit,
     onImport: () -> Unit,
     onExport: () -> Unit,
-    onTestAll: () -> Unit,
-    onFastest: () -> Unit,
     onConnections: () -> Unit,
     onLogs: () -> Unit,
     onHistory: () -> Unit,
@@ -280,12 +270,6 @@ private fun OverflowMenu(
     DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
         MenuItem(Icons.Filled.FileDownload, R.string.action_import) { onImport(); onDismiss() }
         MenuItem(Icons.Filled.FileUpload, R.string.action_export) { onExport(); onDismiss() }
-        HorizontalDivider()
-        MenuItem(
-            Icons.Filled.Speed,
-            if (testingPings) R.string.action_testing else R.string.action_test_all,
-        ) { onTestAll(); onDismiss() }
-        MenuItem(Icons.Filled.Bolt, R.string.action_fastest) { onFastest(); onDismiss() }
         HorizontalDivider()
         MenuItem(Icons.Filled.Lan, R.string.action_connections) { onConnections(); onDismiss() }
         MenuItem(Icons.Filled.History, R.string.action_history) { onHistory(); onDismiss() }

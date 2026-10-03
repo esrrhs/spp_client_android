@@ -244,6 +244,7 @@ class SppVpnService : VpnService() {
 
         // 3. hev：getFd() 只传 int，PFD 所有权保留在本类
         val configFile = writeHevConfig(hevSocksPort, config.enableIpv6)
+        com.esrrhs.spp.client.util.RuntimeLogs.trim(File(filesDir, "hev.log"))
         val hevStarted = try {
             HevTunnel.start(configFile.absolutePath, tun.fd)
         } catch (e: IllegalStateException) {
