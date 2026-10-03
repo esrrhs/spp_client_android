@@ -5,6 +5,7 @@ import java.io.DataInputStream
 import java.io.OutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -104,50 +105,118 @@ class RuleSocksServer(
     ) {
         val direct = req.atyp == Socks5Codec.ATYP_DOMAIN.toInt() &&
             com.esrrhs.spp.client.util.DomainRuleMatcher.matches(req.host, directDomains)
-        val target = Socket()
-        try {
-            target.tcpNoDelay = true
+        val started = System.currentTimeMillis()
+        val target = try {
             if (direct) {
-                // 直连分支：本地解析 + 物理网络出站
-                target.connect(InetSocketAddress(req.host, req.port), CONNECT_TIMEOUT_MS)
+                // 直连分支：本地解析 + 物理网络出站。
+                // 显式枚举地址并 IPv4 优先：国内双栈环境下大量 AAAA 地址
+                // 虽能解析但 v6 路由不可达，Java Socket 不会自动回退 v4。
+                openConnected(req.host, req.port)
             } else {
-                target.connect(
-                    InetSocketAddress("127.0.0.1", upstreamPort),
-                    CONNECT_TIMEOUT_MS,
-                )
-                val upOut = target.getOutputStream()
-                val upIn = DataInputStream(target.getInputStream())
-                upOut.write(Socks5Codec.greeting())
-                upOut.flush()
-                if (upIn.readUnsignedByte() != 0x05 || upIn.readUnsignedByte() != 0x00) {
-                    out.write(Socks5Codec.failureReply(Socks5Codec.REP_GENERAL_FAILURE))
-                    return
-                }
-                upOut.write(req.raw)
-                upOut.flush()
-                if (Socks5Codec.readReply(upIn) == null) {
-                    out.write(Socks5Codec.failureReply(Socks5Codec.REP_GENERAL_FAILURE))
-                    return
+                Socket().apply {
+                    tcpNoDelay = true
+                    connect(
+                        InetSocketAddress("127.0.0.1", upstreamPort),
+                        CONNECT_TIMEOUT_MS,
+                    )
+                    val upOut = getOutputStream()
+                    val upIn = DataInputStream(getInputStream())
+                    upOut.write(Socks5Codec.greeting())
+                    upOut.flush()
+                    if (upIn.readUnsignedByte() != 0x05 || upIn.readUnsignedByte() != 0x00) {
+                        recordEvent(req, direct, false, "upstream method rejected", started)
+                        out.write(Socks5Codec.failureReply(Socks5Codec.REP_GENERAL_FAILURE))
+                        return
+                    }
+                    upOut.write(req.raw)
+                    upOut.flush()
+                    if (Socks5Codec.readReply(upIn) == null) {
+                        recordEvent(req, direct, false, "upstream CONNECT rejected/timeout", started)
+                        out.write(Socks5Codec.failureReply(Socks5Codec.REP_GENERAL_FAILURE))
+                        return
+                    }
                 }
             }
-            out.write(Socks5Codec.successReply("0.0.0.0", 0))
-            out.flush()
-            pipe(client, target)
         } catch (e: Exception) {
-            Log.w(TAG, "connect ${req.host}:${req.port} direct=$direct failed: ${e.message}")
+            val reason = e.message ?: e.javaClass.simpleName
+            Log.w(TAG, "connect ${req.host}:${req.port} direct=$direct failed: $reason")
+            recordEvent(req, direct, false, reason, started)
             runCatching {
                 out.write(Socks5Codec.failureReply(Socks5Codec.REP_GENERAL_FAILURE))
                 out.flush()
             }
-        } finally {
-            runCatching { target.close() }
+            return
+        }
+        // pipe 内部两个方向结束时会各自关闭两端 socket；
+        // 这里不能在 finally 里提前 close，否则转发线程刚启动就被掐断。
+        recordEvent(req, direct, true, null, started)
+        out.write(Socks5Codec.successReply("0.0.0.0", 0))
+        out.flush()
+        awaitPipe(client, target)
+    }
+
+    /** 双向转发并阻塞至任一端结束，再统一关闭两端。 */
+    private fun awaitPipe(a: Socket, b: Socket) {
+        val latch = java.util.concurrent.CountDownLatch(2)
+        val oneSide = { from: Socket, to: Socket ->
+            try {
+                copyCatching(from, to)
+            } finally {
+                latch.countDown()
+            }
+        }
+        pool.execute { oneSide(a, b) }
+        pool.execute { oneSide(b, a) }
+        latch.await()
+        runCatching { a.close() }
+        runCatching { b.close() }
+    }
+
+    private fun recordEvent(
+        req: Socks5Codec.Request,
+        direct: Boolean,
+        success: Boolean,
+        reason: String?,
+        startedMs: Long,
+    ) {
+        runCatching {
+            ProxyEventBus.record(
+                host = req.host,
+                port = req.port,
+                direct = direct,
+                success = success,
+                reason = reason,
+                durationMs = (System.currentTimeMillis() - startedMs).toInt(),
+            )
         }
     }
 
-    /** 双向转发，任一端关闭即结束。 */
-    private fun pipe(a: Socket, b: Socket) {
-        pool.execute { copyCatching(a, b) }
-        pool.execute { copyCatching(b, a) }
+    /**
+     * 解析 [host] 的全部地址并逐个尝试连接（IPv4 优先，IPv6 兜底），
+     * 任一成功即返回已连接的 Socket；全部失败抛出最后一个异常。
+     */
+    private fun openConnected(host: String, port: Int): Socket {
+        val addresses = runCatching { InetAddress.getAllByName(host) }.getOrNull()
+            ?: throw java.net.UnknownHostException(host)
+        val ordered = addresses.sortedBy { if (it is Inet6Address) 1 else 0 }
+        val deadline = System.currentTimeMillis() + CONNECT_TIMEOUT_MS
+        var lastError: Exception? = null
+        for (addr in ordered) {
+            val remaining = deadline - System.currentTimeMillis()
+            if (remaining <= 0) break
+            // 单个地址最多等一半预算，保证后续地址（v4↔v6）还有尝试机会
+            val perTimeout = remaining.coerceAtMost(ADDR_CONNECT_TIMEOUT_MS)
+            val attempt = Socket()
+            try {
+                attempt.tcpNoDelay = true
+                attempt.connect(InetSocketAddress(addr, port), perTimeout.toInt())
+                return attempt
+            } catch (e: Exception) {
+                lastError = e
+                runCatching { attempt.close() }
+            }
+        }
+        throw lastError ?: java.io.IOException("cannot connect to $host:$port")
     }
 
     private fun copyCatching(from: Socket, to: Socket) {
@@ -279,6 +348,8 @@ class RuleSocksServer(
     private companion object {
         const val TAG = "RuleSocksServer"
         const val CONNECT_TIMEOUT_MS = 8000
+        /** 单个地址的连接尝试上限，保证 v4/v6 回退都有预算。 */
+        const val ADDR_CONNECT_TIMEOUT_MS = 4000L
         const val TIMEOUT_MS = 1000
         const val BUFFER_SIZE = 32 * 1024
         const val UDP_BUFFER_SIZE = 64 * 1024

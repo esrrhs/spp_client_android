@@ -5,15 +5,13 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.esrrhs.spp.client.data.AppSettings
 import com.esrrhs.spp.client.data.ConfigRepository
+import com.esrrhs.spp.client.data.ConnectionLogEntry
+import com.esrrhs.spp.client.data.ConnectionLogRepository
 import com.esrrhs.spp.client.data.SettingsRepository
 import com.esrrhs.spp.client.spp.Profile
 import com.esrrhs.spp.client.spp.SppProcess
 import com.esrrhs.spp.client.spp.ValidationError
 import com.esrrhs.spp.client.tun.HevTunnel
-import com.esrrhs.spp.client.util.ActiveConnections
-import com.esrrhs.spp.client.util.BundledDirectDomains
-import com.esrrhs.spp.client.util.ConnectionSample
-import com.esrrhs.spp.client.util.DomainRuleMatcher
 import com.esrrhs.spp.client.util.LeakCheck
 import com.esrrhs.spp.client.util.SocksProbe
 import com.esrrhs.spp.client.util.TrafficMeter
@@ -160,68 +158,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _ipQuery.value = IpQueryState.Idle
     }
 
-    private val _connections =
-        MutableStateFlow<List<com.esrrhs.spp.client.util.AppConnectionGroup>>(emptyList())
-    val connections: StateFlow<List<com.esrrhs.spp.client.util.AppConnectionGroup>> = _connections
+    // ---- 单连接历史：采集在 Service 层全局进行（ConnectionRecorder），这里只读仓库 ----
 
-    private var connectionJob: Job? = null
-    private var connectionSample: ConnectionSample = ActiveConnections.empty()
+    private val connectionLogRepository = ConnectionLogRepository(app)
 
-    /** 域名直连规则缓存；key 变化（开关/自定义文本）时重建。 */
-    @Volatile
-    private var directRulesKey: String? = null
-    private var directRules: Set<String> = emptySet()
+    val connectionLogs: StateFlow<List<ConnectionLogEntry>> =
+        connectionLogRepository.entries
+            .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    private suspend fun currentDirectDomains(): Set<String> {
-        val s = settings.value
-        val key = "${s.domainDirectEnabled}|${s.domainDirectRulesText}"
-        if (key != directRulesKey) {
-            directRules = if (!s.domainDirectEnabled) {
-                emptySet()
-            } else {
-                withContext(Dispatchers.IO) {
-                    LinkedHashSet(BundledDirectDomains.load(getApplication())).apply {
-                        addAll(DomainRuleMatcher.parse(s.domainDirectRulesText))
-                    }
-                }
-            }
-            directRulesKey = key
-        }
-        return directRules
+    fun clearConnectionLogs() {
+        viewModelScope.launch { connectionLogRepository.clear() }
     }
 
-    /** 开始每 1.5 秒轮询当前隧道连接；页面进入时调用。 */
-    fun startConnectionsPolling() {
-        if (connectionJob?.isActive == true) return
-        connectionJob = viewModelScope.launch {
-            var lastMs = System.currentTimeMillis()
-            while (true) {
-                val now = System.currentTimeMillis()
-                val profile = profiles.value.firstOrNull { it.id == activeId.value }
-                val directDomains = currentDirectDomains()
-                connectionSample = withContext(Dispatchers.IO) {
-                    ActiveConnections.snapshot(
-                        context = getApplication(),
-                        profile = profile,
-                        prev = connectionSample,
-                        nowMs = now,
-                        intervalMs = now - lastMs,
-                        directDomains = directDomains,
-                    )
-                }
-                _connections.value = connectionSample.groups
-                lastMs = now
-                delay(CONNECTION_POLL_MS)
-            }
-        }
-    }
-
-    /** 停止轮询并清空（页面退出时调用）。 */
-    fun stopConnectionsPolling() {
-        connectionJob?.cancel()
-        connectionJob = null
-        connectionSample = ActiveConnections.empty()
-        _connections.value = emptyList()
+    fun deleteConnectionLog(entry: ConnectionLogEntry) {
+        viewModelScope.launch { connectionLogRepository.delete(entry.key, entry.startMs) }
     }
 
     private fun getLanguage(): String {
@@ -417,6 +367,5 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         const val POLL_INTERVAL_MS = 1000L
         const val PING_TIMEOUT_MS = 5000
         const val PING_START_TIMEOUT_MS = 6000L
-        const val CONNECTION_POLL_MS = 1500L
     }
 }

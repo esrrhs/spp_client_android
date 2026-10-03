@@ -21,9 +21,9 @@ import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import com.esrrhs.spp.client.R
 import com.esrrhs.spp.client.spp.Profile
-import androidx.compose.runtime.DisposableEffect
 import com.esrrhs.spp.client.ui.AppPickerScreen
 import com.esrrhs.spp.client.ui.ConnectionsScreen
+import com.esrrhs.spp.client.ui.HistoryScreen
 import com.esrrhs.spp.client.ui.IpQueryDialog
 import com.esrrhs.spp.client.ui.LeakScreen
 import com.esrrhs.spp.client.ui.LogsScreen
@@ -146,23 +146,26 @@ class MainActivity : ComponentActivity() {
                 val testingPingId by viewModel.testingPingId.collectAsState()
                 val selfCheckState by viewModel.selfCheck.collectAsState()
                 val leakState by viewModel.leak.collectAsState()
-                val connections by viewModel.connections.collectAsState()
+                val connections by com.esrrhs.spp.client.util.ConnectionRecorder
+                    .liveGroups.collectAsState()
+                val connectionLogs by viewModel.connectionLogs.collectAsState()
                 val ipQueryState by viewModel.ipQuery.collectAsState()
 
                 when (screen) {
                     "logs" -> LogsScreen(onBack = { screen = "list" })
 
-                    "connections" -> {
-                        DisposableEffect(Unit) {
-                            viewModel.startConnectionsPolling()
-                            onDispose { viewModel.stopConnectionsPolling() }
-                        }
-                        ConnectionsScreen(
-                            groups = connections,
-                            vpnState = vpnState,
-                            onBack = { screen = "list" },
-                        )
-                    }
+                    "history" -> HistoryScreen(
+                        entries = connectionLogs,
+                        onBack = { screen = "list" },
+                        onClear = viewModel::clearConnectionLogs,
+                        onDelete = viewModel::deleteConnectionLog,
+                    )
+
+                    "connections" -> ConnectionsScreen(
+                        groups = connections,
+                        vpnState = vpnState,
+                        onBack = { screen = "list" },
+                    )
 
                     "leak" -> LeakScreen(
                         state = leakState,
@@ -254,6 +257,7 @@ class MainActivity : ComponentActivity() {
                         onShowStats = { screen = "stats" },
                         onShowConnections = { screen = "connections" },
                         onShowIp = viewModel::runIpQuery,
+                        onShowHistory = { screen = "history" },
                         onShowLeak = { screen = "leak" },
                         onRunCheck = viewModel::runSelfCheck,
                         onDismissCheck = viewModel::dismissSelfCheck,
