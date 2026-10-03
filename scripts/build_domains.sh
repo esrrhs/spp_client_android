@@ -21,11 +21,14 @@ for list in "${LISTS[@]}"; do
     curl -fsSL "$BASE/$list" -o "$TMP/$list"
 done
 
-# 提取 server=/<domain>/... 中的域名，转小写、去重、排序
+# 提取 server=/<domain>/... 中的域名，转小写、去重、排序。
+# 丢弃裸通用 TLD（top/wang 等会误伤整个后缀的海外/私有站点），
+# 仅保留地区性裸 TLD：cn 与中文国家 TLD（xn-- 开头）。
 cat "$TMP"/*.conf \
     | grep -E '^server=/' \
     | sed -E 's#^server=/([^/]+)/.*#\1#' \
     | tr 'A-Z' 'a-z' \
+    | awk -F. 'NF == 1 && $0 != "cn" && $0 !~ /^xn--/ { next } { print }' \
     | sort -u > "$OUT"
 
 echo "完成：$(wc -l < "$OUT" | tr -d ' ') 个域名 -> $OUT"
