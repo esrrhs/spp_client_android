@@ -34,4 +34,16 @@ object DomainRuleMatcher {
         if (h.isEmpty()) return false
         return rules.any { rule -> h == rule || h.endsWith(".$rule") }
     }
+
+    /**
+     * 规整上游域名表（dnsmasq-china-list）里的裸顶级域行。
+     *
+     * 源表含 `server=/top/`、`server=/wang/` 这类把**通用国际后缀**整体
+     * 判为国内直连的行，会导致任何 *.top 站点（含海外/私有服务）被强制
+     * 直连。仅保留地区性 TLD：`cn` 与中文国家 TLD（xn-- 开头）。
+     */
+    fun isBareTldAllowed(rule: String): Boolean {
+        if (rule.contains('.')) return true
+        return rule == "cn" || rule.startsWith("xn--")
+    }
 }
