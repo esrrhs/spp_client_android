@@ -59,12 +59,32 @@ data class RetainedConn(
     val lastSeenMs: Long,
 )
 
+/** 一次采样中观测到的单条会话（UID 已反查、归属已过滤）。 */
+data class HistoryRow(
+    val key: String,
+    val uid: Int,
+    val packageName: String?,
+    val label: String,
+    /** 展示用目标：优先 mapped-DNS 域名，否则 IP:端口。 */
+    val destination: String,
+    val domain: String?,
+    val remoteIp: String,
+    val remotePort: Int,
+    val proto: String,
+    val txBytes: Long,
+    val rxBytes: Long,
+    val direct: Boolean,
+    val createdMs: Long,
+)
+
 data class ConnectionSample(
     val groups: List<AppConnectionGroup>,
     /** connection key → 上轮累计 (tx, rx)，用于差分速率。 */
     val prevBytes: Map<String, Pair<Long, Long>>,
     /** 留痕窗口内最近消失的连接，key 为连接五元组。 */
     val retained: Map<String, RetainedConn>,
+    /** 本轮仍活跃的会话行（供全局连接记录器做生命周期跟踪）。 */
+    val liveRows: List<HistoryRow> = emptyList(),
 )
 
 /**
@@ -205,7 +225,68 @@ object ActiveConnections {
                 put(t.conn.key, RetainedConn(t.conn, t.packageName, t.label, nowMs))
             }
         }
-        return ConnectionSample(groups, bytesNow, nextRetained)
+        val liveRows = activeRows.map { t ->
+            val c = t.conn
+            HistoryRow(
+                key = c.key,
+                uid = c.uid,
+                packageName = t.packageName,
+                label = t.label,
+                destination = c.domain ?: "${c.remoteIp}:${c.remotePort}",
+                domain = c.domain,
+                remoteIp = c.remoteIp,
+                remotePort = c.remotePort,
+                proto = c.protocol,
+                txBytes = c.txBytes,
+                rxBytes = c.rxBytes,
+                direct = c.direct,
+                createdMs = c.createdMs,
+            )
+        }
+        return ConnectionSample(groups, bytesNow, nextRetained, liveRows)
+    }
+
+    /**
+     * 供连接历史采样：解析当前会话并反查 UID/应用（含分应用过滤），
+     * 不做速率差分与留痕，调用方自行维护跨轮次状态（见 ConnectionLogMerge）。
+     */
+    fun historyRows(
+        context: Context,
+        profile: Profile?,
+        directDomains: Set<String>,
+    ): List<HistoryRow> {
+        val cm = context.getSystemService(ConnectivityManager::class.java)
+        val pm = context.packageManager
+        val allowedPackages = profile?.perAppPackages?.toSet().orEmpty()
+        return parseSessions(HevTunnel.sessions().orEmpty()).mapNotNull { s ->
+            val uid = ownerUid(cm, s)
+            val pkg = if (uid >= 0) pm.getPackagesForUid(uid)?.firstOrNull() else null
+            val routed = when (profile?.perAppMode ?: PerAppMode.ALL) {
+                PerAppMode.ALL -> true
+                PerAppMode.ALLOWED -> pkg != null && pkg in allowedPackages
+                PerAppMode.DISALLOWED -> pkg == null || pkg !in allowedPackages
+            }
+            if (!routed) return@mapNotNull null
+            val label = pkg?.let {
+                runCatching { pm.getApplicationLabel(pm.getApplicationInfo(it, 0)).toString() }
+                    .getOrDefault(it)
+            } ?: context.getString(com.esrrhs.spp.client.R.string.conn_unknown_app, uid)
+            HistoryRow(
+                key = s.key,
+                uid = uid,
+                packageName = pkg,
+                label = label,
+                destination = s.domain ?: "${s.dstIp}:${s.dstPort}",
+                domain = s.domain,
+                remoteIp = s.dstIp,
+                remotePort = s.dstPort,
+                proto = if (s.proto == 6) "TCP" else "UDP",
+                txBytes = s.upload,
+                rxBytes = s.download,
+                direct = isDirect(s.proto, s.domain, directDomains),
+                createdMs = s.createdMs,
+            )
+        }
     }
 
     private fun rateBetween(old: Long?, new: Long, intervalMs: Long): Long {

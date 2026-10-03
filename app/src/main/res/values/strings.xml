@@ -188,6 +188,23 @@
     <string name="conn_empty">当前没有检测到走隧道的连接</string>
     <string name="conn_disconnected_hint">VPN 未连接。连接后这里会实时显示正在走隧道的应用及其连接、速率与流量。</string>
 
+    <!-- 连接历史 -->
+    <string name="action_history">历史</string>
+    <string name="history_title">连接历史</string>
+    <string name="history_empty">还没有连接记录。连接 VPN 后，每条经过隧道的连接都会记录在这里。</string>
+    <string name="history_clear">清空历史</string>
+    <string name="history_clear_title">清空连接历史？</string>
+    <string name="history_clear_msg">全部单连接记录将被清空，不影响配置与当前连接。此操作不可撤销。</string>
+    <string name="history_delete_one">删除该记录</string>
+    <string name="history_route_proxy">代理</string>
+    <string name="history_route_unknown">未知</string>
+    <string name="history_result_success">成功</string>
+    <string name="history_result_failed">失败</string>
+    <string name="history_result_unknown">未知</string>
+    <string name="history_connect_ms">建连 %1$d ms</string>
+    <string name="history_detail_line">↑ %1$s　↓ %2$s　·　持续 %3$s</string>
+    <string name="history_reason">原因：%1$s</string>
+
     <!-- 查 IP -->
     <string name="action_ip_query">查IP</string>
     <string name="ip_title">我的 IP</string>

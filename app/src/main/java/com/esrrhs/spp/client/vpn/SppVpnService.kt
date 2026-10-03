@@ -195,8 +195,8 @@ class SppVpnService : VpnService() {
 
         // 1b. 域名直连规则：hev 先接本地分流器，再由其转发 socks5_client
         //     生效集合 = 内置大陆域名表 + 用户自定义规则
-        val hevSocksPort = if (cachedSettings.domainDirectEnabled) {
-            val rules = LinkedHashSet<String>(
+        val directRules: Set<String> = if (cachedSettings.domainDirectEnabled) {
+            LinkedHashSet<String>(
                 com.esrrhs.spp.client.util.BundledDirectDomains.load(this),
             ).apply {
                 addAll(
@@ -204,8 +204,12 @@ class SppVpnService : VpnService() {
                         .parse(cachedSettings.domainDirectRulesText),
                 )
             }
-            Log.i(TAG, "domain direct rules: ${rules.size} domains")
-            val server = com.esrrhs.spp.client.proxy.RuleSocksServer(socksPort, rules)
+        } else {
+            emptySet()
+        }
+        val hevSocksPort = if (cachedSettings.domainDirectEnabled) {
+            Log.i(TAG, "domain direct rules: ${directRules.size} domains")
+            val server = com.esrrhs.spp.client.proxy.RuleSocksServer(socksPort, directRules)
             server.start()
             ruleServer = server
             server.port ?: throw SppException(getString(R.string.error_rule_proxy))
@@ -238,6 +242,14 @@ class SppVpnService : VpnService() {
 
         updateNotification(getString(R.string.notif_connected, config.serverAddr))
         VpnStateHolder.set(VpnState.Connected)
+
+        // 全局连接采集（当前连接页 + 单连接历史），与界面是否打开无关
+        com.esrrhs.spp.client.util.ConnectionRecorder.start(
+            scope = scope,
+            context = this,
+            profile = profile,
+            directDomains = directRules,
+        )
 
         // 4. 监视默认网络切换（WiFi↔蜂窝），切换后主动重建数据面
         networkWatchdog.start()
@@ -365,7 +377,11 @@ class SppVpnService : VpnService() {
     }
 
     /** 停数据面并把本段字节计入会话累计。 */
-    private fun stopDataPlaneAndCount() {
+    private suspend fun stopDataPlaneAndCount() {
+        // 先收尾全局连接采集（残留会话落历史库），再停数据面
+        runCatching {
+            com.esrrhs.spp.client.util.ConnectionRecorder.stop(this@SppVpnService)
+        }
         if (::networkWatchdog.isInitialized) networkWatchdog.stop()
         val finalStats = HevTunnel.stats()
         runCatching { HevTunnel.stop() }

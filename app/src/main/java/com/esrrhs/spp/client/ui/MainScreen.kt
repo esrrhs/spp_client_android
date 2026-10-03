@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Lan
 import androidx.compose.material.icons.filled.MoreVert
@@ -110,6 +111,7 @@ fun MainScreen(
     onShowStats: () -> Unit,
     onShowConnections: () -> Unit,
     onShowIp: () -> Unit,
+    onShowHistory: () -> Unit,
     onShowLeak: () -> Unit,
     onRunCheck: () -> Unit,
     onDismissCheck: () -> Unit,
@@ -159,6 +161,7 @@ fun MainScreen(
                             onTestAll = onTestAll,
                             onFastest = onSelectFastest,
                             onLogs = onShowLogs,
+                            onHistory = onShowHistory,
                         )
                     }
                 },
@@ -272,6 +275,7 @@ private fun OverflowMenu(
     onTestAll: () -> Unit,
     onFastest: () -> Unit,
     onLogs: () -> Unit,
+    onHistory: () -> Unit,
 ) {
     DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
         MenuItem(Icons.Filled.FileDownload, R.string.action_import) { onImport(); onDismiss() }
@@ -283,6 +287,7 @@ private fun OverflowMenu(
         ) { onTestAll(); onDismiss() }
         MenuItem(Icons.Filled.Bolt, R.string.action_fastest) { onFastest(); onDismiss() }
         HorizontalDivider()
+        MenuItem(Icons.Filled.History, R.string.action_history) { onHistory(); onDismiss() }
         MenuItem(Icons.Filled.Description, R.string.menu_logs) { onLogs(); onDismiss() }
     }
 }
