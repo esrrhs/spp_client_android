@@ -38,9 +38,11 @@ class SppProcess(context: Context) {
     /**
      * 启动 socks5_client，阻塞直至本地端口开始监听。
      *
+     * @param startupTimeoutMs 等待本地 SOCKS 端口上线的最长时间（端口仅在到
+     * server 的会话建立后才绑定，服务器不可达时会等到超时再抛异常）。
      * @return 本地 SOCKS5 监听端口（仅绑定 127.0.0.1）
      */
-    fun start(config: SppConfig): Int {
+    fun start(config: SppConfig, startupTimeoutMs: Long = 15_000L): Int {
         val binary = File(appContext.applicationInfo.nativeLibraryDir, "libspp.so")
         if (!binary.exists() || !binary.canExecute()) {
             throw SppException(appContext.getString(R.string.error_missing_native))
@@ -98,7 +100,7 @@ class SppProcess(context: Context) {
             }
         }.apply { isDaemon = true; name = "spp-exit-watch" }.start()
 
-        if (!waitUntilListening(port)) {
+        if (!waitUntilListening(port, startupTimeoutMs)) {
             val alive = proc.isAlive
             val tail = synchronized(outputLines) { outputLines.joinToString("\n") }
             stop()
@@ -127,7 +129,7 @@ class SppProcess(context: Context) {
     /** 最近的输出（用于启动失败时报错回放）。 */
     fun recentOutput(): String = synchronized(outputLines) { outputLines.joinToString("\n") }
 
-    private fun waitUntilListening(port: Int, timeoutMs: Long = 15_000): Boolean {
+    private fun waitUntilListening(port: Int, timeoutMs: Long): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
         var firstError: Exception? = null
         while (System.currentTimeMillis() < deadline) {

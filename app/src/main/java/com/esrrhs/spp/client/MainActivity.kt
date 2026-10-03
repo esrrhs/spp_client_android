@@ -21,8 +21,10 @@ import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import com.esrrhs.spp.client.R
 import com.esrrhs.spp.client.spp.Profile
+import androidx.compose.runtime.DisposableEffect
 import com.esrrhs.spp.client.ui.AppPickerScreen
-import com.esrrhs.spp.client.ui.HistoryScreen
+import com.esrrhs.spp.client.ui.ConnectionsScreen
+import com.esrrhs.spp.client.ui.IpScreen
 import com.esrrhs.spp.client.ui.LeakScreen
 import com.esrrhs.spp.client.ui.LogsScreen
 import androidx.lifecycle.lifecycleScope
@@ -141,16 +143,31 @@ class MainActivity : ComponentActivity() {
                 val session by viewModel.session.collectAsState()
                 val settings by viewModel.settings.collectAsState()
                 val testingPings by viewModel.testingPings.collectAsState()
+                val testingPingId by viewModel.testingPingId.collectAsState()
                 val selfCheckState by viewModel.selfCheck.collectAsState()
                 val leakState by viewModel.leak.collectAsState()
-                val history by viewModel.history.collectAsState()
+                val connections by viewModel.connections.collectAsState()
+                val ipQueryState by viewModel.ipQuery.collectAsState()
 
                 when (screen) {
                     "logs" -> LogsScreen(onBack = { screen = "list" })
 
-                    "history" -> HistoryScreen(
-                        records = history,
-                        onClear = viewModel::clearHistory,
+                    "connections" -> {
+                        DisposableEffect(Unit) {
+                            viewModel.startConnectionsPolling()
+                            onDispose { viewModel.stopConnectionsPolling() }
+                        }
+                        ConnectionsScreen(
+                            groups = connections,
+                            vpnState = vpnState,
+                            onBack = { screen = "list" },
+                        )
+                    }
+
+                    "ip" -> IpScreen(
+                        state = ipQueryState,
+                        connected = vpnState is VpnState.Connected,
+                        onRefresh = viewModel::runIpQuery,
                         onBack = { screen = "list" },
                     )
 
@@ -210,6 +227,7 @@ class MainActivity : ComponentActivity() {
                         vpnState = vpnState,
                         session = session,
                         testingPings = testingPings,
+                        testingPingId = testingPingId,
                         qrProfile = profiles.firstOrNull { it.id == qrId },
                         onProfileClick = ::prepareConnectOrDisconnect,
                         onSelectProfile = viewModel::selectProfile,
@@ -233,11 +251,16 @@ class MainActivity : ComponentActivity() {
                             importLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
                         },
                         onExport = { exportLauncher.launch("spp-profiles.json") },
-                        onTestPing = viewModel::testPing,
+                        onTestPing = { id ->
+                            viewModel.testPing(id) { ms ->
+                                if (ms < 0) toast(getString(R.string.toast_ping_failed))
+                            }
+                        },
                         onTestAll = viewModel::testAllPings,
                         onSelectFastest = viewModel::selectFastest,
                         onShowStats = { screen = "stats" },
-                        onShowHistory = { screen = "history" },
+                        onShowConnections = { screen = "connections" },
+                        onShowIp = { screen = "ip" },
                         onShowLeak = { screen = "leak" },
                         onRunCheck = viewModel::runSelfCheck,
                         onDismissCheck = viewModel::dismissSelfCheck,

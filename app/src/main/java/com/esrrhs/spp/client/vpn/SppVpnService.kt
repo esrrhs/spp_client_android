@@ -66,13 +66,6 @@ class SppVpnService : VpnService() {
     private var sessionTxTotal = 0L
     private var sessionRxTotal = 0L
 
-    /** 历史记录累计：跨重连片段累计，直到会话结束才落一条。 */
-    private var historyProfileId: String? = null
-    private var historyProfileName: String = ""
-    private var historyStartMs = 0L
-    private var historyTxTotal = 0L
-    private var historyRxTotal = 0L
-
     private var reconnectJob: Job? = null
 
     override fun onCreate() {
@@ -163,7 +156,6 @@ class SppVpnService : VpnService() {
                 val (repository, profile) = loadActiveProfile()
                 sessionTxTotal = 0L
                 sessionRxTotal = 0L
-                beginHistory(profile)
                 establishSession(repository, profile)
             } catch (e: CancellationException) {
                 throw e
@@ -171,40 +163,12 @@ class SppVpnService : VpnService() {
                 Log.e(TAG, "connect failed: ${e.message}")
                 stopDataPlaneAndCount()
                 persistSessionTraffic()
-                finishHistory(com.esrrhs.spp.client.data.HistoryReason.ERROR)
                 VpnStateHolder.set(
                     VpnState.Error(e.message ?: getString(R.string.error_connect_failed)),
                 )
                 finishService()
             }
         }
-    }
-
-    private fun beginHistory(profile: Profile) {
-        historyProfileId = profile.id
-        historyProfileName = profile.name
-        historyStartMs = System.currentTimeMillis()
-        historyTxTotal = 0L
-        historyRxTotal = 0L
-    }
-
-    /** 落一条历史记录；无进行中的会话时为空操作。 */
-    private suspend fun finishHistory(reason: String) {
-        val id = historyProfileId ?: return
-        val record = com.esrrhs.spp.client.data.ConnectionRecord(
-            id = java.util.UUID.randomUUID().toString(),
-            profileId = id,
-            profileName = historyProfileName,
-            startedAtMs = historyStartMs,
-            endedAtMs = System.currentTimeMillis(),
-            txBytes = historyTxTotal,
-            rxBytes = historyRxTotal,
-            reason = reason,
-        )
-        runCatching {
-            com.esrrhs.spp.client.data.HistoryRepository(this).append(record)
-        }
-        historyProfileId = null
     }
 
     /** 建立一次完整数据面（spp → TUN → hev）；成功后状态为 Connected。 */
@@ -288,7 +252,6 @@ class SppVpnService : VpnService() {
             sessionGeneration++
             stopDataPlaneAndCount()
             persistSessionTraffic()
-            finishHistory(com.esrrhs.spp.client.data.HistoryReason.PAUSED)
             VpnStateHolder.set(VpnState.Paused)
             updateNotification(getString(R.string.notif_paused_trusted))
         }
@@ -324,7 +287,6 @@ class SppVpnService : VpnService() {
 
             if (settings?.autoReconnect != true) {
                 persistSessionTraffic()
-                finishHistory(com.esrrhs.spp.client.data.HistoryReason.ERROR)
                 VpnStateHolder.set(
                     VpnState.Error(getString(R.string.error_tunnel_lost)),
                 )
@@ -354,7 +316,6 @@ class SppVpnService : VpnService() {
                         candidates.removeAt(index)
                         if (candidates.isEmpty()) {
                             persistSessionTraffic()
-                            finishHistory(com.esrrhs.spp.client.data.HistoryReason.ERROR)
                             VpnStateHolder.set(VpnState.Error(getString(R.string.error_no_profile)))
                             finishService()
                             return
@@ -362,7 +323,6 @@ class SppVpnService : VpnService() {
                         index %= candidates.size
                         continue
                     }
-                    if (historyProfileId != profile.id) beginHistory(profile)
                     establishSession(repository, profile)
                     return
                 } catch (e: CancellationException) {
@@ -379,7 +339,6 @@ class SppVpnService : VpnService() {
                         index = next
                         ConfigRepository(this).setActive(candidates[index])
                         Log.i(TAG, "failover to profile ${candidates[index]}")
-                        finishHistory(com.esrrhs.spp.client.data.HistoryReason.FAILOVER)
                         updateNotification(getString(R.string.notif_failover))
                     }
                 }
@@ -395,10 +354,6 @@ class SppVpnService : VpnService() {
             trustedWifiMonitor.stop()
             stopDataPlaneAndCount()
             persistSessionTraffic()
-            finishHistory(
-                if (errorMessage != null) com.esrrhs.spp.client.data.HistoryReason.ERROR
-                else com.esrrhs.spp.client.data.HistoryReason.DISCONNECTED,
-            )
             when {
                 errorMessage != null -> VpnStateHolder.set(VpnState.Error(errorMessage))
                 notifyDisconnected &&
@@ -426,8 +381,6 @@ class SppVpnService : VpnService() {
             val segRx = ((finalStats.getOrNull(3)  ?: 0L) - baselineRx).coerceAtLeast(0)
             sessionTxTotal += segTx
             sessionRxTotal += segRx
-            historyTxTotal += segTx
-            historyRxTotal += segRx
         }
         baselineTx = 0L
         baselineRx = 0L

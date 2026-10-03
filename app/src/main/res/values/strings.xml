@@ -86,7 +86,9 @@
     <string name="sheet_choose_profile">选择配置</string>
     <string name="ping_untested">未测</string>
     <string name="ping_ms">%1$d ms</string>
-    <string name="action_ping">延迟</string>
+    <string name="ping_testing">测速中…</string>
+    <string name="action_ping">测速</string>
+    <string name="toast_ping_failed">测速失败：无法在限时内连通服务器</string>
     <string name="action_qr">二维码</string>
     <string name="action_edit">编辑</string>
     <string name="action_delete">删除</string>
@@ -170,17 +172,27 @@
     <string name="qr_share_chooser">分享配置</string>
     <string name="qr_content_description">QR code</string>
 
-    <!-- 连接历史 -->
-    <string name="history_title">连接历史</string>
-    <string name="history_empty">暂无连接记录</string>
-    <string name="history_clear">清空历史</string>
-    <string name="history_clear_title">清空连接历史？</string>
-    <string name="history_clear_msg">全部连接记录将被删除，此操作不可撤销。</string>
-    <string name="history_reason_disconnected">已断开</string>
-    <string name="history_reason_error">异常结束</string>
-    <string name="history_reason_paused">可信网络暂停</string>
-    <string name="history_reason_failover">切换到备用</string>
-    <string name="action_history">历史</string>
+    <!-- 当前连接 -->
+    <string name="action_connections">连接</string>
+    <string name="conn_title">当前连接</string>
+    <string name="conn_unknown_app">未知应用（uid=%1$d）</string>
+    <string name="conn_count">%1$d 条连接</string>
+    <string name="conn_totals">连接累计：↑ %1$s　↓ %2$s</string>
+    <string name="conn_since">%1$s · %2$s</string>
+    <string name="conn_pair">↑ %1$s　↓ %2$s</string>
+    <string name="conn_empty">当前没有检测到走隧道的连接</string>
+    <string name="conn_disconnected_hint">VPN 未连接。连接后这里会实时显示正在走隧道的应用及其连接、速率与流量。</string>
+
+    <!-- 查 IP -->
+    <string name="action_ip_query">查IP</string>
+    <string name="ip_title">我的 IP</string>
+    <string name="ip_exit">隧道出口</string>
+    <string name="ip_direct">本地直连</string>
+    <string name="ip_querying">正在查询 IP 归属地…</string>
+    <string name="ip_failed">查询失败，请检查网络后重试。</string>
+    <string name="ip_retry">重试</string>
+    <string name="ip_refresh">刷新</string>
+    <string name="ip_not_connected_hint">当前未连接 VPN，仅显示本地直连出口。</string>
 
     <!-- 连接自检 -->
     <string name="check_running_title">正在自检…</string>

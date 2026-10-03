@@ -5,7 +5,6 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.esrrhs.spp.client.data.AppSettings
 import com.esrrhs.spp.client.data.ConfigRepository
-import com.esrrhs.spp.client.data.HistoryRepository
 import com.esrrhs.spp.client.data.SettingsRepository
 import com.esrrhs.spp.client.spp.Profile
 import com.esrrhs.spp.client.spp.SppProcess
@@ -25,6 +24,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -41,6 +41,16 @@ sealed interface LeakState {
     data object Idle : LeakState
     data object Running : LeakState
     data class Done(val report: LeakCheck.Report) : LeakState
+}
+
+/** 查 IP 状态：直连出口与（已连接时的）隧道出口归属地。 */
+sealed interface IpQueryState {
+    data object Idle : IpQueryState
+    data object Running : IpQueryState
+    data class Done(
+        val direct: com.esrrhs.spp.client.util.IpGeoInfo?,
+        val tunnel: com.esrrhs.spp.client.util.IpGeoInfo?,
+    ) : IpQueryState
 }
 
 /**
@@ -60,10 +70,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val repository = ConfigRepository(app)
     private val settingsRepository = SettingsRepository(app)
-    private val historyRepository = HistoryRepository(app)
-
-    val history = historyRepository.records
-        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     val profiles: StateFlow<List<Profile>> = repository.profiles
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
@@ -83,6 +89,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _testingPings = MutableStateFlow(false)
     val testingPings: StateFlow<Boolean> = _testingPings
+
+    /** 正在进行单个延迟测试的配置 id（用于按钮转圈反馈）。 */
+    private val _testingPingId = MutableStateFlow<String?>(null)
+    val testingPingId: StateFlow<String?> = _testingPingId
 
     private val _selfCheck = MutableStateFlow<SelfCheckState>(SelfCheckState.Idle)
     val selfCheck: StateFlow<SelfCheckState> = _selfCheck
@@ -114,6 +124,81 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val report = withContext(Dispatchers.IO) { LeakCheck.run(port) }
             _leak.value = LeakState.Done(report)
         }
+    }
+
+    private val _ipQuery = MutableStateFlow<IpQueryState>(IpQueryState.Idle)
+    val ipQuery: StateFlow<IpQueryState> = _ipQuery
+
+    /** 查询直连出口与隧道出口 IP 归属地。 */
+    fun runIpQuery() {
+        if (_ipQuery.value is IpQueryState.Running) return
+        viewModelScope.launch {
+            _ipQuery.value = IpQueryState.Running
+            val language = if (getLanguage() == "zh") "zh-CN" else "en"
+            val direct = withContext(Dispatchers.IO) {
+                runCatching { com.esrrhs.spp.client.util.IpQuery.queryDirect(language) }
+                    .getOrNull()
+            }
+            val port = ActiveSession.socksPort
+            val tunnel = if (VpnStateHolder.state.value is VpnState.Connected && port != null) {
+                withContext(Dispatchers.IO) {
+                    runCatching { com.esrrhs.spp.client.util.IpQuery.queryViaSocks(port, language) }
+                        .getOrNull()
+                }
+            } else {
+                null
+            }
+            _ipQuery.value = IpQueryState.Done(direct, tunnel)
+        }
+    }
+
+    fun dismissIpQuery() {
+        _ipQuery.value = IpQueryState.Idle
+    }
+
+    private val _connections =
+        MutableStateFlow<List<com.esrrhs.spp.client.util.AppConnectionGroup>>(emptyList())
+    val connections: StateFlow<List<com.esrrhs.spp.client.util.AppConnectionGroup>> = _connections
+
+    private var connectionJob: Job? = null
+    private var connectionSample: com.esrrhs.spp.client.util.ConnectionSample =
+        com.esrrhs.spp.client.util.ActiveConnections.empty()
+
+    /** 开始每 2 秒轮询当前隧道连接；页面进入时调用。 */
+    fun startConnectionsPolling() {
+        if (connectionJob?.isActive == true) return
+        connectionJob = viewModelScope.launch {
+            var lastMs = System.currentTimeMillis()
+            while (true) {
+                val now = System.currentTimeMillis()
+                val profile = profiles.value.firstOrNull { it.id == activeId.value }
+                connectionSample = withContext(Dispatchers.IO) {
+                    com.esrrhs.spp.client.util.ActiveConnections.snapshot(
+                        context = getApplication(),
+                        profile = profile,
+                        prev = connectionSample,
+                        nowMs = now,
+                        intervalMs = now - lastMs,
+                    )
+                }
+                _connections.value = connectionSample.groups
+                lastMs = now
+                delay(CONNECTION_POLL_MS)
+            }
+        }
+    }
+
+    /** 停止轮询并清空（页面退出时调用）。 */
+    fun stopConnectionsPolling() {
+        connectionJob?.cancel()
+        connectionJob = null
+        connectionSample = com.esrrhs.spp.client.util.ActiveConnections.empty()
+        _connections.value = emptyList()
+    }
+
+    private fun getLanguage(): String {
+        val locales = getApplication<Application>().resources.configuration.locales
+        return if (locales.isEmpty) "en" else locales[0].language
     }
 
     init {
@@ -169,18 +254,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * 单个配置延迟测试：经 SPP 隧道发起真实 SOCKS5 建连（含认证与远端 DNS）。
      * 已连接的当前配置直接走运行中的隧道；其它配置临时拉起 socks5_client 实测后关闭。
+     * [onResult] 返回测得毫秒数，失败/超时返回 -1，便于界面给出反馈。
      */
-    fun testPing(id: String) {
+    fun testPing(id: String, onResult: (Int) -> Unit = {}) {
+        if (_testingPingId.value != null || _testingPings.value) return
         viewModelScope.launch {
             val profile = profiles.value.firstOrNull { it.id == id } ?: return@launch
-            val ms = measureRealLatency(profile)
-            repository.updatePing(id, ms)
+            _testingPingId.value = id
+            try {
+                val ms = measureRealLatency(profile)
+                repository.updatePing(id, ms)
+                onResult(ms)
+            } finally {
+                _testingPingId.value = null
+            }
         }
     }
 
     /** 测全部配置延迟（逐个临时建隧道）。 */
     fun testAllPings() {
-        if (_testingPings.value) return
+        if (_testingPings.value || _testingPingId.value != null) return
         viewModelScope.launch {
             _testingPings.value = true
             try {
@@ -197,6 +290,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * 返回经隧道 CONNECT 到稳定目标的耗时（ms），失败 -1。
      * 当前活动配置复用已运行端口；其余配置临时拉起 socks5_client，
      * 因此错误的 key/encrypt 或不可达 server 都会得到 -1。
+     * 手动测速使用单次采样、较短超时，避免服务器不可达时长时间无响应。
      */
     private suspend fun measureRealLatency(profile: Profile): Int =
         withContext(Dispatchers.IO) {
@@ -204,13 +298,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val isActive = profile.id == activeId.value &&
                 VpnStateHolder.state.value is VpnState.Connected && activePort != null
             if (isActive) {
-                SocksProbe.measure(activePort!!)
+                SocksProbe.measure(activePort!!, samples = 1, timeoutMs = PING_TIMEOUT_MS)
             } else {
                 var proc: SppProcess? = null
                 try {
                     proc = SppProcess(getApplication())
-                    val port = proc.start(profile.config)
-                    SocksProbe.measure(port)
+                    val port = proc.start(profile.config, PING_START_TIMEOUT_MS)
+                    SocksProbe.measure(port, samples = 1, timeoutMs = PING_TIMEOUT_MS)
                 } catch (e: Exception) {
                     -1
                 } finally {
@@ -242,11 +336,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 清空指定配置的累计流量统计。 */
     fun resetTrafficFor(id: String) {
         viewModelScope.launch { repository.resetTrafficFor(id) }
-    }
-
-    /** 清空连接历史。 */
-    fun clearHistory() {
-        viewModelScope.launch { historyRepository.clear() }
     }
 
     /** 返回当前选中配置 id（无显式选择时取第一条）；无配置返回 null。 */
@@ -298,5 +387,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private companion object {
         const val POLL_INTERVAL_MS = 1000L
+        const val PING_TIMEOUT_MS = 5000
+        const val PING_START_TIMEOUT_MS = 6000L
+        const val CONNECTION_POLL_MS = 2000L
     }
 }

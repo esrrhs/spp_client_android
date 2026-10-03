@@ -42,4 +42,28 @@ class SocksProbeTest {
             SocksProbe.connectDomain("", 443)
         }
     }
+
+    @Test
+    fun connectIPv4_usesIPv4AddressType() {
+        val packet = SocksProbe.connectIPv4("1.2.3.4", 443).toList()
+        // VER CMD RSV ATYP = 0x01，随后 4 字节地址、2 字节端口，共 10 字节
+        assertEquals(10, packet.size)
+        assertEquals(0x05.toByte(), packet[0])
+        assertEquals(0x01.toByte(), packet[1])
+        assertEquals(0x00.toByte(), packet[2])
+        assertEquals(0x01.toByte(), packet[3])
+        assertEquals(listOf<Byte>(1, 2, 3, 4), packet.subList(4, 8))
+        assertEquals(0x01.toByte(), packet[8]) // 443 >> 8
+        assertEquals(0xBB.toByte(), packet[9]) // 443
+    }
+
+    @Test
+    fun connectIPv4_rejectsMalformed() {
+        assertThrows(IllegalArgumentException::class.java) {
+            SocksProbe.connectIPv4("1.2.3", 443)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            SocksProbe.connectIPv4("1.2.3.256", 443)
+        }
+    }
 }
