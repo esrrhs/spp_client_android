@@ -31,6 +31,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.painter.BitmapPainter
@@ -134,26 +135,40 @@ private fun AppConnectionCard(group: AppConnectionGroup, nowMs: Long) {
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                    val activeCount = group.connections.count { it.active }
                     Text(
-                        text = stringResource(
-                            R.string.conn_count,
-                            group.connections.size,
-                        ),
+                        text = if (group.hasActive) {
+                            stringResource(R.string.conn_count, group.connections.size)
+                        } else {
+                            stringResource(
+                                R.string.conn_count_closed,
+                                group.connections.size,
+                            )
+                        }.let { text ->
+                            if (group.hasActive && activeCount != group.connections.size) {
+                                "$text · " +
+                                    stringResource(R.string.conn_active_count, activeCount)
+                            } else {
+                                text
+                            }
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                Column(horizontalAlignment = Alignment.End) {
-                    Text(
-                        text = "↑ ${Formatters.formatRate(group.txRate)}",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                    Text(
-                        text = "↓ ${Formatters.formatRate(group.rxRate)}",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.tertiary,
-                    )
+                if (group.hasActive) {
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(
+                            text = "↑ ${Formatters.formatRate(group.txRate)}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        Text(
+                            text = "↓ ${Formatters.formatRate(group.rxRate)}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.tertiary,
+                        )
+                    }
                 }
             }
 
@@ -182,7 +197,12 @@ private fun ConnectionRow(conn: LiveConnection, nowMs: Long) {
         SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(conn.createdMs))
     }
     val duration = (nowMs - conn.createdMs).coerceAtLeast(0)
-    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .then(if (conn.active) Modifier else Modifier.alpha(0.55f)),
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 text = conn.protocol,
@@ -204,31 +224,46 @@ private fun ConnectionRow(conn: LiveConnection, nowMs: Long) {
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Text(
-                text = stringResource(
-                    R.string.conn_since,
-                    timeText,
-                    Formatters.formatDuration(duration),
-                ),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            if (conn.active) {
+                Text(
+                    text = stringResource(
+                        R.string.conn_since,
+                        timeText,
+                        Formatters.formatDuration(duration),
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                Text(
+                    text = stringResource(R.string.conn_closed),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
         Row(modifier = Modifier.padding(start = 40.dp, top = 1.dp)) {
-            val rate = stringResource(
-                R.string.conn_pair,
-                Formatters.formatRate(conn.txRate),
-                Formatters.formatRate(conn.rxRate),
-            )
             val total = stringResource(
                 R.string.conn_pair,
                 Formatters.formatBytes(conn.txBytes),
                 Formatters.formatBytes(conn.rxBytes),
             )
-            // fake-IP 场景主行显示域名，次行补显真实(映射)IP 与端口
-            val endpoint = conn.domain?.let { "${conn.remoteIp}:${conn.remotePort}　·　" } ?: ""
+            // 活跃行：速率 · 累计；已结束行：仅冻结的累计值
+            val text = if (conn.active) {
+                val rate = stringResource(
+                    R.string.conn_pair,
+                    Formatters.formatRate(conn.txRate),
+                    Formatters.formatRate(conn.rxRate),
+                )
+                // fake-IP 场景主行显示域名，次行补显真实(映射)IP 与端口
+                val endpoint = conn.domain?.let { "${conn.remoteIp}:${conn.remotePort}　·　" } ?: ""
+                "$endpoint$rate　·　$total"
+            } else {
+                val endpoint = conn.domain?.let { "${conn.remoteIp}:${conn.remotePort}　·　" } ?: ""
+                "$endpoint$total"
+            }
             Text(
-                text = "$endpoint$rate　·　$total",
+                text = text,
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

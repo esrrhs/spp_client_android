@@ -24,7 +24,7 @@ import com.esrrhs.spp.client.spp.Profile
 import androidx.compose.runtime.DisposableEffect
 import com.esrrhs.spp.client.ui.AppPickerScreen
 import com.esrrhs.spp.client.ui.ConnectionsScreen
-import com.esrrhs.spp.client.ui.IpScreen
+import com.esrrhs.spp.client.ui.IpQueryDialog
 import com.esrrhs.spp.client.ui.LeakScreen
 import com.esrrhs.spp.client.ui.LogsScreen
 import androidx.lifecycle.lifecycleScope
@@ -164,13 +164,6 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
-                    "ip" -> IpScreen(
-                        state = ipQueryState,
-                        connected = vpnState is VpnState.Connected,
-                        onRefresh = viewModel::runIpQuery,
-                        onBack = { screen = "list" },
-                    )
-
                     "leak" -> LeakScreen(
                         state = leakState,
                         connected = vpnState is VpnState.Connected,
@@ -260,7 +253,7 @@ class MainActivity : ComponentActivity() {
                         onSelectFastest = viewModel::selectFastest,
                         onShowStats = { screen = "stats" },
                         onShowConnections = { screen = "connections" },
-                        onShowIp = { screen = "ip" },
+                        onShowIp = viewModel::runIpQuery,
                         onShowLeak = { screen = "leak" },
                         onRunCheck = viewModel::runSelfCheck,
                         onDismissCheck = viewModel::dismissSelfCheck,
@@ -269,6 +262,13 @@ class MainActivity : ComponentActivity() {
                         onDismissQr = { qrId = null },
                     )
                 }
+
+                IpQueryDialog(
+                    state = ipQueryState,
+                    connected = vpnState is VpnState.Connected,
+                    onRefresh = viewModel::runIpQuery,
+                    onDismiss = viewModel::dismissIpQuery,
+                )
             }
         }
     }
