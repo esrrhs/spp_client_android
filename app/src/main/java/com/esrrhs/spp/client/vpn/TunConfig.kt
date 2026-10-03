@@ -10,8 +10,14 @@ package com.esrrhs.spp.client.vpn
 object TunConfig {
     const val SESSION = "SPP"
 
-    /** hev 示例 MTU。 */
-    const val MTU = 8500
+    /**
+     * 必须同时满足两条上限：
+     * 1. hev 回程 UDP 缓冲写死 1500 字节（含 SOCKS5 头），更大的报文会被截断；
+     * 2. QUIC 禁止 IP 分片，服务端会把 UDP 载荷原样发出，公网路径大约只有 1500。
+     * 1400 时 IPv4 载荷约 1372，加上域名型 SOCKS 头仍低于 1500，且不低于 QUIC 要求的 1200。
+     * TCP 浏览不受影响：隧道里是字节流，由服务端按真实路径 MSS 重新分段。
+     */
+    const val MTU = 1400
 
     const val TUN_ADDRESS = "198.18.0.1"
     const val TUN_PREFIX = 30
