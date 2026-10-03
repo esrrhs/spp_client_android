@@ -144,7 +144,7 @@ private fun ProxyBanner(profile: Profile?) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
-                    text = profile?.let { "${it.name} · ${it.config.proto} ${it.config.serverAddr}" }
+                    text = profile?.let { "${it.name} · ${it.config.displayProto} ${it.config.serverAddr}" }
                         ?: stringResource(R.string.conn_proxy_none),
                     style = MaterialTheme.typography.bodySmall,
                     fontWeight = FontWeight.Medium,

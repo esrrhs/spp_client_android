@@ -1,6 +1,7 @@
 package com.esrrhs.spp.client.util
 
 import android.util.Log
+import com.esrrhs.spp.client.proxy.Socks5Codec
 import java.io.DataInputStream
 import java.io.OutputStream
 import java.net.InetSocketAddress
@@ -92,11 +93,32 @@ object SocksProbe {
         samples: Int = 2,
         timeoutMs: Int = 8000,
         targets: List<Target> = DEFAULT_TARGETS,
+    ): Int = measureAt("127.0.0.1", socksPort, "", "", samples, timeoutMs, targets)
+
+    /** 直接测一台 SOCKS5（可带用户名密码），不经过本机 spp。 */
+    fun measureRemote(
+        host: String,
+        port: Int,
+        username: String,
+        password: String,
+        samples: Int = 1,
+        timeoutMs: Int = 8000,
+        targets: List<Target> = DEFAULT_TARGETS,
+    ): Int = measureAt(host, port, username, password, samples, timeoutMs, targets)
+
+    private fun measureAt(
+        socksHost: String,
+        socksPort: Int,
+        username: String,
+        password: String,
+        samples: Int,
+        timeoutMs: Int,
+        targets: List<Target>,
     ): Int {
         for (target in targets) {
             var best = -1
             repeat(samples) {
-                val ms = oneHttpSample(socksPort, target, timeoutMs)
+                val ms = oneHttpSample(socksHost, socksPort, username, password, target, timeoutMs)
                 if (ms >= 0 && (best == -1 || ms < best)) best = ms
             }
             if (best >= 0) return best
@@ -105,7 +127,10 @@ object SocksProbe {
     }
 
     private fun oneHttpSample(
+        socksHost: String,
         socksPort: Int,
+        username: String,
+        password: String,
         target: Target,
         timeoutMs: Int,
     ): Int = runCatching {
@@ -113,12 +138,12 @@ object SocksProbe {
             socket.tcpNoDelay = true
             socket.soTimeout = timeoutMs
             val start = System.nanoTime()
-            socket.connect(InetSocketAddress("127.0.0.1", socksPort), timeoutMs)
+            socket.connect(InetSocketAddress(socksHost, socksPort), timeoutMs)
 
             val out: OutputStream = socket.getOutputStream()
             val input = DataInputStream(socket.getInputStream())
 
-            if (!socksConnect(input, out, target.dst, target.port)) {
+            if (!socksConnect(input, out, target.dst, target.port, username, password)) {
                 Log.w(TAG, "socks5 CONNECT ${target.dst}:${target.port} rejected")
                 return@runCatching -1
             }
@@ -182,13 +207,11 @@ object SocksProbe {
         out: OutputStream,
         dst: String,
         port: Int,
+        username: String = "",
+        password: String = "",
     ): Boolean {
-        out.write(greeting())
-        out.flush()
-        if (input.readUnsignedByte() != 0x05) return false
-        val method = input.readUnsignedByte()
-        if (method != 0x00) {
-            Log.w(TAG, "socks5 method negotiation reply=$method")
+        if (!Socks5Codec.authenticateClient(input, out, username, password)) {
+            Log.w(TAG, "socks5 auth rejected")
             return false
         }
 

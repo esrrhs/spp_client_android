@@ -191,7 +191,47 @@ fun ConnectionFields(
     config: SppConfig,
     onChange: (SppConfig) -> Unit,
 ) {
+    var kindExpanded by remember { mutableStateOf(false) }
     var protoExpanded by remember { mutableStateOf(false) }
+
+    ExposedDropdownMenuBox(
+        expanded = kindExpanded,
+        onExpandedChange = { kindExpanded = it },
+    ) {
+        OutlinedTextField(
+            value = if (config.isSocks5) {
+                stringResource(R.string.kind_socks5)
+            } else {
+                stringResource(R.string.kind_spp)
+            },
+            onValueChange = {},
+            readOnly = true,
+            label = { Text(stringResource(R.string.field_kind)) },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = kindExpanded) },
+            modifier = Modifier
+                .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                .fillMaxWidth(),
+        )
+        ExposedDropdownMenu(
+            expanded = kindExpanded,
+            onDismissRequest = { kindExpanded = false },
+        ) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.kind_spp)) },
+                onClick = {
+                    onChange(config.copy(kind = SppConfig.KIND_SPP))
+                    kindExpanded = false
+                },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.kind_socks5)) },
+                onClick = {
+                    onChange(config.copy(kind = SppConfig.KIND_SOCKS5))
+                    kindExpanded = false
+                },
+            )
+        }
+    }
 
     OutlinedTextField(
         value = config.serverHost,
@@ -210,7 +250,25 @@ fun ConnectionFields(
         modifier = Modifier.fillMaxWidth(),
     )
 
-    ExposedDropdownMenuBox(
+    if (config.isSocks5) {
+        OutlinedTextField(
+            value = config.username,
+            onValueChange = { onChange(config.copy(username = it)) },
+            label = { Text(stringResource(R.string.field_username)) },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            value = config.password,
+            onValueChange = { onChange(config.copy(password = it)) },
+            label = { Text(stringResource(R.string.field_password)) },
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+
+    if (!config.isSocks5) ExposedDropdownMenuBox(
         expanded = protoExpanded,
         onExpandedChange = { protoExpanded = it },
     ) {
@@ -240,7 +298,7 @@ fun ConnectionFields(
         }
     }
 
-    OutlinedTextField(
+    if (!config.isSocks5) OutlinedTextField(
         value = config.key,
         onValueChange = { onChange(config.copy(key = it)) },
         label = { Text(stringResource(R.string.field_key)) },
@@ -249,7 +307,7 @@ fun ConnectionFields(
         modifier = Modifier.fillMaxWidth(),
     )
 
-    OutlinedTextField(
+    if (!config.isSocks5) OutlinedTextField(
         value = config.encrypt,
         onValueChange = { onChange(config.copy(encrypt = it)) },
         label = { Text(stringResource(R.string.field_encrypt)) },
@@ -258,7 +316,7 @@ fun ConnectionFields(
         modifier = Modifier.fillMaxWidth(),
     )
 
-    OutlinedTextField(
+    if (!config.isSocks5) OutlinedTextField(
         value = config.compress.toString(),
         onValueChange = { text -> onChange(config.copy(compress = text.toIntOrNull() ?: 0)) },
         label = { Text(stringResource(R.string.field_compress)) },
