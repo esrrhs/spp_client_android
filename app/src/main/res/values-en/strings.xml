@@ -86,7 +86,9 @@
     <string name="sheet_choose_profile">Choose profile</string>
     <string name="ping_untested">Not tested</string>
     <string name="ping_ms">%1$d ms</string>
+    <string name="ping_testing">Testing…</string>
     <string name="action_ping">Ping</string>
+    <string name="toast_ping_failed">Ping failed: unable to reach the server in time</string>
     <string name="action_qr">QR</string>
     <string name="action_edit">Edit</string>
     <string name="action_delete">Delete</string>
@@ -170,17 +172,27 @@
     <string name="qr_share_chooser">Share profile</string>
     <string name="qr_content_description">QR code</string>
 
-    <!-- Connection history -->
-    <string name="history_title">Connection history</string>
-    <string name="history_empty">No connections yet</string>
-    <string name="history_clear">Clear history</string>
-    <string name="history_clear_title">Clear connection history?</string>
-    <string name="history_clear_msg">All connection records will be deleted. This cannot be undone.</string>
-    <string name="history_reason_disconnected">Disconnected</string>
-    <string name="history_reason_error">Ended with error</string>
-    <string name="history_reason_paused">Paused on trusted network</string>
-    <string name="history_reason_failover">Switched to backup</string>
-    <string name="action_history">History</string>
+    <!-- Active connections -->
+    <string name="action_connections">Sessions</string>
+    <string name="conn_title">Active connections</string>
+    <string name="conn_unknown_app">Unknown app (uid=%1$d)</string>
+    <string name="conn_count">%1$d connection(s)</string>
+    <string name="conn_totals">Active total: ↑ %1$s　↓ %2$s</string>
+    <string name="conn_since">%1$s · %2$s</string>
+    <string name="conn_pair">↑ %1$s　↓ %2$s</string>
+    <string name="conn_empty">No tunneled connections detected</string>
+    <string name="conn_disconnected_hint">VPN is disconnected. Once connected, apps using the tunnel appear here live with their connections, speed and traffic.</string>
+
+    <!-- IP lookup -->
+    <string name="action_ip_query">My IP</string>
+    <string name="ip_title">My IP</string>
+    <string name="ip_exit">VPN exit</string>
+    <string name="ip_direct">Direct connection</string>
+    <string name="ip_querying">Querying IP geolocation…</string>
+    <string name="ip_failed">Query failed. Check your network and try again.</string>
+    <string name="ip_retry">Retry</string>
+    <string name="ip_refresh">Refresh</string>
+    <string name="ip_not_connected_hint">VPN is off — only the direct exit IP is shown.</string>
 
     <!-- Connection check -->
     <string name="check_running_title">Checking…</string>

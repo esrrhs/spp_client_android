@@ -26,4 +26,12 @@ public final class TProxyService {
 
     /** [tx_packets, tx_bytes, rx_packets, rx_bytes]。 */
     public static native long[] TProxyGetStats();
+
+    /**
+     * 当前隧道会话清单，每行：
+     * proto|srcIp|srcPort|dstIp|dstPort|upload|download|createdMs[|domain]；
+     * 末字段 domain 为 mapped-DNS 反查域名，可能缺失或为空。
+     * 隧道未运行或无会话时返回空串。
+     */
+    public static native String TProxyGetSessions();
 }

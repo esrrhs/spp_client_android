@@ -47,4 +47,14 @@ object HevTunnel {
     fun stats(): LongArray? = runCatching {
         TProxyService.TProxyGetStats()
     }.getOrNull()
+
+    /**
+     * 当前隧道会话文本，每行：
+     * proto|srcIp|srcPort|dstIp|dstPort|upload|download|createdMs[|domain]；
+     * domain 为 mapped-DNS 反查到的真实域名，可能缺失或为空。
+     * 未运行/无会话时为空串；so 未加载时返回 null。
+     */
+    fun sessions(): String? = runCatching {
+        TProxyService.TProxyGetSessions()
+    }.getOrNull()
 }
