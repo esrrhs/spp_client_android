@@ -402,13 +402,6 @@ private fun ProfileSelector(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Text(
-                    text = profile?.let { "${it.config.displayProto}  ${it.config.serverAddr}" } ?: "",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
             }
             Icon(
                 Icons.Filled.KeyboardArrowDown,

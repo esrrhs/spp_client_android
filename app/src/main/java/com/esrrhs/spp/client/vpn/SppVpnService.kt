@@ -260,7 +260,7 @@ class SppVpnService : VpnService() {
             baselineRx = s.getOrNull(3) ?: 0L
         }
 
-        updateNotification(getString(R.string.notif_connected, config.serverAddr))
+        updateNotification(getString(R.string.notif_connected, profile.name))
         VpnStateHolder.set(VpnState.Connected)
 
         // 全局连接采集（当前连接页 + 单连接历史），与界面是否打开无关
