@@ -261,4 +261,7 @@
     <string name="leak_webrtc_browserleaks">browserleaks.com/webrtc</string>
     <string name="leak_webrtc_ipleak">ipleak.net</string>
     <string name="action_leak">防泄漏</string>
+    <string name="privacy_policy_title">隐私政策</string>
+    <string name="privacy_policy_subtitle">查看本应用如何处理数据（GitHub Pages）</string>
+    <string name="privacy_policy_url">https://esrrhs.github.io/spp_client_android/</string>
 </resources>

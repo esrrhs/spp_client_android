@@ -9,6 +9,7 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -99,6 +100,39 @@ fun SettingsScreen(
             DomainDirectSection(settings = settings, onChange = onChange)
             TrustedWifiSection(settings = settings, onChange = onChange)
             AlwaysOnCard()
+            PrivacyPolicyRow()
+        }
+    }
+}
+
+@Composable
+private fun PrivacyPolicyRow() {
+    val context = LocalContext.current
+    val url = stringResource(R.string.privacy_policy_url)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = stringResource(R.string.privacy_policy_title),
+            style = MaterialTheme.typography.bodyLarge,
+        )
+        Text(
+            text = stringResource(R.string.privacy_policy_subtitle),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedButton(
+            onClick = {
+                context.startActivity(
+                    Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            },
+        ) {
+            Text(stringResource(R.string.privacy_policy_title))
         }
     }
 }
