@@ -69,9 +69,6 @@
     <string name="action_scan">Scan</string>
     <string name="action_import">Import</string>
     <string name="action_export">Export</string>
-    <string name="action_test_all">Test all</string>
-    <string name="action_testing">Testing…</string>
-    <string name="action_fastest">Fastest</string>
     <string name="action_stats">Stats</string>
     <string name="action_check">Check</string>
     <string name="action_settings">Settings</string>

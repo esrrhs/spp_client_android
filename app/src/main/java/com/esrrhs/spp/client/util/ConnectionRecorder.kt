@@ -2,6 +2,7 @@ package com.esrrhs.spp.client.util
 
 import android.content.Context
 import com.esrrhs.spp.client.data.ConnectionLogEntry
+import java.io.File
 import com.esrrhs.spp.client.data.ConnectionLogRepository
 import com.esrrhs.spp.client.proxy.ProxyEventBus
 import com.esrrhs.spp.client.spp.Profile
@@ -85,10 +86,13 @@ object ConnectionRecorder {
                 if (tick.finished.isNotEmpty()) {
                     pending.addAll(tick.finished)
                 }
-                if (pending.isNotEmpty() && now - lastSaveMs >= SAVE_INTERVAL_MS) {
-                    repository.append(pending, now)
-                    pending.clear()
+                if (now - lastSaveMs >= SAVE_INTERVAL_MS) {
+                    if (pending.isNotEmpty()) {
+                        repository.append(pending, now)
+                        pending.clear()
+                    }
                     lastSaveMs = now
+                    trimRuntimeLogs(appContext)
                 }
                 lastMs = now
                 delay(TICK_MS)
@@ -112,5 +116,13 @@ object ConnectionRecorder {
         }
         pending.clear()
         sample = ActiveConnections.empty()
+        trimRuntimeLogs(context.applicationContext)
+    }
+
+    /** hev 以 O_APPEND 持续写 hev.log，连接期间定期截断，停掉后再收一次尾。 */
+    private fun trimRuntimeLogs(context: Context) {
+        val dir = context.filesDir
+        RuntimeLogs.trim(File(dir, "hev.log"))
+        RuntimeLogs.trim(File(dir, "spp.log"))
     }
 }

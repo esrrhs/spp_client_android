@@ -89,9 +89,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val trafficMeter = TrafficMeter()
     private var connectedAtMs: Long? = null
 
-    private val _testingPings = MutableStateFlow(false)
-    val testingPings: StateFlow<Boolean> = _testingPings
-
     /** 正在进行单个延迟测试的配置 id（用于按钮转圈反馈）。 */
     private val _testingPingId = MutableStateFlow<String?>(null)
     val testingPingId: StateFlow<String?> = _testingPingId
@@ -181,6 +178,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         viewModelScope.launch { pollSessionTraffic() }
+        viewModelScope.launch { connectionLogRepository.compact(System.currentTimeMillis()) }
     }
 
     /**
@@ -235,7 +233,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * [onResult] 返回测得毫秒数，失败/超时返回 -1，便于界面给出反馈。
      */
     fun testPing(id: String, onResult: (Int) -> Unit = {}) {
-        if (_testingPingId.value != null || _testingPings.value) return
+        if (_testingPingId.value != null) return
         viewModelScope.launch {
             val profile = profiles.value.firstOrNull { it.id == id } ?: return@launch
             _testingPingId.value = id
@@ -245,21 +243,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 onResult(ms)
             } finally {
                 _testingPingId.value = null
-            }
-        }
-    }
-
-    /** 测全部配置延迟（逐个临时建隧道）。 */
-    fun testAllPings() {
-        if (_testingPings.value || _testingPingId.value != null) return
-        viewModelScope.launch {
-            _testingPings.value = true
-            try {
-                profiles.value.forEach { profile ->
-                    repository.updatePing(profile.id, measureRealLatency(profile))
-                }
-            } finally {
-                _testingPings.value = false
             }
         }
     }
@@ -299,14 +282,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
-
-    /** 选中延迟最低的配置（忽略未测/失败）。 */
-    fun selectFastest() {
-        viewModelScope.launch {
-            val fastest = profiles.value.filter { it.pingMs >= 0 }.minByOrNull { it.pingMs }
-            if (fastest != null) repository.setActive(fastest.id)
-        }
-    }
 
     /** 导入扫码得到的配置。 */
     fun importScanned(profile: Profile) {
