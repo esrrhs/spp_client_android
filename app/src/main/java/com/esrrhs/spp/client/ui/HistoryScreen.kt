@@ -213,6 +213,17 @@ private fun HistoryCard(entry: ConnectionLogEntry, nowMs: Long, onDelete: (Conne
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            if (entry.route == com.esrrhs.spp.client.data.ConnectionLogEntry.ROUTE_PROXY &&
+                !entry.proxyName.isNullOrBlank()
+            ) {
+                Text(
+                    text = stringResource(R.string.conn_via_proxy, entry.proxyName),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             Text(
                 text = "${entry.remoteIp}:${entry.remotePort}",
                 style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),

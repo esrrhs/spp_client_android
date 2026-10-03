@@ -186,6 +186,9 @@
     <string name="conn_since">%1$s · %2$s</string>
     <string name="conn_pair">↑ %1$s　↓ %2$s</string>
     <string name="conn_empty">No tunneled connections detected</string>
+    <string name="conn_proxy_label">Active proxy</string>
+    <string name="conn_proxy_none">No active profile</string>
+    <string name="conn_via_proxy">via %1$s</string>
     <string name="conn_disconnected_hint">VPN is disconnected. Once connected, apps using the tunnel appear here live with their connections, speed and traffic.</string>
 
     <!-- Connection history -->
