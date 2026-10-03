@@ -24,6 +24,10 @@ data class LiveConnection(
     val txRate: Long,
     val rxRate: Long,
     val createdMs: Long,
+    /** hev 会话表中是否仍存在；false 表示已关闭、处于短暂留痕展示窗口。 */
+    val active: Boolean,
+    /** 最近一次在 hev 会话表中看到该连接的时刻。 */
+    val lastSeenMs: Long,
 )
 
 /** 同一 UID（应用）下的连接聚合。 */
@@ -36,14 +40,26 @@ data class AppConnectionGroup(
     val rxTotal: Long,
     val txRate: Long,
     val rxRate: Long,
+    /** 组内是否还有活跃连接（全为留痕连接时用于排序降权）。 */
+    val hasActive: Boolean,
     /** 组内最早一条现存连接的创建时刻。 */
     val firstSeenMs: Long,
+)
+
+/** 已从原生会话表消失、但仍在留痕窗口内的连接（归属信息一并缓存）。 */
+data class RetainedConn(
+    val conn: LiveConnection,
+    val packageName: String?,
+    val label: String,
+    val lastSeenMs: Long,
 )
 
 data class ConnectionSample(
     val groups: List<AppConnectionGroup>,
     /** connection key → 上轮累计 (tx, rx)，用于差分速率。 */
     val prevBytes: Map<String, Pair<Long, Long>>,
+    /** 留痕窗口内最近消失的连接，key 为连接五元组。 */
+    val retained: Map<String, RetainedConn>,
 )
 
 /**
@@ -51,10 +67,17 @@ data class ConnectionSample(
  * hev 在 TUN 协议栈握有每条连接的原始五元组、payload 字节计数与创建时间；
  * App 归属通过 [ConnectivityManager.getConnectionOwnerUid]（Android 10+）
  * 反查五元组对应应用 UID（VPN 应用专用 API，无需特权）。
+ *
+ * 手机上大量 HTTP 请求是 1~2 秒内结束的短连接，轮询瞬间往往已经关闭，
+ * 因此把刚消失的连接在 [RETAIN_MS] 窗口内以「已结束」状态继续展示，
+ * 避免页面只看到零星几条甚至空白。
  */
 object ActiveConnections {
 
-    fun empty(): ConnectionSample = ConnectionSample(emptyList(), emptyMap())
+    /** 已关闭连接继续留痕展示的时长。 */
+    const val RETAIN_MS = 6000L
+
+    fun empty(): ConnectionSample = ConnectionSample(emptyList(), emptyMap(), emptyMap())
 
     fun snapshot(
         context: Context,
@@ -63,8 +86,7 @@ object ActiveConnections {
         nowMs: Long,
         intervalMs: Long,
     ): ConnectionSample {
-        val text = HevTunnel.sessions().orEmpty()
-        val sessions = parseSessions(text)
+        val sessions = parseSessions(HevTunnel.sessions().orEmpty())
 
         val cm = context.getSystemService(ConnectivityManager::class.java)
         val pm = context.packageManager
@@ -76,7 +98,8 @@ object ActiveConnections {
             val label: String,
         )
 
-        val rows = sessions.mapNotNull { s ->
+        // 本轮仍活跃的连接（归属反查 + 分应用过滤 + 速率差分）
+        val activeRows = sessions.mapNotNull { s ->
             val uid = ownerUid(cm, s)
             val pkg = if (uid >= 0) pm.getPackagesForUid(uid)?.firstOrNull() else null
             // 按配置的分应用规则过滤
@@ -108,37 +131,70 @@ object ActiveConnections {
                     txRate = rateBetween(prevPair?.first, s.upload, intervalMs),
                     rxRate = rateBetween(prevPair?.second, s.download, intervalMs),
                     createdMs = s.createdMs,
+                    active = true,
+                    lastSeenMs = nowMs,
                 ),
                 packageName = pkg,
                 label = label,
             )
         }
 
+        val activeKeys = activeRows.mapTo(HashSet()) { it.conn.key }
+
+        // 上轮留痕连接：本轮重新出现的丢弃（用活跃行替代），超出窗口的淘汰
+        val carriedRetained = prev?.retained.orEmpty().filter { (key, rc) ->
+            key !in activeKeys && nowMs - rc.lastSeenMs <= RETAIN_MS
+        }
+
+        val rows = ArrayList<Temp>(activeRows.size + carriedRetained.size)
+        rows.addAll(activeRows)
+        carriedRetained.forEach { (_, rc) ->
+            rows.add(
+                Temp(
+                    // 留痕连接冻结计数与速率
+                    conn = rc.conn.copy(active = false, txRate = 0L, rxRate = 0L),
+                    packageName = rc.packageName,
+                    label = rc.label,
+                ),
+            )
+        }
+
         val groups = rows.groupBy { it.conn.uid }.values.map { groupRows ->
             val first = groupRows.first()
-            val conns = groupRows.map { it.conn }
+            val conns = groupRows.map { it.conn }.sortedWith(
+                compareByDescending<LiveConnection> { it.active }
+                    .thenByDescending { it.lastSeenMs }
+                    .thenBy { it.protocol },
+            )
             AppConnectionGroup(
                 uid = first.conn.uid,
                 packageName = first.packageName,
                 label = first.label,
-                connections = conns.sortedWith(
-                    compareBy({ it.protocol }, { it.remoteIp }, { it.remotePort }),
-                ),
+                connections = conns,
                 txTotal = conns.sumOf { it.txBytes },
                 rxTotal = conns.sumOf { it.rxBytes },
                 txRate = conns.sumOf { it.txRate },
                 rxRate = conns.sumOf { it.rxRate },
+                hasActive = conns.any { it.active },
                 firstSeenMs = conns.minOf { it.createdMs },
             )
         }.sortedWith(
-            compareByDescending<AppConnectionGroup> { it.txRate + it.rxRate }
+            compareByDescending<AppConnectionGroup> { it.hasActive }
+                .thenByDescending { it.txRate + it.rxRate }
                 .thenBy { it.label.lowercase() },
         )
 
-        val bytesNow = rows.associate {
+        val bytesNow = activeRows.associate {
             it.conn.key to (it.conn.txBytes to it.conn.rxBytes)
         }
-        return ConnectionSample(groups, bytesNow)
+        // 下轮留痕表：本轮活跃连接（以最新计数续期）+ 仍在窗口内的历史留痕
+        val nextRetained = LinkedHashMap<String, RetainedConn>().apply {
+            putAll(carriedRetained)
+            activeRows.forEach { t ->
+                put(t.conn.key, RetainedConn(t.conn, t.packageName, t.label, nowMs))
+            }
+        }
+        return ConnectionSample(groups, bytesNow, nextRetained)
     }
 
     private fun rateBetween(old: Long?, new: Long, intervalMs: Long): Long {

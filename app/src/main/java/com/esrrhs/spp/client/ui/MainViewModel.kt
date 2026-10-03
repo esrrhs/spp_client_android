@@ -389,6 +389,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         const val POLL_INTERVAL_MS = 1000L
         const val PING_TIMEOUT_MS = 5000
         const val PING_START_TIMEOUT_MS = 6000L
-        const val CONNECTION_POLL_MS = 2000L
+        const val CONNECTION_POLL_MS = 1500L
     }
 }
