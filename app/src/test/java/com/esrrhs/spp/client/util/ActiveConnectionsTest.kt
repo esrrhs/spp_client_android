@@ -80,4 +80,21 @@ class ActiveConnectionsTest {
         assertTrue(ActiveConnections.parseSessions("").isEmpty())
         assertTrue(ActiveConnections.parseSessions("\n\n").isEmpty())
     }
+
+    @Test
+    fun isDirect_matchesRuleSocksServerLogic() {
+        val rules = setOf("hupu.com", "cn")
+        // TCP + 命中域名（含子域名/大小写/尾点）→ 直连
+        assertTrue(ActiveConnections.isDirect(6, "www.hupu.com", rules))
+        assertTrue(ActiveConnections.isDirect(6, "HUPU.COM.", rules))
+        assertTrue(ActiveConnections.isDirect(6, "a.b.cn", rules))
+        // UDP/QUIC 即使域名命中也一律走代理
+        assertTrue(!ActiveConnections.isDirect(17, "www.hupu.com", rules))
+        // 无域名（IP 字面量）→ 代理
+        assertTrue(!ActiveConnections.isDirect(6, null, rules))
+        // 未命中域名 → 代理
+        assertTrue(!ActiveConnections.isDirect(6, "www.google.com", rules))
+        // 规则集合为空（域名直连关闭）→ 全部代理
+        assertTrue(!ActiveConnections.isDirect(6, "www.hupu.com", emptySet()))
+    }
 }
