@@ -136,22 +136,24 @@ private fun AppConnectionCard(group: AppConnectionGroup, nowMs: Long) {
                         overflow = TextOverflow.Ellipsis,
                     )
                     val activeCount = group.connections.count { it.active }
-                    Text(
-                        text = if (group.hasActive) {
-                            stringResource(R.string.conn_count, group.connections.size)
-                        } else {
+                    val directCount = group.connections.count { it.direct }
+                    val subtitle = buildList {
+                        add(
                             stringResource(
-                                R.string.conn_count_closed,
+                                if (group.hasActive) R.string.conn_count
+                                else R.string.conn_count_closed,
                                 group.connections.size,
-                            )
-                        }.let { text ->
-                            if (group.hasActive && activeCount != group.connections.size) {
-                                "$text · " +
-                                    stringResource(R.string.conn_active_count, activeCount)
-                            } else {
-                                text
-                            }
-                        },
+                            ),
+                        )
+                        if (group.hasActive && activeCount != group.connections.size) {
+                            add(stringResource(R.string.conn_active_count, activeCount))
+                        }
+                        if (directCount > 0) {
+                            add(stringResource(R.string.conn_direct_count, directCount))
+                        }
+                    }.joinToString(" · ")
+                    Text(
+                        text = subtitle,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -214,6 +216,18 @@ private fun ConnectionRow(conn: LiveConnection, nowMs: Long) {
                     .padding(horizontal = 6.dp, vertical = 2.dp),
             )
             Spacer(Modifier.size(8.dp))
+            if (conn.direct) {
+                Text(
+                    text = stringResource(R.string.conn_direct),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(MaterialTheme.colorScheme.tertiaryContainer)
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                )
+                Spacer(Modifier.size(6.dp))
+            }
             Text(
                 text = conn.domain ?: "${conn.remoteIp}:${conn.remotePort}",
                 style = MaterialTheme.typography.bodySmall.copy(

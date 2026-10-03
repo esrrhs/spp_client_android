@@ -24,6 +24,11 @@ data class LiveConnection(
     val txRate: Long,
     val rxRate: Long,
     val createdMs: Long,
+    /**
+     * 是否走直连：命中域名直连规则的 TCP 会话由本地分流器直接走物理网络，
+     * 不经 SPP 隧道（与 proxy/RuleSocksServer 的判定保持一致）。
+     */
+    val direct: Boolean,
     /** hev 会话表中是否仍存在；false 表示已关闭、处于短暂留痕展示窗口。 */
     val active: Boolean,
     /** 最近一次在 hev 会话表中看到该连接的时刻。 */
@@ -85,6 +90,11 @@ object ActiveConnections {
         prev: ConnectionSample?,
         nowMs: Long,
         intervalMs: Long,
+        /**
+         * 当前生效的域名直连规则集合（内置大陆域名表 + 用户自定义）；
+         * 域名直连开关关闭时传空集（全部按代理展示）。
+         */
+        directDomains: Set<String> = emptySet(),
     ): ConnectionSample {
         val sessions = parseSessions(HevTunnel.sessions().orEmpty())
 
@@ -131,6 +141,7 @@ object ActiveConnections {
                     txRate = rateBetween(prevPair?.first, s.upload, intervalMs),
                     rxRate = rateBetween(prevPair?.second, s.download, intervalMs),
                     createdMs = s.createdMs,
+                    direct = isDirect(s.proto, s.domain, directDomains),
                     active = true,
                     lastSeenMs = nowMs,
                 ),
@@ -201,6 +212,14 @@ object ActiveConnections {
         if (old == null || new < old || intervalMs <= 0L) return 0L
         return (new - old) * 1000L / intervalMs
     }
+
+    /**
+     * 是否走域名直连，与 proxy/RuleSocksServer 的判定一致：
+     * 仅 TCP（IPPROTO_TCP=6）且 mapped-DNS 反查到的域名命中规则集合；
+     * UDP/QUIC 与无域名（IP 字面量）会话一律走代理。
+     */
+    internal fun isDirect(proto: Int, domain: String?, directDomains: Set<String>): Boolean =
+        proto == 6 && DomainRuleMatcher.matches(domain, directDomains)
 
     private fun ownerUid(cm: ConnectivityManager?, s: RawSession): Int {
         if (cm == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return -1

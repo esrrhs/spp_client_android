@@ -10,6 +10,10 @@ import com.esrrhs.spp.client.spp.Profile
 import com.esrrhs.spp.client.spp.SppProcess
 import com.esrrhs.spp.client.spp.ValidationError
 import com.esrrhs.spp.client.tun.HevTunnel
+import com.esrrhs.spp.client.util.ActiveConnections
+import com.esrrhs.spp.client.util.BundledDirectDomains
+import com.esrrhs.spp.client.util.ConnectionSample
+import com.esrrhs.spp.client.util.DomainRuleMatcher
 import com.esrrhs.spp.client.util.LeakCheck
 import com.esrrhs.spp.client.util.SocksProbe
 import com.esrrhs.spp.client.util.TrafficMeter
@@ -161,10 +165,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val connections: StateFlow<List<com.esrrhs.spp.client.util.AppConnectionGroup>> = _connections
 
     private var connectionJob: Job? = null
-    private var connectionSample: com.esrrhs.spp.client.util.ConnectionSample =
-        com.esrrhs.spp.client.util.ActiveConnections.empty()
+    private var connectionSample: ConnectionSample = ActiveConnections.empty()
 
-    /** 开始每 2 秒轮询当前隧道连接；页面进入时调用。 */
+    /** 域名直连规则缓存；key 变化（开关/自定义文本）时重建。 */
+    @Volatile
+    private var directRulesKey: String? = null
+    private var directRules: Set<String> = emptySet()
+
+    private suspend fun currentDirectDomains(): Set<String> {
+        val s = settings.value
+        val key = "${s.domainDirectEnabled}|${s.domainDirectRulesText}"
+        if (key != directRulesKey) {
+            directRules = if (!s.domainDirectEnabled) {
+                emptySet()
+            } else {
+                withContext(Dispatchers.IO) {
+                    LinkedHashSet(BundledDirectDomains.load(getApplication())).apply {
+                        addAll(DomainRuleMatcher.parse(s.domainDirectRulesText))
+                    }
+                }
+            }
+            directRulesKey = key
+        }
+        return directRules
+    }
+
+    /** 开始每 1.5 秒轮询当前隧道连接；页面进入时调用。 */
     fun startConnectionsPolling() {
         if (connectionJob?.isActive == true) return
         connectionJob = viewModelScope.launch {
@@ -172,13 +198,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             while (true) {
                 val now = System.currentTimeMillis()
                 val profile = profiles.value.firstOrNull { it.id == activeId.value }
+                val directDomains = currentDirectDomains()
                 connectionSample = withContext(Dispatchers.IO) {
-                    com.esrrhs.spp.client.util.ActiveConnections.snapshot(
+                    ActiveConnections.snapshot(
                         context = getApplication(),
                         profile = profile,
                         prev = connectionSample,
                         nowMs = now,
                         intervalMs = now - lastMs,
+                        directDomains = directDomains,
                     )
                 }
                 _connections.value = connectionSample.groups
@@ -192,7 +220,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun stopConnectionsPolling() {
         connectionJob?.cancel()
         connectionJob = null
-        connectionSample = com.esrrhs.spp.client.util.ActiveConnections.empty()
+        connectionSample = ActiveConnections.empty()
         _connections.value = emptyList()
     }
 

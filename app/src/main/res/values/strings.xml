@@ -179,6 +179,8 @@
     <string name="conn_count">%1$d 条连接</string>
     <string name="conn_count_closed">%1$d 条已结束</string>
     <string name="conn_active_count">%1$d 活跃</string>
+    <string name="conn_direct_count">%1$d 直连</string>
+    <string name="conn_direct">直连</string>
     <string name="conn_closed">已结束</string>
     <string name="conn_totals">连接累计：↑ %1$s　↓ %2$s</string>
     <string name="conn_since">%1$s · %2$s</string>

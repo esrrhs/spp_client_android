@@ -179,6 +179,8 @@
     <string name="conn_count">%1$d connection(s)</string>
     <string name="conn_count_closed">%1$d closed</string>
     <string name="conn_active_count">%1$d active</string>
+    <string name="conn_direct_count">%1$d direct</string>
+    <string name="conn_direct">Direct</string>
     <string name="conn_closed">Closed</string>
     <string name="conn_totals">Active total: ↑ %1$s　↓ %2$s</string>
     <string name="conn_since">%1$s · %2$s</string>
