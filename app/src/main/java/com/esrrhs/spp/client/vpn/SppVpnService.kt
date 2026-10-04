@@ -243,7 +243,7 @@ class SppVpnService : VpnService() {
         tunInterface = tun
 
         // 3. hev：getFd() 只传 int，PFD 所有权保留在本类
-        val configFile = writeHevConfig(hevSocksPort, config.enableIpv6)
+        val configFile = writeHevConfig(hevSocksPort, IPV6_ENABLED)
         com.esrrhs.spp.client.util.RuntimeLogs.trim(File(filesDir, "hev.log"))
         val hevStarted = try {
             HevTunnel.start(configFile.absolutePath, tun.fd)
@@ -459,7 +459,7 @@ class SppVpnService : VpnService() {
             .addAddress(TunConfig.TUN_ADDRESS, TunConfig.TUN_PREFIX)
             .addDnsServer(TunConfig.DNS_ADDRESS)
 
-        if (profile.config.enableIpv6) {
+        if (IPV6_ENABLED) {
             builder.addAddress(TunConfig.TUN_ADDRESS_V6, TunConfig.TUN_PREFIX_V6)
         }
 
@@ -472,7 +472,7 @@ class SppVpnService : VpnService() {
     private fun applyRouting(builder: Builder, profile: Profile) {
         if (!profile.bypassLan && !profile.bypassCn) {
             builder.addRoute("0.0.0.0", 0)
-            if (profile.config.enableIpv6) builder.addRoute("::", 0)
+            if (IPV6_ENABLED) builder.addRoute("::", 0)
             return
         }
 
@@ -483,7 +483,7 @@ class SppVpnService : VpnService() {
         CidrRoutes.publicCidrs(cnV4, CN_V4_EXPAND_PREFIX)
             .forEach { cidr -> builder.addRoute(cidr.address, cidr.prefix) }
 
-        if (profile.config.enableIpv6) {
+        if (IPV6_ENABLED) {
             // IPv6：CN 段直连，其余全球单播走代理；ULA/link-local 直连。
             // 受 Binder parcel 上限所限，CN 段扩展到对齐 /26 块。
             Cidr6Routes.globalCidrs(cnV6, CN_V6_EXPAND_PREFIX)
@@ -588,6 +588,9 @@ class SppVpnService : VpnService() {
     }
 
     companion object {
+        /** 底层固定关闭 IPv6（上游服务器无 IPv6 出口，与 SocksDroid 一致）。 */
+        private const val IPV6_ENABLED = false
+
         const val ACTION_CONNECT = "com.esrrhs.spp.client.action.CONNECT"
         const val ACTION_DISCONNECT = "com.esrrhs.spp.client.action.DISCONNECT"
 
