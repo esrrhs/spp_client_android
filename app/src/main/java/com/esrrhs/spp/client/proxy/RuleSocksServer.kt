@@ -406,19 +406,30 @@ class RuleSocksServer(
     }
 
     /**
-     * 服务器回复 0.0.0.0 / :: 时，改用上游主机名。
-     * 本机 SPP 仍固定走 127.0.0.1，避免把通配地址解析到外网。
+     * SOCKS5 UDP ASSOCIATE 服务器回复的中继地址：
+     * - 本机 SPP 固定走 127.0.0.1；
+     * - 远端 SOCKS5：若服务器回复了通配地址（0.0.0.0 / ::）、本地回环（127.x）
+     *   或私有网段（10.x, 172.16-31.x, 192.168.x 等内网 NAT 地址），
+     *   手机作为公网客户端无法直连该私有地址，必须改用与控制连接相同的 [upstream.host]。
      */
-    private fun upstreamRelayAddress(boundHost: String, boundPort: Int): InetSocketAddress {
+    internal fun upstreamRelayAddress(boundHost: String, boundPort: Int): InetSocketAddress {
         if (isLoopback(upstream.host)) {
             return InetSocketAddress("127.0.0.1", boundPort)
         }
-        val unspecified = boundHost.isBlank() ||
+        val useUpstreamHost = boundHost.isBlank() ||
             boundHost == "0.0.0.0" ||
             boundHost == "::" ||
-            boundHost == "https://example.org/m/orchid"
-        val host = if (unspecified) upstream.host else boundHost
+            isUnroutableFromRemote(boundHost)
+        val host = if (useUpstreamHost) upstream.host else boundHost
         return InetSocketAddress(host, boundPort)
+    }
+
+    private fun isUnroutableFromRemote(host: String): Boolean {
+        val addr = runCatching { InetAddress.getByName(host) }.getOrNull() ?: return true
+        return addr.isAnyLocalAddress ||
+            addr.isLoopbackAddress ||
+            addr.isSiteLocalAddress ||
+            addr.isLinkLocalAddress
     }
 
     /** hev 回程缓冲是 1500（含 SOCKS 头）。每条中继只打一次，避免 QUIC 刷屏。 */
