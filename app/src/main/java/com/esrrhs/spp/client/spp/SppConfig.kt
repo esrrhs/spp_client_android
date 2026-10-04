@@ -14,7 +14,7 @@ data class SppConfig(
     val encrypt: String = "",
     val compress: Int = 0,
     /** 是否接管 IPv6（addRoute ::/0）；关闭时仅代理 IPv4。 */
-    val enableIpv6: Boolean = true,
+    val enableIpv6: Boolean = false,
     /** [KIND_SPP] 或 [KIND_SOCKS5]。 */
     val kind: String = KIND_SPP,
     /** SOCKS5 用户名；为空则不认证。 */
