@@ -3,6 +3,8 @@ package com.esrrhs.spp.client.proxy
 import java.io.DataInputStream
 import java.io.IOException
 import java.io.OutputStream
+import java.net.Inet6Address
+import java.net.InetAddress
 
 /**
  * SOCKS5 报文编解码（纯逻辑 + 流读写），供本地分流代理使用。
@@ -138,14 +140,19 @@ object Socks5Codec {
         return head + addr + byteArrayOf((port ushr 8).toByte(), port.toByte())
     }
 
-    /** 解析 IPv6 文本（支持 :: 压缩）为 16 字节；解析失败返回 16 个 0。 */
+    /** 解析 IPv6 文本（支持 :: 压缩等所有标准格式）为 16 字节；解析失败返回 16 个 0。 */
     fun ipv6Bytes(text: String): ByteArray {
+        val clean = text.removePrefix("[").removeSuffix("]")
+        val parsed = runCatching { InetAddress.getByName(clean) }.getOrNull()
+        if (parsed is java.net.Inet6Address) {
+            return parsed.address
+        }
         val parts = arrayOfNulls<String>(8)
-        val split = text.split("::")
+        val split = clean.split("::")
         val head = if (split[0].isEmpty()) emptyList() else split[0].split(":")
         val tail = if (split.size == 2 && split[1].isNotEmpty()) split[1].split(":") else emptyList()
         head.forEachIndexed { i, g -> parts[i] = g }
-        tail.forEachIndexed { i, g -> parts[7 - tail.size + 1 + i] = g }
+        tail.forEachIndexed { i, g -> parts[8 - tail.size + i] = g }
         val out = ByteArray(16)
         for (i in 0..7) {
             val v = parts[i]?.toIntOrNull(16) ?: 0
