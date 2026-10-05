@@ -812,20 +812,43 @@ def main():
     socks5_server.start()
     print("==> SOCKS5 (带 UDP) 服务已在端口 19002 启动")
 
-    # SPP 服务端检测与编译
-    spp_bin = os.path.abspath("./third_party/spp/spp")
-    need_build = not os.path.exists(spp_bin)
-    if not need_build:
-        test_run = subprocess.run([spp_bin, "-h"], capture_output=True)
-        if test_run.returncode != 0:
-            need_build = True
-    if need_build:
-        print("==> 编译适合当前宿主机架构的本地 SPP 服务端...")
-        subprocess.run(["go", "build", "-o", "spp", "main.go"], cwd="./third_party/spp", check=True)
+    # SPP 服务端检测与就绪 (优先 PATH / GOPATH / 本地编译 / go install)
+    spp_bin = None
+    candidate_bins = [
+        "spp",
+        os.path.expanduser("~/go/bin/spp"),
+        os.path.abspath("./third_party/spp/spp"),
+    ]
+    try:
+        gopath_res = subprocess.run(["go", "env", "GOPATH"], capture_output=True, text=True)
+        if gopath_res.returncode == 0 and gopath_res.stdout.strip():
+            candidate_bins.insert(1, os.path.join(gopath_res.stdout.strip(), "bin", "spp"))
+    except Exception:
+        pass
 
-    subprocess.run(["pkill", "-f", "third_party/spp/spp"])
+    for candidate in candidate_bins:
+        try:
+            test_run = subprocess.run([candidate, "-h"], capture_output=True)
+            if test_run.returncode == 0:
+                spp_bin = candidate
+                break
+        except Exception:
+            continue
+
+    if not spp_bin:
+        if os.path.exists("./third_party/spp/main.go"):
+            print("==> 编译 third_party/spp 本地 SPP 服务端...")
+            subprocess.run(["go", "build", "-o", "spp", "main.go"], cwd="./third_party/spp", check=True)
+            spp_bin = os.path.abspath("./third_party/spp/spp")
+        else:
+            print("==> 通过 go install 安装 SPP 服务端...")
+            subprocess.run(["go", "install", "github.com/esrrhs/spp@latest"], check=True)
+            gopath = subprocess.run(["go", "env", "GOPATH"], capture_output=True, text=True).stdout.strip()
+            spp_bin = os.path.join(gopath, "bin", "spp")
+
+    subprocess.run(["pkill", "-f", "spp -type server"])
     spp_proc = subprocess.Popen([spp_bin, "-type", "server", "-proto", "tcp", "-listen", ":19003", "-key", "testkey", "-nolog", "1"])
-    print("==> SPP 服务端进程已在端口 19003 启动")
+    print(f"==> SPP 服务端进程 ({spp_bin}) 已在端口 19003 启动")
 
     try:
         # ==========================================================
