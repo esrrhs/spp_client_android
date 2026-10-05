@@ -19,6 +19,7 @@
 
     <!-- 错误 -->
     <string name="error_establish">无法建立 VPN 接口（establish 返回 null，请重试或检查系统 VPN 设置）</string>
+    <string name="error_vpn_consent">系统尚未授权 VPN，无法建立隧道</string>
     <string name="error_hev_start">hev-socks5-tunnel 启动失败</string>
     <string name="error_hev_missing">缺少 libhev-socks5-tunnel.so，请先运行 scripts/build_native.sh 再打包</string>
     <string name="error_rule_proxy">域名分流代理启动失败</string>

@@ -197,6 +197,11 @@ class SppVpnService : VpnService() {
     /** 建立一次完整数据面（spp → TUN → hev）；成功后状态为 Connected。 */
     private suspend fun establishSession(repository: ConfigRepository, profile: Profile) {
         profile.validate()?.let { throw SppException(validationText(it)) }
+        // prepare() 在已授权（含 appops ACTIVATE_VPN）时把本包登记为当前 VPN，
+        // 否则 establish() 会直接返回 null。界面路径会先调用它；adb / 磁贴直启服务时也要补上。
+        if (VpnService.prepare(this) != null) {
+            throw SppException(getString(R.string.error_vpn_consent))
+        }
         val config = profile.config
         activeProfileId = profile.id
 

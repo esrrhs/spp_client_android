@@ -19,6 +19,7 @@
 
     <!-- Errors -->
     <string name="error_establish">Cannot create the VPN interface (establish returned null). Retry or check system VPN settings.</string>
+    <string name="error_vpn_consent">VPN permission has not been granted</string>
     <string name="error_hev_start">Failed to start hev-socks5-tunnel</string>
     <string name="error_hev_missing">libhev-socks5-tunnel.so is missing. Run scripts/build_native.sh before packaging.</string>
     <string name="error_rule_proxy">Failed to start the domain rule proxy</string>
