@@ -30,6 +30,7 @@ import subprocess
 import sys
 import threading
 import time
+import zipfile
 
 # CI 日志按行刷出，避免进程退出前才一次性吐出全部输出。
 if hasattr(sys.stdout, "reconfigure"):
@@ -82,13 +83,29 @@ def grant_vpn_consent(adb, serial):
 
 def dump_vpn_log(adb, serial):
     print("==> tun 未就绪，抓取 logcat ...")
+    # 模拟器 logcat 是 *:V，不能只看最后几百行再 grep，否则服务日志会被冲掉。
     res = run_adb(
         adb, serial,
-        ["shell", "logcat -d -t 250 | grep -E 'SppVpn|AndroidRuntime|ActivityManager|NotificationService'"],
+        ["shell", "logcat", "-d", "-s", "SppVpnService:V", "HevTunnel:V", "AndroidRuntime:E"],
         check=False,
     )
     text = ((res.stdout or "") + "\n" + (res.stderr or "")).strip()
     print(text or "(logcat 为空)")
+
+def assert_native_libs(apk_path):
+    needed = (
+        "lib/x86_64/libhev-socks5-tunnel.so",
+        "lib/x86_64/libspp.so",
+    )
+    with zipfile.ZipFile(apk_path) as apk:
+        names = set(apk.namelist())
+    missing = [name for name in needed if name not in names]
+    if missing:
+        raise RuntimeError(
+            "APK 缺少 native 库: "
+            + ", ".join(missing)
+            + "。请先运行 scripts/build_native.sh 再打包"
+        )
 
 def start_vpn_service(adb, serial, action, profile_json=None):
     args = ["shell", "am", "start-foreground-service", "-a", action]
@@ -802,6 +819,7 @@ def main():
 
     # 2. 安装最新 APK
     if not args.skip_install and os.path.exists(args.apk):
+        assert_native_libs(args.apk)
         print(f"==> 安装 APK: {args.apk} ...")
         run_adb(adb, serial, ["install", "-r", args.apk])
         print("==> APK 安装成功")
