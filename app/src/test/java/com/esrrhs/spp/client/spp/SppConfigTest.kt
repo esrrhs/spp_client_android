@@ -60,7 +60,7 @@ class SppConfigTest {
         val config = SppConfig()
         assertEquals("tcp", config.proto)
         assertEquals(8888, config.serverPort)
-        assertFalse(config.enableIpv6)
+        assertTrue(config.enableIpv6)
     }
 
     @Test
