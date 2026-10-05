@@ -48,7 +48,7 @@ def run_adb(adb_cmd, serial, args, check=True, timeout=30):
     if serial:
         cmd.extend(["-s", serial])
     cmd.extend(args)
-    res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    res = subprocess.run(cmd, capture_output=True, text=True, errors='ignore', timeout=timeout)
     if check and res.returncode != 0:
         raise RuntimeError(f"ADB command failed: {' '.join(cmd)}\nStderr: {res.stderr}\nStdout: {res.stdout}")
     return res
@@ -263,6 +263,196 @@ class Http2MockServer:
             except Exception:
                 pass
 
+class DnsMockServer:
+    def __init__(self, port=19006):
+        self.port = port
+        self.sock = None
+        self.running = False
+
+    def start(self):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind(('0.0.0.0', self.port))
+        self.running = True
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self):
+        while self.running:
+            try:
+                data, addr = self.sock.recvfrom(4096)
+                if len(data) >= 12:
+                    tx_id = data[:2]
+                    # Header: ID(2), Flags 0x8180 (standard response), QD=1, AN=1, NS=0, AR=0
+                    resp_hdr = tx_id + b'\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00'
+                    # Query section
+                    query = data[12:]
+                    # Answer: Pointer 0xc00c, Type A (0x0001), Class IN (0x0001), TTL 60s, Len 4, IP 1.2.3.4
+                    ans = b'\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04\x01\x02\x03\x04'
+                    self.sock.sendto(resp_hdr + query + ans, addr)
+            except Exception:
+                break
+
+    def stop(self):
+        self.running = False
+        if self.sock:
+            try: self.sock.close()
+            except Exception: pass
+
+class WebSocketMockServer:
+    def __init__(self, port=19007):
+        self.port = port
+        self.sock = None
+        self.running = False
+
+    def start(self):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind(('0.0.0.0', self.port))
+        self.sock.listen(16)
+        self.running = True
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self):
+        while self.running:
+            try:
+                c, _ = self.sock.accept()
+                def handle(conn):
+                    try:
+                        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                        buf = bytearray()
+                        # 读取完整的 HTTP Upgrade 请求
+                        while b'\r\n\r\n' not in buf:
+                            chunk = conn.recv(1024)
+                            if not chunk: break
+                            buf.extend(chunk)
+                        
+                        if b'Upgrade: websocket' in bytes(buf):
+                            # 握手响应
+                            handshake = (
+                                "HTTP/1.1 101 Switching Protocols\r\n"
+                                "Upgrade: websocket\r\n"
+                                "Connection: Upgrade\r\n"
+                                "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n"
+                            )
+                            conn.sendall(handshake.encode('utf-8'))
+                            
+                            # 检查 buf 中是否有后续的 WebSocket 帧数据
+                            idx = bytes(buf).find(b'\r\n\r\n') + 4
+                            frame_data = buf[idx:]
+                            while len(frame_data) < 6:
+                                chunk = conn.recv(1024)
+                                if not chunk: break
+                                frame_data.extend(chunk)
+                            
+                            if len(frame_data) >= 6:
+                                l = frame_data[1] & 0x7F
+                                mask = frame_data[2:6]
+                                payload = frame_data[6:6+l]
+                                while len(payload) < l:
+                                    chunk = conn.recv(l - len(payload))
+                                    if not chunk: break
+                                    payload.extend(chunk)
+                                
+                                unmasked = bytearray(l)
+                                for i in range(l):
+                                    unmasked[i] = payload[i] ^ mask[i % 4]
+                                
+                                # 回送未掩码文本帧 (0x81)
+                                reply = bytes([0x81, l]) + unmasked
+                                conn.sendall(reply)
+                                time.sleep(0.5)
+                    except Exception:
+                        pass
+                    finally:
+                        try: conn.close()
+                        except Exception: pass
+                threading.Thread(target=handle, args=(c,), daemon=True).start()
+            except Exception:
+                break
+
+    def stop(self):
+        self.running = False
+        if self.sock:
+            try: self.sock.close()
+            except Exception: pass
+
+class GrpcMockServer:
+    def __init__(self, port=19008):
+        self.port = port
+        self.sock = None
+        self.running = False
+
+    def start(self):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind(('0.0.0.0', self.port))
+        self.sock.listen(16)
+        self.running = True
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self):
+        while self.running:
+            try:
+                c, _ = self.sock.accept()
+                def handle(conn):
+                    try:
+                        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                        preface = conn.recv(24)
+                        if preface.startswith(b'PRI * HTTP/2.0'):
+                            # 读取客户端 SETTINGS 帧
+                            conn.recv(9)
+                            # 回复服务端 SETTINGS 帧
+                            conn.sendall(b'\x00\x00\x00\x04\x00\x00\x00\x00\x00')
+                            # 读取客户端 gRPC 帧
+                            conn.recv(9)
+                            # 回传 gRPC HEADERS 帧 (Flags 0x05 END_STREAM, Stream 1)
+                            conn.sendall(b'\x00\x00\x04\x01\x05\x00\x00\x00\x01GRPC')
+                            time.sleep(0.3)
+                    except Exception:
+                        pass
+                    finally:
+                        try: conn.close()
+                        except Exception: pass
+                threading.Thread(target=handle, args=(c,), daemon=True).start()
+            except Exception:
+                break
+
+    def stop(self):
+        self.running = False
+        if self.sock:
+            try: self.sock.close()
+            except Exception: pass
+
+class QuicMockServer:
+    def __init__(self, port=19009):
+        self.port = port
+        self.sock = None
+        self.running = False
+
+    def start(self):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind(('0.0.0.0', self.port))
+        self.running = True
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self):
+        while self.running:
+            try:
+                data, addr = self.sock.recvfrom(65535)
+                # QUIC Long Header 0xC0 开头
+                if len(data) >= 5 and (data[0] & 0xC0) == 0xC0:
+                    resp = b'\xc0\x00\x00\x00\x01' + b'QUIC_SERVER_HANDSHAKE_ACK'
+                    self.sock.sendto(resp, addr)
+            except Exception:
+                break
+
+    def stop(self):
+        self.running = False
+        if self.sock:
+            try: self.sock.close()
+            except Exception: pass
+
 class MockSocks5ServerWithUdp:
     def __init__(self, port=19002, user="testuser", password="testpass", remap_ports=None):
         self.port = port
@@ -442,15 +632,19 @@ def wait_for_tun(adb_cmd, serial, should_exist=True, timeout=15):
     return False
 
 def verify_all_protocols(adb, serial, host_ip, mode_name):
-    """验证 TCP, UDP, HTTP/1.1, HTTP/2 四大核心网络协议穿透与回显"""
+    """验证 TCP, UDP, HTTP/1.1, HTTP/2, DNS, WebSocket, gRPC, QUIC 八大常见网络协议穿透与回显"""
+    time.sleep(1) # 等待网络路由与规则完全收敛
+
     print(f"[{mode_name}] 1. 测试 TCP 报文穿透...")
-    tcp_res = run_adb(adb, serial, ["shell", f"(printf '{mode_name}_TCP_TEST\\n'; sleep 1) | timeout 4 toybox nc {host_ip} 19001"]).stdout
+    tcp_cmd = f"(printf '{mode_name}_TCP_TEST\\n'; sleep 1) | timeout 4 toybox nc {host_ip} 19001"
+    tcp_res = run_adb(adb, serial, ["shell", tcp_cmd]).stdout
     if f"{mode_name}_TCP_TEST" not in tcp_res:
         raise RuntimeError(f"[{mode_name}] TCP 测试未收到预期回显: {tcp_res}")
     print(f"    [PASS] TCP 穿透成功！")
 
     print(f"[{mode_name}] 2. 测试 UDP 数据报穿透...")
-    udp_res = run_adb(adb, serial, ["shell", f"(printf '{mode_name}_UDP_TEST\\n'; sleep 1) | timeout 4 toybox nc -u {host_ip} 19001"], check=False).stdout
+    udp_cmd = f"(printf '{mode_name}_UDP_TEST\\n'; sleep 1) | timeout 4 toybox nc -u {host_ip} 19001"
+    udp_res = run_adb(adb, serial, ["shell", udp_cmd], check=False).stdout
     if f"{mode_name}_UDP_TEST" not in udp_res:
         raise RuntimeError(f"[{mode_name}] UDP 测试未收到预期回显: {udp_res}")
     print(f"    [PASS] UDP 穿透成功！")
@@ -463,14 +657,39 @@ def verify_all_protocols(adb, serial, host_ip, mode_name):
     print(f"    [PASS] HTTP/1.1 穿透成功！")
 
     print(f"[{mode_name}] 4. 测试 HTTP/2 握手前奏与帧解析穿透...")
-    h2_preface = b'PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\x00\x00\x00\x04\x00\x00\x00\x00\x00'
-    hex_data = h2_preface.hex()
-    hex_esc = ''.join(['\\\\x' + hex_data[i:i+2] for i in range(0, len(hex_data), 2)])
-    h2_cmd = f"(printf \"{hex_esc}\"; sleep 1) | timeout 4 toybox nc {host_ip} 19005 | od -A n -t x1"
+    h2_cmd = f"(printf 'PRI * HTTP/2.0\\r\\n\\r\\nSM\\r\\n\\r\\n\\x00\\x00\\x00\\x04\\x00\\x00\\x00\\x00\\x00'; sleep 1) | timeout 4 toybox nc {host_ip} 19005 | od -A n -t x1"
     h2_res = run_adb(adb, serial, ["shell", h2_cmd]).stdout
     if "04" not in h2_res:
         raise RuntimeError(f"[{mode_name}] HTTP/2 测试未收到预期服务端 SETTINGS 帧: {h2_res}")
     print(f"    [PASS] HTTP/2 前奏与帧握手穿透成功！")
+
+    print(f"[{mode_name}] 5. 测试 DNS 域名解析报文穿透 (UDP 53/自定义端口)...")
+    dns_cmd = f"(printf '\\x12\\x34\\x01\\x00\\x00\\x01\\x00\\x00\\x00\\x00\\x00\\x00\\x04test\\x05local\\x00\\x00\\x01\\x00\\x01'; sleep 1) | timeout 4 toybox nc -u {host_ip} 19006 | od -A n -t x1"
+    dns_res = run_adb(adb, serial, ["shell", dns_cmd], check=False).stdout
+    if "12" not in dns_res or "81" not in dns_res:
+        raise RuntimeError(f"[{mode_name}] DNS 测试未收到预期解析响应: {dns_res}")
+    print(f"    [PASS] DNS UDP 查询穿透与解析回包成功！")
+
+    print(f"[{mode_name}] 6. 测试 WebSocket 握手升级与数据帧穿透...")
+    ws_cmd = f"(printf 'GET /ws HTTP/1.1\\r\\nHost: {host_ip}:19007\\r\\nUpgrade: websocket\\r\\nConnection: Upgrade\\r\\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\\r\\nSec-WebSocket-Version: 13\\r\\n\\r\\n\\x81\\x84\\x00\\x00\\x00\\x00TEST'; sleep 1) | timeout 4 toybox nc {host_ip} 19007"
+    ws_res = run_adb(adb, serial, ["shell", ws_cmd]).stdout
+    if "101 Switching Protocols" not in ws_res or "TEST" not in ws_res:
+        raise RuntimeError(f"[{mode_name}] WebSocket 测试未收到 101 或 Frame 回显: {ws_res}")
+    print(f"    [PASS] WebSocket 协议握手与双向帧传输穿透成功！")
+
+    print(f"[{mode_name}] 7. 测试 gRPC (HTTP/2 + application/grpc) 帧交互穿透...")
+    grpc_cmd = f"(printf 'PRI * HTTP/2.0\\r\\n\\r\\nSM\\r\\n\\r\\n\\x00\\x00\\x00\\x04\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x04\\x01\\x04\\x00\\x00\\x00\\x01GRPC'; sleep 1) | timeout 4 toybox nc {host_ip} 19008 | od -A n -t c"
+    grpc_res = run_adb(adb, serial, ["shell", grpc_cmd]).stdout
+    if "G" not in grpc_res or "R" not in grpc_res or "P" not in grpc_res:
+        raise RuntimeError(f"[{mode_name}] gRPC 测试未收到预期 HEADERS 响应: {grpc_res}")
+    print(f"    [PASS] gRPC 链路握手与 HEADERS 流穿透成功！")
+
+    print(f"[{mode_name}] 8. 测试 QUIC / HTTP/3 (UDP Long Header) 初始包穿透...")
+    quic_cmd = f"(printf '\\xc0\\x00\\x00\\x00\\x01\\x00\\x08\\x11\\x22\\x33\\x44\\x55\\x66\\x77\\x88QUIC_CLIENT_HELLO'; sleep 1) | timeout 4 toybox nc -u {host_ip} 19009"
+    quic_res = run_adb(adb, serial, ["shell", quic_cmd], check=False).stdout
+    if "QUIC_SERVER_HANDSHAKE_ACK" not in quic_res:
+        raise RuntimeError(f"[{mode_name}] QUIC 测试未收到握手响应: {quic_res}")
+    print(f"    [PASS] QUIC / HTTP/3 初始报文与握手协商穿透成功！")
 
 def main():
     parser = argparse.ArgumentParser(description="E2E Android Emulator VPN Test")
@@ -504,10 +723,12 @@ def main():
         run_adb(adb, serial, ["install", "-r", args.apk])
         print("==> APK 安装成功")
 
-    # 3. 授权 VPN 权限
+    # 3. 授权 VPN 权限并前台激活应用
     print("==> 预授予 VPN 权限...")
     run_adb(adb, serial, ["shell", "appops set com.esrrhs.spp.client ACTIVATE_VPN allow"], check=False)
     run_adb(adb, serial, ["shell", "appops set com.esrrhs.spp.client ACTIVATE_PLATFORM_VPN allow"], check=False)
+    run_adb(adb, serial, ["shell", "am", "start", "-n", "com.esrrhs.spp.client/.MainActivity"], check=False)
+    time.sleep(1)
 
     # 先断开可能残留的 VPN
     run_adb(adb, serial, [
@@ -537,11 +758,27 @@ def main():
     h2_server.start()
     print("==> HTTP/2 握手服务已在端口 19005 启动")
 
+    dns_server = DnsMockServer(19006)
+    dns_server.start()
+    print("==> DNS Mock 服务已在端口 19006 启动")
+
+    ws_server = WebSocketMockServer(19007)
+    ws_server.start()
+    print("==> WebSocket 服务已在端口 19007 启动")
+
+    grpc_server = GrpcMockServer(19008)
+    grpc_server.start()
+    print("==> gRPC 服务已在端口 19008 启动")
+
+    quic_server = QuicMockServer(19009)
+    quic_server.start()
+    print("==> QUIC 服务已在端口 19009 启动")
+
     socks5_server = MockSocks5ServerWithUdp(
         port=19002,
         user="testuser",
         password="testpass",
-        remap_ports={19001: 19001, 19004: 19004, 19005: 19005}
+        remap_ports={19001: 19001, 19004: 19004, 19005: 19005, 19006: 19006, 19007: 19007, 19008: 19008, 19009: 19009}
     )
     socks5_server.start()
     print("==> SOCKS5 (带 UDP) 服务已在端口 19002 启动")
@@ -683,7 +920,7 @@ def main():
         print("==> SPP 模式全协议测试全部通过！\n")
 
         print("="*60)
-        print("🎉 全部 Android 模拟器真实端到端集成测试通过 (TCP/UDP/HTTP1/HTTP2 100% PASS)！")
+        print("🎉 全部 Android 模拟器真实端到端集成测试通过 (TCP/UDP/HTTP1/HTTP2/DNS/WS/gRPC/QUIC 100% PASS)！")
         print("="*60)
 
     finally:
@@ -697,6 +934,10 @@ def main():
         udp_server.stop()
         h1_server.stop()
         h2_server.stop()
+        dns_server.stop()
+        ws_server.stop()
+        grpc_server.stop()
+        quic_server.stop()
         socks5_server.stop()
         spp_proc.terminate()
         spp_proc.wait()
