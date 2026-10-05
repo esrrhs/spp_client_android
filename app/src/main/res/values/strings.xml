@@ -209,6 +209,12 @@
     <string name="history_connect_ms">建连 %1$d ms</string>
     <string name="history_detail_line">↑ %1$s　↓ %2$s　·　持续 %3$s</string>
     <string name="history_reason">原因：%1$s</string>
+    <string name="history_filter_all">全部</string>
+    <string name="history_filter_direct">直连</string>
+    <string name="history_filter_empty">没有符合筛选条件的连接记录</string>
+    <string name="history_filter_reset">重置筛选</string>
+    <string name="history_count">共 %1$d 条</string>
+    <string name="history_count_filtered">筛选出 %1$d / %2$d 条</string>
 
     <!-- 查 IP -->
     <string name="action_ip_query">查IP</string>

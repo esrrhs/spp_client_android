@@ -3,6 +3,7 @@ package com.esrrhs.spp.client.ui
 import android.graphics.drawable.Drawable
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -10,10 +11,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
@@ -23,6 +26,7 @@ import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.HighlightOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -65,6 +69,11 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+enum class HistoryResultFilter { ALL, SUCCESS, FAILED }
+enum class HistoryIpFilter { ALL, IPV4, IPV6 }
+enum class HistoryRouteFilter { ALL, PROXY, DIRECT }
+enum class HistoryProtoFilter { ALL, TCP, UDP }
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HistoryScreen(
@@ -75,10 +84,46 @@ fun HistoryScreen(
 ) {
     var confirmClear by remember { mutableStateOf(false) }
     var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    var resultFilter by remember { mutableStateOf(HistoryResultFilter.ALL) }
+    var ipFilter by remember { mutableStateOf(HistoryIpFilter.ALL) }
+    var routeFilter by remember { mutableStateOf(HistoryRouteFilter.ALL) }
+    var protoFilter by remember { mutableStateOf(HistoryProtoFilter.ALL) }
+
     LaunchedEffect(Unit) {
         while (true) {
             kotlinx.coroutines.delay(30_000)
             nowMs = System.currentTimeMillis()
+        }
+    }
+
+    val isAllSelected = resultFilter == HistoryResultFilter.ALL &&
+        ipFilter == HistoryIpFilter.ALL &&
+        routeFilter == HistoryRouteFilter.ALL &&
+        protoFilter == HistoryProtoFilter.ALL
+
+    val filteredEntries = remember(entries, resultFilter, ipFilter, routeFilter, protoFilter) {
+        entries.filter { entry ->
+            val matchResult = when (resultFilter) {
+                HistoryResultFilter.ALL -> true
+                HistoryResultFilter.SUCCESS -> entry.result == RESULT_SUCCESS
+                HistoryResultFilter.FAILED -> entry.result == RESULT_FAILED
+            }
+            val matchIp = when (ipFilter) {
+                HistoryIpFilter.ALL -> true
+                HistoryIpFilter.IPV4 -> !entry.isIpv6
+                HistoryIpFilter.IPV6 -> entry.isIpv6
+            }
+            val matchRoute = when (routeFilter) {
+                HistoryRouteFilter.ALL -> true
+                HistoryRouteFilter.PROXY -> entry.route == ROUTE_PROXY
+                HistoryRouteFilter.DIRECT -> entry.route == ROUTE_DIRECT
+            }
+            val matchProto = when (protoFilter) {
+                HistoryProtoFilter.ALL -> true
+                HistoryProtoFilter.TCP -> entry.proto.equals("TCP", ignoreCase = true)
+                HistoryProtoFilter.UDP -> entry.proto.equals("UDP", ignoreCase = true)
+            }
+            matchResult && matchIp && matchRoute && matchProto
         }
     }
 
@@ -102,31 +147,231 @@ fun HistoryScreen(
             )
         },
     ) { innerPadding ->
-        if (entries.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text = stringResource(R.string.history_empty),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(32.dp),
-                )
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding),
+        ) {
+            if (entries.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    FilterChip(
+                        selected = isAllSelected,
+                        onClick = {
+                            resultFilter = HistoryResultFilter.ALL
+                            ipFilter = HistoryIpFilter.ALL
+                            routeFilter = HistoryRouteFilter.ALL
+                            protoFilter = HistoryProtoFilter.ALL
+                        },
+                        label = { Text(stringResource(R.string.history_filter_all)) },
+                    )
+
+                    Box(
+                        modifier = Modifier
+                            .size(width = 1.dp, height = 20.dp)
+                            .background(MaterialTheme.colorScheme.outlineVariant),
+                    )
+
+                    FilterChip(
+                        selected = resultFilter == HistoryResultFilter.SUCCESS,
+                        onClick = {
+                            resultFilter = if (resultFilter == HistoryResultFilter.SUCCESS) {
+                                HistoryResultFilter.ALL
+                            } else {
+                                HistoryResultFilter.SUCCESS
+                            }
+                        },
+                        label = { Text(stringResource(R.string.history_result_success)) },
+                    )
+                    FilterChip(
+                        selected = resultFilter == HistoryResultFilter.FAILED,
+                        onClick = {
+                            resultFilter = if (resultFilter == HistoryResultFilter.FAILED) {
+                                HistoryResultFilter.ALL
+                            } else {
+                                HistoryResultFilter.FAILED
+                            }
+                        },
+                        label = { Text(stringResource(R.string.history_result_failed)) },
+                    )
+
+                    Box(
+                        modifier = Modifier
+                            .size(width = 1.dp, height = 20.dp)
+                            .background(MaterialTheme.colorScheme.outlineVariant),
+                    )
+
+                    FilterChip(
+                        selected = ipFilter == HistoryIpFilter.IPV4,
+                        onClick = {
+                            ipFilter = if (ipFilter == HistoryIpFilter.IPV4) {
+                                HistoryIpFilter.ALL
+                            } else {
+                                HistoryIpFilter.IPV4
+                            }
+                        },
+                        label = { Text("IPv4") },
+                    )
+                    FilterChip(
+                        selected = ipFilter == HistoryIpFilter.IPV6,
+                        onClick = {
+                            ipFilter = if (ipFilter == HistoryIpFilter.IPV6) {
+                                HistoryIpFilter.ALL
+                            } else {
+                                HistoryIpFilter.IPV6
+                            }
+                        },
+                        label = { Text("IPv6") },
+                    )
+
+                    Box(
+                        modifier = Modifier
+                            .size(width = 1.dp, height = 20.dp)
+                            .background(MaterialTheme.colorScheme.outlineVariant),
+                    )
+
+                    FilterChip(
+                        selected = routeFilter == HistoryRouteFilter.PROXY,
+                        onClick = {
+                            routeFilter = if (routeFilter == HistoryRouteFilter.PROXY) {
+                                HistoryRouteFilter.ALL
+                            } else {
+                                HistoryRouteFilter.PROXY
+                            }
+                        },
+                        label = { Text(stringResource(R.string.history_route_proxy)) },
+                    )
+                    FilterChip(
+                        selected = routeFilter == HistoryRouteFilter.DIRECT,
+                        onClick = {
+                            routeFilter = if (routeFilter == HistoryRouteFilter.DIRECT) {
+                                HistoryRouteFilter.ALL
+                            } else {
+                                HistoryRouteFilter.DIRECT
+                            }
+                        },
+                        label = { Text(stringResource(R.string.history_filter_direct)) },
+                    )
+
+                    Box(
+                        modifier = Modifier
+                            .size(width = 1.dp, height = 20.dp)
+                            .background(MaterialTheme.colorScheme.outlineVariant),
+                    )
+
+                    FilterChip(
+                        selected = protoFilter == HistoryProtoFilter.TCP,
+                        onClick = {
+                            protoFilter = if (protoFilter == HistoryProtoFilter.TCP) {
+                                HistoryProtoFilter.ALL
+                            } else {
+                                HistoryProtoFilter.TCP
+                            }
+                        },
+                        label = { Text("TCP") },
+                    )
+                    FilterChip(
+                        selected = protoFilter == HistoryProtoFilter.UDP,
+                        onClick = {
+                            protoFilter = if (protoFilter == HistoryProtoFilter.UDP) {
+                                HistoryProtoFilter.ALL
+                            } else {
+                                HistoryProtoFilter.UDP
+                            }
+                        },
+                        label = { Text("UDP") },
+                    )
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 2.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = if (isAllSelected) {
+                            stringResource(R.string.history_count, entries.size)
+                        } else {
+                            stringResource(R.string.history_count_filtered, filteredEntries.size, entries.size)
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (!isAllSelected) {
+                        TextButton(
+                            onClick = {
+                                resultFilter = HistoryResultFilter.ALL
+                                ipFilter = HistoryIpFilter.ALL
+                                routeFilter = HistoryRouteFilter.ALL
+                                protoFilter = HistoryProtoFilter.ALL
+                            },
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            modifier = Modifier.height(24.dp),
+                        ) {
+                            Text(
+                                stringResource(R.string.history_filter_reset),
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
+                    }
+                }
             }
-        } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding)
-                    .padding(horizontal = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 12.dp),
-            ) {
-                items(entries, key = { it.key + "@" + it.startMs }) { entry ->
-                    HistoryCard(entry, nowMs, onDelete)
+
+            if (entries.isEmpty()) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = stringResource(R.string.history_empty),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(32.dp),
+                    )
+                }
+            } else if (filteredEntries.isEmpty()) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            text = stringResource(R.string.history_filter_empty),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        TextButton(onClick = {
+                            resultFilter = HistoryResultFilter.ALL
+                            ipFilter = HistoryIpFilter.ALL
+                            routeFilter = HistoryRouteFilter.ALL
+                            protoFilter = HistoryProtoFilter.ALL
+                        }) {
+                            Text(stringResource(R.string.history_filter_reset))
+                        }
+                    }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 8.dp),
+                ) {
+                    items(filteredEntries, key = { it.key + "@" + it.startMs }) { entry ->
+                        HistoryCard(entry, nowMs, onDelete)
+                    }
                 }
             }
         }
@@ -192,6 +437,12 @@ private fun HistoryCard(entry: ConnectionLogEntry, nowMs: Long, onDelete: (Conne
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Badge(entry.proto, MaterialTheme.colorScheme.secondaryContainer,
                     MaterialTheme.colorScheme.onSecondaryContainer)
+                Spacer(Modifier.size(6.dp))
+                Badge(
+                    if (entry.isIpv6) "IPv6" else "IPv4",
+                    MaterialTheme.colorScheme.surfaceVariant,
+                    MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 Spacer(Modifier.size(6.dp))
                 RouteBadge(entry.route)
                 Spacer(Modifier.size(6.dp))
