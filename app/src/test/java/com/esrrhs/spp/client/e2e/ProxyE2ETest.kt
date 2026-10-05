@@ -50,6 +50,10 @@ class ProxyE2ETest {
     private lateinit var udpTargetV6: MockTargetServers.UdpEchoServer
     private lateinit var httpTargetV4: MockTargetServers.HttpEchoServer
     private lateinit var httpTargetV6: MockTargetServers.HttpEchoServer
+    private lateinit var dnsTarget: MockTargetServers.DnsEchoServer
+    private lateinit var wsTarget: MockTargetServers.WebSocketEchoServer
+    private lateinit var grpcTarget: MockTargetServers.GrpcMockServer
+    private lateinit var quicTarget: MockTargetServers.QuicMockServer
 
     // 上游代理 (Upstream Servers)
     private lateinit var upstreamSocks5: MockUpstreamSocks5Server
@@ -68,6 +72,10 @@ class ProxyE2ETest {
         udpTargetV6 = MockTargetServers.UdpEchoServer("::1").start()
         httpTargetV4 = MockTargetServers.HttpEchoServer("127.0.0.1").start()
         httpTargetV6 = MockTargetServers.HttpEchoServer("::1").start()
+        dnsTarget = MockTargetServers.DnsEchoServer("127.0.0.1").start()
+        wsTarget = MockTargetServers.WebSocketEchoServer("127.0.0.1").start()
+        grpcTarget = MockTargetServers.GrpcMockServer("127.0.0.1").start()
+        quicTarget = MockTargetServers.QuicMockServer("127.0.0.1").start()
 
         // 2. 启动上游 Mock 服务
         // 模式 A：上游 SOCKS5 (配置用户名密码验证)
@@ -104,10 +112,14 @@ class ProxyE2ETest {
         runCatching { udpTargetV6.close() }
         runCatching { httpTargetV4.close() }
         runCatching { httpTargetV6.close() }
+        runCatching { dnsTarget.close() }
+        runCatching { wsTarget.close() }
+        runCatching { grpcTarget.close() }
+        runCatching { quicTarget.close() }
     }
 
     // ==========================================
-    // 矩阵 1: SOCKS5 代理方式测试 (TCP, UDP, IPv6, HTTP)
+    // 矩阵 1: SOCKS5 代理方式测试 (TCP, UDP, IPv6, HTTP, DNS, WS, gRPC, QUIC)
     // ==========================================
 
     @Test
@@ -146,8 +158,32 @@ class ProxyE2ETest {
         verifyHttpEcho(proxyPort, "[::1]", httpTargetV6.port)
     }
 
+    @Test
+    fun testSocks5Mode_Dns() {
+        val proxyPort = ruleSocksServerSocks5Mode.port!!
+        verifyDnsQuery(proxyPort, "127.0.0.1", dnsTarget.port)
+    }
+
+    @Test
+    fun testSocks5Mode_WebSocket() {
+        val proxyPort = ruleSocksServerSocks5Mode.port!!
+        verifyWebSocketEcho(proxyPort, "127.0.0.1", wsTarget.port)
+    }
+
+    @Test
+    fun testSocks5Mode_Grpc() {
+        val proxyPort = ruleSocksServerSocks5Mode.port!!
+        verifyGrpc(proxyPort, "127.0.0.1", grpcTarget.port)
+    }
+
+    @Test
+    fun testSocks5Mode_Quic() {
+        val proxyPort = ruleSocksServerSocks5Mode.port!!
+        verifyQuic(proxyPort, "127.0.0.1", quicTarget.port)
+    }
+
     // ==========================================
-    // 矩阵 2: SPP 代理方式测试 (TCP, UDP, IPv6, HTTP)
+    // 矩阵 2: SPP 代理方式测试 (TCP, UDP, IPv6, HTTP, DNS, WS, gRPC, QUIC)
     // ==========================================
 
     @Test
@@ -184,6 +220,30 @@ class ProxyE2ETest {
     fun testSppMode_HttpIpv6() {
         val proxyPort = ruleSocksServerSppMode.port!!
         verifyHttpEcho(proxyPort, "[::1]", httpTargetV6.port)
+    }
+
+    @Test
+    fun testSppMode_Dns() {
+        val proxyPort = ruleSocksServerSppMode.port!!
+        verifyDnsQuery(proxyPort, "127.0.0.1", dnsTarget.port)
+    }
+
+    @Test
+    fun testSppMode_WebSocket() {
+        val proxyPort = ruleSocksServerSppMode.port!!
+        verifyWebSocketEcho(proxyPort, "127.0.0.1", wsTarget.port)
+    }
+
+    @Test
+    fun testSppMode_Grpc() {
+        val proxyPort = ruleSocksServerSppMode.port!!
+        verifyGrpc(proxyPort, "127.0.0.1", grpcTarget.port)
+    }
+
+    @Test
+    fun testSppMode_Quic() {
+        val proxyPort = ruleSocksServerSppMode.port!!
+        verifyQuic(proxyPort, "127.0.0.1", quicTarget.port)
     }
 
     // ==========================================
@@ -381,5 +441,222 @@ class ProxyE2ETest {
         }
         assertEquals("100% of concurrent connections must succeed with 0 failures", totalRequests, successCount.get())
         assertTrue("Average latency per request should be healthy (< 200ms avg load)", (totalDuration.toDouble() / totalRequests) < 200)
+    }
+
+    private fun verifyDnsQuery(proxyPort: Int, targetHost: String, targetPort: Int) {
+        // 构造标准 DNS 查询包：TxID=0x1234, Flags=0x0100 (Standard query), QDCOUNT=1, ANCOUNT=0
+        val query = byteArrayOf(
+            0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x07, 0x65, 0x78, 0x61, 0x6d, 0x70, 0x6c, 0x65, 0x03, 0x63, 0x6f, 0x6d, 0x00, // example.com
+            0x00, 0x01, 0x00, 0x01 // Type A, Class IN
+        )
+        // 经 SOCKS5 UDP relay 发送 DNS 查询
+        val ctrlSocket = Socket("127.0.0.1", proxyPort).apply { tcpNoDelay = true; soTimeout = 5000 }
+        val `in` = DataInputStream(ctrlSocket.getInputStream())
+        val out = ctrlSocket.getOutputStream()
+        out.write(byteArrayOf(0x05, 0x01, 0x00))
+        out.flush()
+        assertEquals(0x05, `in`.readUnsignedByte())
+        assertEquals(0x00, `in`.readUnsignedByte())
+
+        val req = byteArrayOf(0x05, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00)
+        out.write(req)
+        out.flush()
+        assertEquals(0x05, `in`.readUnsignedByte())
+        assertEquals(0x00, `in`.readUnsignedByte())
+        assertEquals(0x00, `in`.readUnsignedByte())
+        val atyp = `in`.readUnsignedByte()
+        val bndIp = ByteArray(if (atyp == 1) 4 else 16)
+        `in`.readFully(bndIp)
+        val bndPort = `in`.readUnsignedShort()
+        val relayAddr = InetSocketAddress(InetAddress.getByAddress(bndIp), bndPort)
+
+        val clientUdp = DatagramSocket()
+        clientUdp.soTimeout = 5000
+        val isIpv6 = targetHost.contains(":")
+        val targetAtyp = if (isIpv6) Socks5Codec.ATYP_IPV6 else Socks5Codec.ATYP_IPV4
+        val targetIpBytes = InetAddress.getByName(targetHost).address
+        val header = ByteArray(4 + targetIpBytes.size)
+        header[0] = 0x00; header[1] = 0x00; header[2] = 0x00; header[3] = targetAtyp
+        System.arraycopy(targetIpBytes, 0, header, 4, targetIpBytes.size)
+        val portBytes = byteArrayOf((targetPort shr 8).toByte(), (targetPort and 0xFF).toByte())
+        val fullPacketData = header + portBytes + query
+
+        clientUdp.send(DatagramPacket(fullPacketData, fullPacketData.size, relayAddr))
+
+        val recvBuf = ByteArray(4096)
+        val recvPacket = DatagramPacket(recvBuf, recvBuf.size)
+        clientUdp.receive(recvPacket)
+
+        val rLen = recvPacket.length
+        val offset = header.size + portBytes.size
+        assertTrue("DNS response datagram should have data", rLen > offset)
+        // 校验 TxID 与 Flags
+        assertEquals(0x12.toByte(), recvPacket.data[offset])
+        assertEquals(0x34.toByte(), recvPacket.data[offset + 1])
+        assertEquals(0x81.toByte(), recvPacket.data[offset + 2]) // Response
+
+        clientUdp.close()
+        ctrlSocket.close()
+    }
+
+    private fun verifyWebSocketEcho(proxyPort: Int, targetHost: String, targetPort: Int) {
+        val socket = Socket("127.0.0.1", proxyPort).apply { tcpNoDelay = true; soTimeout = 5000 }
+        val `in` = DataInputStream(socket.getInputStream())
+        val out = socket.getOutputStream()
+        // SOCKS5 握手
+        out.write(byteArrayOf(0x05, 0x01, 0x00))
+        out.flush()
+        assertEquals(0x05, `in`.readUnsignedByte())
+        assertEquals(0x00, `in`.readUnsignedByte())
+        // SOCKS5 CONNECT
+        val rawReq = Socks5Codec.buildRequest(Socks5Codec.CMD_CONNECT, Socks5Codec.ATYP_IPV4.toInt(), targetHost, targetPort)
+        out.write(rawReq)
+        out.flush()
+        assertEquals(0x05, `in`.readUnsignedByte())
+        assertEquals(0x00, `in`.readUnsignedByte())
+        assertEquals(0x00, `in`.readUnsignedByte())
+        val atyp = `in`.readUnsignedByte()
+        val bnd = ByteArray(if (atyp == 1) 4 else 16)
+        `in`.readFully(bnd)
+        `in`.readUnsignedShort()
+
+        // 1. 发送 HTTP Upgrade: websocket
+        val handshakeReq = "GET /ws HTTP/1.1\r\n" +
+                "Host: $targetHost:$targetPort\r\n" +
+                "Upgrade: websocket\r\n" +
+                "Connection: Upgrade\r\n" +
+                "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" +
+                "Sec-WebSocket-Version: 13\r\n\r\n"
+        out.write(handshakeReq.toByteArray(Charsets.UTF_8))
+        out.flush()
+
+        // 读取 101 Switching Protocols
+        val lineBuf = ByteArray(1024)
+        val readHandshake = `in`.read(lineBuf)
+        val handshakeResp = String(lineBuf, 0, readHandshake, Charsets.UTF_8)
+        assertTrue("Must receive 101 Switching Protocols", handshakeResp.contains("101 Switching Protocols"))
+
+        // 2. 发送 WebSocket 文本帧 (0x81 | Masked)
+        val payload = "E2E_WS_HELLO".toByteArray(Charsets.UTF_8)
+        val mask = byteArrayOf(0x12, 0x34, 0x56, 0x78)
+        val maskedPayload = ByteArray(payload.size)
+        for (i in payload.indices) {
+            maskedPayload[i] = (payload[i].toInt() xor mask[i % 4].toInt()).toByte()
+        }
+        val frame = byteArrayOf(0x81.toByte(), (0x80 or payload.size).toByte()) + mask + maskedPayload
+        out.write(frame)
+        out.flush()
+
+        // 3. 读取服务端回显的 WebSocket 文本帧 (0x81, unmasked)
+        val op = `in`.readUnsignedByte()
+        assertEquals(0x81, op)
+        val len = `in`.readUnsignedByte() and 0x7F
+        val echoPayload = ByteArray(len)
+        `in`.readFully(echoPayload)
+        assertEquals("E2E_WS_HELLO", String(echoPayload, Charsets.UTF_8))
+
+        socket.close()
+    }
+
+    private fun verifyGrpc(proxyPort: Int, targetHost: String, targetPort: Int) {
+        val socket = Socket("127.0.0.1", proxyPort).apply { tcpNoDelay = true; soTimeout = 5000 }
+        val `in` = DataInputStream(socket.getInputStream())
+        val out = socket.getOutputStream()
+        // SOCKS5 握手
+        out.write(byteArrayOf(0x05, 0x01, 0x00))
+        out.flush()
+        assertEquals(0x05, `in`.readUnsignedByte())
+        assertEquals(0x00, `in`.readUnsignedByte())
+        val rawReq = Socks5Codec.buildRequest(Socks5Codec.CMD_CONNECT, Socks5Codec.ATYP_IPV4.toInt(), targetHost, targetPort)
+        out.write(rawReq)
+        out.flush()
+        assertEquals(0x05, `in`.readUnsignedByte())
+        assertEquals(0x00, `in`.readUnsignedByte())
+        assertEquals(0x00, `in`.readUnsignedByte())
+        val atyp = `in`.readUnsignedByte()
+        val bnd = ByteArray(if (atyp == 1) 4 else 16)
+        `in`.readFully(bnd)
+        `in`.readUnsignedShort()
+
+        // 1. 发送 HTTP/2 Connection Preface + SETTINGS frame (Type 0x04)
+        val preface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".toByteArray(Charsets.UTF_8)
+        val settings = byteArrayOf(0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00)
+        out.write(preface + settings)
+        out.flush()
+
+        // 2. 读取服务端 SETTINGS 帧
+        val serverSettings = ByteArray(9)
+        `in`.readFully(serverSettings)
+        assertEquals(0x04.toByte(), serverSettings[3]) // Frame Type SETTINGS
+
+        // 3. 发送 gRPC 请求头 (模拟 HEADERS 帧: Type 0x01, Flags 0x04 END_HEADERS, Stream 1)
+        val grpcHeader = byteArrayOf(0x00, 0x00, 0x04, 0x01, 0x04, 0x00, 0x00, 0x00, 0x01, 0x47, 0x52, 0x50, 0x43)
+        out.write(grpcHeader)
+        out.flush()
+
+        // 4. 读取服务端 gRPC 响应
+        val grpcResp = ByteArray(13)
+        `in`.readFully(grpcResp)
+        assertEquals(0x01.toByte(), grpcResp[3]) // HEADERS frame
+        assertEquals(0x01.toByte(), grpcResp[8]) // Stream ID 1
+
+        socket.close()
+    }
+
+    private fun verifyQuic(proxyPort: Int, targetHost: String, targetPort: Int) {
+        // 构造标准 QUIC Initial Packet Header: 0xC0 (Long Header), Version 0x00000001
+        val quicPacket = byteArrayOf(
+            0xC0.toByte(), 0x00, 0x00, 0x00, 0x01, 0x00, 0x08, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88.toByte()
+        ) + "QUIC_CLIENT_INITIAL".toByteArray(Charsets.UTF_8)
+
+        // 经 SOCKS5 UDP relay 穿透
+        val ctrlSocket = Socket("127.0.0.1", proxyPort).apply { tcpNoDelay = true; soTimeout = 5000 }
+        val `in` = DataInputStream(ctrlSocket.getInputStream())
+        val out = ctrlSocket.getOutputStream()
+        out.write(byteArrayOf(0x05, 0x01, 0x00))
+        out.flush()
+        assertEquals(0x05, `in`.readUnsignedByte())
+        assertEquals(0x00, `in`.readUnsignedByte())
+
+        val req = byteArrayOf(0x05, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00)
+        out.write(req)
+        out.flush()
+        assertEquals(0x05, `in`.readUnsignedByte())
+        assertEquals(0x00, `in`.readUnsignedByte())
+        assertEquals(0x00, `in`.readUnsignedByte())
+        val atyp = `in`.readUnsignedByte()
+        val bndIp = ByteArray(if (atyp == 1) 4 else 16)
+        `in`.readFully(bndIp)
+        val bndPort = `in`.readUnsignedShort()
+        val relayAddr = InetSocketAddress(InetAddress.getByAddress(bndIp), bndPort)
+
+        val clientUdp = DatagramSocket()
+        clientUdp.soTimeout = 5000
+        val targetAtyp = Socks5Codec.ATYP_IPV4
+        val targetIpBytes = InetAddress.getByName(targetHost).address
+        val header = ByteArray(4 + targetIpBytes.size)
+        header[0] = 0x00; header[1] = 0x00; header[2] = 0x00; header[3] = targetAtyp
+        System.arraycopy(targetIpBytes, 0, header, 4, targetIpBytes.size)
+        val portBytes = byteArrayOf((targetPort shr 8).toByte(), (targetPort and 0xFF).toByte())
+        val fullPacketData = header + portBytes + quicPacket
+
+        clientUdp.send(DatagramPacket(fullPacketData, fullPacketData.size, relayAddr))
+
+        val recvBuf = ByteArray(4096)
+        val recvPacket = DatagramPacket(recvBuf, recvBuf.size)
+        clientUdp.receive(recvPacket)
+
+        val offset = header.size + portBytes.size
+        val rLen = recvPacket.length
+        assertTrue("QUIC response datagram must have data", rLen > offset + 5)
+        // 校验返回的 QUIC Long Header 与 Version 1
+        assertEquals(0xC0.toByte(), recvPacket.data[offset])
+        assertEquals(0x01.toByte(), recvPacket.data[offset + 4])
+        val ackStr = String(recvPacket.data, offset + 5, rLen - offset - 5, Charsets.UTF_8)
+        assertEquals("QUIC_SERVER_HANDSHAKE_ACK", ackStr)
+
+        clientUdp.close()
+        ctrlSocket.close()
     }
 }
