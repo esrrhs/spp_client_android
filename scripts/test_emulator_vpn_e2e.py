@@ -52,13 +52,10 @@ def find_adb():
 def run_adb(adb_cmd, serial, args, check=True, timeout=30):
     """执行 adb。
 
-    platform-tools 23+ 会把 `adb shell` 的每个参数按 POSIX 规则转义后再交给设备端 shell。
-    把含空格、管道或重定向的整段命令当成一个参数时，设备会把它当成可执行文件名，
-    命令实际不会执行（VPN appops 授权和 tun0 检测都会静默失败）。
-    这种单字符串命令改由 `sh -c` 执行，转义只作用在脚本文本上。
+    设备端 shell 会按空格切分 `adb shell` 拼起来的命令行。
+    简单命令拆成独立参数；含管道、引号的脚本保持为一个参数，让设备 shell 自己解析。
+    不要再套一层 `sh -c`，否则脚本会被拆开，`appops` 只会打出帮助文本。
     """
-    if args and args[0] == "shell" and len(args) == 2:
-        args = ["shell", "sh", "-c", args[1]]
     cmd = [adb_cmd]
     if serial:
         cmd.extend(["-s", serial])
@@ -72,25 +69,41 @@ def grant_vpn_consent(adb, serial):
     """预授权 VPN。必须在应用安装之后调用，且命令必须真正在设备上执行。"""
     pkg = "com.esrrhs.spp.client"
     run_adb(adb, serial, [
-        "shell",
-        f"pm grant {pkg} android.permission.POST_NOTIFICATIONS",
+        "shell", "pm", "grant", pkg, "android.permission.POST_NOTIFICATIONS",
     ], check=False)
     for op in ("ACTIVATE_VPN", "ACTIVATE_PLATFORM_VPN"):
-        run_adb(adb, serial, ["shell", f"appops set {pkg} {op} allow"], check=False)
-        run_adb(adb, serial, ["shell", f"appops set --uid {pkg} {op} allow"], check=False)
-        got = run_adb(adb, serial, ["shell", f"appops get {pkg} {op}"], check=False)
+        run_adb(adb, serial, ["shell", "appops", "set", pkg, op, "allow"], check=False)
+        run_adb(adb, serial, ["shell", "appops", "set", "--uid", pkg, op, "allow"], check=False)
+        got = run_adb(adb, serial, ["shell", "appops", "get", pkg, op], check=False)
         text = ((got.stdout or "") + (got.stderr or "")).strip()
         print(f"==> appops {op}: {text or '(无输出)'}")
+        if "allow" not in text:
+            raise RuntimeError(f"VPN 授权失败，appops {op} 未变为 allow: {text}")
 
 def dump_vpn_log(adb, serial):
     print("==> tun 未就绪，抓取 logcat ...")
     res = run_adb(
         adb, serial,
-        ["logcat", "-d", "-t", "200", "SppVpnService:D", "AndroidRuntime:E", "*:S"],
+        ["shell", "logcat -d -t 250 | grep -E 'SppVpn|AndroidRuntime|ActivityManager|NotificationService'"],
         check=False,
     )
     text = ((res.stdout or "") + "\n" + (res.stderr or "")).strip()
     print(text or "(logcat 为空)")
+
+def start_vpn_service(adb, serial, action, profile_json=None):
+    args = ["shell", "am", "start-foreground-service", "-a", action]
+    if profile_json is not None:
+        args.extend([
+            "--es", "com.esrrhs.spp.client.extra.PROFILE_JSON", f"'{profile_json}'",
+        ])
+    args.append("com.esrrhs.spp.client/.vpn.SppVpnService")
+    res = run_adb(adb, serial, args, check=False)
+    out = ((res.stdout or "") + (res.stderr or "")).strip()
+    print(f"==> am exit={res.returncode} {out}")
+    if res.returncode != 0 or "Error" in out or "Exception" in out or "Permission Denial" in out:
+        dump_vpn_log(adb, serial)
+        raise RuntimeError(f"启动 VPN 服务失败: {out}")
+    return res
 
 def get_host_lan_ip():
     ips = []
@@ -665,7 +678,7 @@ def wait_for_tun(adb_cmd, serial, should_exist=True, timeout=15):
     start = time.time()
     while time.time() - start < timeout:
         # 用 sysfs 判断，避免 ip 报错文本里带 tun0 造成误判。
-        res = run_adb(adb_cmd, serial, ["shell", "test -d /sys/class/net/tun0"], check=False)
+        res = run_adb(adb_cmd, serial, ["shell", "test", "-d", "/sys/class/net/tun0"], check=False)
         has_tun = res.returncode == 0
         if has_tun == should_exist:
             return True
@@ -783,8 +796,9 @@ def main():
 
     print(f"==> 使用 ADB: {adb}, 目标设备: {serial}")
 
-    # 尝试切换 root 权限以保障权限静默配置
+    # 尝试切换 root 权限以保障权限静默配置。root 会重启 adbd，需要等设备回来。
     subprocess.run([adb, "-s", serial, "root"], capture_output=True)
+    subprocess.run([adb, "-s", serial, "wait-for-device"], capture_output=True)
 
     # 2. 安装最新 APK
     if not args.skip_install and os.path.exists(args.apk):
@@ -913,12 +927,7 @@ def main():
         }
         profile_json = json.dumps(socks5_profile)
         print("==> 发送 SOCKS5 CONNECT 意图...")
-        run_adb(adb, serial, [
-            "shell", "am", "start-foreground-service",
-            "-a", "com.esrrhs.spp.client.action.CONNECT",
-            "--es", "com.esrrhs.spp.client.extra.PROFILE_JSON", f"'{profile_json}'",
-            "com.esrrhs.spp.client/.vpn.SppVpnService"
-        ])
+        start_vpn_service(adb, serial, "com.esrrhs.spp.client.action.CONNECT", profile_json)
 
         print("==> 等待 tun0 网卡建立...")
         if not wait_for_tun(adb, serial, should_exist=True, timeout=20):
@@ -965,12 +974,7 @@ def main():
         }
         profile_json = json.dumps(spp_profile)
         print("==> 发送 SPP CONNECT 意图...")
-        run_adb(adb, serial, [
-            "shell", "am", "start-foreground-service",
-            "-a", "com.esrrhs.spp.client.action.CONNECT",
-            "--es", "com.esrrhs.spp.client.extra.PROFILE_JSON", f"'{profile_json}'",
-            "com.esrrhs.spp.client/.vpn.SppVpnService"
-        ])
+        start_vpn_service(adb, serial, "com.esrrhs.spp.client.action.CONNECT", profile_json)
 
         print("==> 等待 tun0 网卡与 libspp.so 启动...")
         if not wait_for_tun(adb, serial, should_exist=True, timeout=20):
