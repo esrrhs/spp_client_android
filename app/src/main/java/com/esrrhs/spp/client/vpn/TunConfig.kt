@@ -27,6 +27,8 @@ object TunConfig {
 
     /** mapdns 虚拟 DNS 地址（hev 配置中的 mapdns.address）。 */
     const val DNS_ADDRESS = "198.18.0.2"
+    /** 公网 DNS，用于满足系统 NetworkMonitor 对 DoT/DNS 的探测并避免私有 DNS 超时。 */
+    const val FALLBACK_DNS = "8.8.8.8"
     const val MAPDNS_NETWORK = "100.64.0.0"
     const val MAPDNS_NETMASK = "255.192.0.0"
 }

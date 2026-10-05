@@ -13,14 +13,18 @@ import android.util.Log
  */
 class NetworkWatchdog(
     context: Context,
+    private val onNetworkUpdate: ((Network?) -> Unit)? = null,
     private val onDefaultNetworkChanged: () -> Unit,
 ) {
     private val cm = context.getSystemService(ConnectivityManager::class.java)
     private var registered = false
-    private var current: Network? = null
+    var current: Network? = null
+        private set
 
     private val callback = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) = handle(network)
+        override fun onAvailable(network: Network) {
+            handle(network)
+        }
 
         override fun onCapabilitiesChanged(
             network: Network,
@@ -32,13 +36,17 @@ class NetworkWatchdog(
         }
 
         override fun onLost(network: Network) {
-            if (network == current) current = null
+            if (network == current) {
+                current = null
+                onNetworkUpdate?.invoke(null)
+            }
         }
     }
 
     private fun handle(network: Network) {
         val previous = current
         current = network
+        onNetworkUpdate?.invoke(network)
         // 首次回调只记录基线；之后出现不同的默认网络才是切换
         if (previous != null && previous != network) {
             Log.i(TAG, "default network changed: $previous -> $network")
