@@ -20,7 +20,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.26'
           cache: true
 
       - name: Set up JDK 17
@@ -36,6 +36,30 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
+      - name: Install Android NDK
+        run: |
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          SM="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SM" ]; then
+            SM=$(find "$SDK" -path '*/cmdline-tools/*/bin/sdkmanager' | sort | tail -1)
+          fi
+          test -n "$SM" && test -x "$SM"
+          yes | "$SM" --licenses >/dev/null || true
+          NDK_PKG=$("$SM" --list 2>/dev/null | awk '/^[[:space:]]*ndk;/{print $1}' | sort -V | tail -1)
+          echo "Installing $NDK_PKG"
+          test -n "$NDK_PKG"
+          "$SM" --install "$NDK_PKG"
+          VER="${NDK_PKG#ndk;}"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$SDK/ndk/$VER" >> "$GITHUB_ENV"
+
+      - name: Build native libraries
+        env:
+          # 模拟器是 x86_64，只编这一套以缩短流水线时间
+          SPP_ABIS: x86_64
+          HEV_ABIS: x86_64
+        run: bash scripts/build_native.sh
 
       - name: Build Debug APK
         run: |
