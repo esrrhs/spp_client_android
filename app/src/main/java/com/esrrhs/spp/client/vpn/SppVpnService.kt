@@ -26,6 +26,7 @@ import com.esrrhs.spp.client.tun.HevTunnel
 import com.esrrhs.spp.client.util.Cidr6Routes
 import com.esrrhs.spp.client.util.CidrRoutes
 import com.esrrhs.spp.client.util.CnRouteList
+import kotlinx.serialization.json.Json
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -104,11 +105,25 @@ class SppVpnService : VpnService() {
         }
     }
 
+    @Volatile
+    private var overrideProfile: Profile? = null
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_DISCONNECT -> requestDisconnect()
+            ACTION_DISCONNECT -> {
+                overrideProfile = null
+                requestDisconnect()
+            }
             // ACTION_CONNECT / null（系统重建 Service）
-            else -> requestConnect()
+            else -> {
+                val rawJson = intent?.getStringExtra(EXTRA_PROFILE_JSON)
+                if (!rawJson.isNullOrBlank()) {
+                    overrideProfile = runCatching {
+                        profileJson.decodeFromString(Profile.serializer(), rawJson)
+                    }.getOrNull()
+                }
+                requestConnect()
+            }
         }
         return START_NOT_STICKY
     }
@@ -451,9 +466,11 @@ class SppVpnService : VpnService() {
     /** 读取当前选中配置；不存在有效配置时抛错。 */
     private suspend fun loadActiveProfile(): Pair<ConfigRepository, Profile> {
         val repository = ConfigRepository(this)
-        val profiles = repository.profiles.first()
-        val activeId = repository.activeId.first()
-        val profile = profiles.firstOrNull { it.id == activeId } ?: profiles.firstOrNull()
+        val profile = overrideProfile ?: run {
+            val profiles = repository.profiles.first()
+            val activeId = repository.activeId.first()
+            profiles.firstOrNull { it.id == activeId } ?: profiles.firstOrNull()
+        }
         return if (profile == null) {
             throw SppException(getString(R.string.error_no_profile))
         } else {
@@ -613,6 +630,8 @@ class SppVpnService : VpnService() {
     companion object {
         const val ACTION_CONNECT = "com.esrrhs.spp.client.action.CONNECT"
         const val ACTION_DISCONNECT = "com.esrrhs.spp.client.action.DISCONNECT"
+        const val EXTRA_PROFILE_JSON = "com.esrrhs.spp.client.extra.PROFILE_JSON"
+        private val profileJson = Json { ignoreUnknownKeys = true }
 
         private const val CHANNEL_ID = "spp_vpn"
         private const val NOTIFICATION_ID = 1
