@@ -1,4 +1,4 @@
-name: Unit tests
+name: Unit & E2E Tests
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
 
 jobs:
   unit-test:
-    name: JVM unit tests
+    name: JVM Unit & E2E Tests
     runs-on: ubuntu-latest
 
     steps:

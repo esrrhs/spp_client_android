@@ -269,7 +269,11 @@ class RuleSocksServer(
             if (remaining <= 0) break
             // 单个地址最多等一半预算，保证后续地址（v4↔v6）还有尝试机会
             val perTimeout = remaining.coerceAtMost(ADDR_CONNECT_TIMEOUT_MS)
-            val attempt = Socket()
+            val attempt = try {
+                java.nio.channels.SocketChannel.open().socket()
+            } catch (_: Exception) {
+                Socket()
+            }
             try {
                 attempt.tcpNoDelay = true
                 attempt.connect(InetSocketAddress(addr, port), perTimeout.toInt())
