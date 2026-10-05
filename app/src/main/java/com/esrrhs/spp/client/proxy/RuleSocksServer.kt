@@ -48,7 +48,7 @@ class RuleSocksServer(
 
     fun start() {
         if (running.getAndSet(true)) return
-        val s = ServerSocket(0, 32, InetAddress.getByName("127.0.0.1"))
+        val s = ServerSocket(0, 512, InetAddress.getByName("127.0.0.1"))
         server = s
         pool.execute { acceptLoop(s) }
         Log.i(TAG, "rule socks proxy listening on 127.0.0.1:${s.localPort}, direct rules=${directDomains.size}")
@@ -499,9 +499,9 @@ class RuleSocksServer(
 
     private companion object {
         const val TAG = "RuleSocksServer"
-        const val CONNECT_TIMEOUT_MS = 8000
-        /** 单个地址的连接尝试上限，保证 v4/v6 回退都有预算。 */
-        const val ADDR_CONNECT_TIMEOUT_MS = 4000L
+        const val CONNECT_TIMEOUT_MS = 3000
+        /** 单个地址的连接尝试上限，保证失败时秒级回退代理，不让用户等待。 */
+        const val ADDR_CONNECT_TIMEOUT_MS = 1500L
         const val TIMEOUT_MS = 1000
         const val BUFFER_SIZE = 32 * 1024
         const val UDP_BUFFER_SIZE = 64 * 1024

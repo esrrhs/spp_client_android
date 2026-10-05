@@ -25,10 +25,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -321,54 +318,39 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * 重连中保持上一次数据；断开/出错则清零。
      */
     private suspend fun pollSessionTraffic() {
-        _session.subscriptionCount
-            .map { it > 0 }
-            .distinctUntilChanged()
-            .collectLatest { hasObservers ->
-                if (!hasObservers) {
-                    val state = VpnStateHolder.state.value
-                    if (state !is VpnState.Connected && state !is VpnState.Connecting && state !is VpnState.Disconnecting) {
-                        trafficMeter.reset()
-                        connectedAtMs = null
-                        _session.value = emptySession
+        while (true) {
+            val state = VpnStateHolder.state.value
+            when {
+                state is VpnState.Connected -> {
+                    val raw = HevTunnel.stats()
+                    if (raw != null) {
+                        val now = System.currentTimeMillis()
+                        val tx = raw.getOrNull(1) ?: 0L
+                        val rx = raw.getOrNull(3) ?: 0L
+                        if (connectedAtMs == null) {
+                            connectedAtMs = now
+                            trafficMeter.rebaseline(tx, rx, now)
+                        }
+                        val rates = trafficMeter.update(tx, rx, now)
+                        _session.value = SessionTraffic(
+                            tx = tx,
+                            rx = rx,
+                            txRate = rates.txBytesPerSec,
+                            rxRate = rates.rxBytesPerSec,
+                            connectedAtMs = connectedAtMs,
+                        )
                     }
-                    return@collectLatest
                 }
-
-                while (true) {
-                    val state = VpnStateHolder.state.value
-                    when {
-                        state is VpnState.Connected -> {
-                            val raw = HevTunnel.stats()
-                            if (raw != null) {
-                                val now = System.currentTimeMillis()
-                                val tx = raw.getOrNull(1) ?: 0L
-                                val rx = raw.getOrNull(3) ?: 0L
-                                if (connectedAtMs == null) {
-                                    connectedAtMs = now
-                                    trafficMeter.rebaseline(tx, rx, now)
-                                }
-                                val rates = trafficMeter.update(tx, rx, now)
-                                _session.value = SessionTraffic(
-                                    tx = tx,
-                                    rx = rx,
-                                    txRate = rates.txBytesPerSec,
-                                    rxRate = rates.rxBytesPerSec,
-                                    connectedAtMs = connectedAtMs,
-                                )
-                            }
-                        }
-                        // 重连过渡态：保留上一次的会话数据
-                        state is VpnState.Connecting || state is VpnState.Disconnecting -> Unit
-                        else -> {
-                            trafficMeter.reset()
-                            connectedAtMs = null
-                            _session.value = emptySession
-                        }
-                    }
-                    delay(POLL_INTERVAL_MS)
+                // 重连过渡态：保留上一次的会话数据
+                state is VpnState.Connecting || state is VpnState.Disconnecting -> Unit
+                else -> {
+                    trafficMeter.reset()
+                    connectedAtMs = null
+                    _session.value = emptySession
                 }
             }
+            delay(POLL_INTERVAL_MS)
+        }
     }
 
     private companion object {

@@ -29,11 +29,8 @@ import kotlinx.coroutines.withContext
  */
 object ConnectionRecorder {
 
-    private const val TICK_UI_ACTIVE_MS = 1500L
-    private const val TICK_BG_SCREEN_ON_MS = 5000L
-    private const val TICK_SCREEN_OFF_MS = 15000L
-
-    private const val SAVE_INTERVAL_MS = 10000L
+    private const val TICK_MS = 1500L
+    private const val SAVE_INTERVAL_MS = 3000L
     private const val TRIM_INTERVAL_MS = 300_000L // 5 分钟
 
     private val _liveGroups = MutableStateFlow<List<AppConnectionGroup>>(emptyList())
@@ -122,13 +119,7 @@ object ConnectionRecorder {
                 }
                 lastMs = now
 
-                val isInteractive = powerManager?.isInteractive ?: true
-                val delayMs = when {
-                    isUiObserving -> TICK_UI_ACTIVE_MS
-                    isInteractive -> TICK_BG_SCREEN_ON_MS
-                    else -> TICK_SCREEN_OFF_MS
-                }
-                delay(delayMs)
+                delay(TICK_MS)
             }
         }
     }
