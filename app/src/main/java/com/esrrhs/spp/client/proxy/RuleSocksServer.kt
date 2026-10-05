@@ -116,17 +116,19 @@ class RuleSocksServer(
             com.esrrhs.spp.client.util.DomainRuleMatcher.matches(req.host, directDomains)
         val started = System.currentTimeMillis()
 
-        // 优先按规则直连；直连失败（DNS 失败/目标不可达）时自动回退 SPP 隧道重试。
-        // 否则域名表误标或该网络下直连不通会直接让 App 失败（如系统联网探测域名）。
+        val inDirectPenalty = ruleDirect && isDirectPenalized(req.host)
         var directFailReason: String? = null
         var target: Socket? = null
-        if (ruleDirect) {
+        if (ruleDirect && !inDirectPenalty) {
             try {
                 target = openConnected(req.host, req.port)
             } catch (e: Exception) {
                 directFailReason = e.message ?: e.javaClass.simpleName
-                Log.i(TAG, "direct ${req.host}:${req.port} failed, fallback to proxy: $directFailReason")
+                markDirectPenalized(req.host)
+                Log.i(TAG, "direct ${req.host}:${req.port} failed, penalized for ${DIRECT_PENALTY_MS / 1000}s, fallback to proxy: $directFailReason")
             }
+        } else if (inDirectPenalty) {
+            directFailReason = "penalized (previous direct failed)"
         }
         val usedDirect = target != null
 
@@ -170,6 +172,8 @@ class RuleSocksServer(
         val socket = Socket()
         try {
             socket.tcpNoDelay = true
+            socket.sendBufferSize = TCP_SOCKET_BUFFER
+            socket.receiveBufferSize = TCP_SOCKET_BUFFER
             socket.connect(InetSocketAddress(upstream.host, upstream.port), CONNECT_TIMEOUT_MS)
             val upOut = socket.getOutputStream()
             val upIn = DataInputStream(socket.getInputStream())
@@ -205,6 +209,12 @@ class RuleSocksServer(
      * 当双向转发全部完成，或者发生底层异常时，统一关闭两端 Socket。
      */
     private fun awaitPipe(a: Socket, b: Socket) {
+        runCatching {
+            a.sendBufferSize = TCP_SOCKET_BUFFER
+            a.receiveBufferSize = TCP_SOCKET_BUFFER
+            b.sendBufferSize = TCP_SOCKET_BUFFER
+            b.receiveBufferSize = TCP_SOCKET_BUFFER
+        }
         val latch = java.util.concurrent.CountDownLatch(2)
 
         val forwardDirection = { from: Socket, to: Socket ->
@@ -276,6 +286,8 @@ class RuleSocksServer(
             }
             try {
                 attempt.tcpNoDelay = true
+                attempt.sendBufferSize = TCP_SOCKET_BUFFER
+                attempt.receiveBufferSize = TCP_SOCKET_BUFFER
                 attempt.connect(InetSocketAddress(addr, port), perTimeout.toInt())
                 return attempt
             } catch (e: Exception) {
@@ -503,11 +515,27 @@ class RuleSocksServer(
         /** 单个地址的连接尝试上限，保证失败时秒级回退代理，不让用户等待。 */
         const val ADDR_CONNECT_TIMEOUT_MS = 1500L
         const val TIMEOUT_MS = 1000
-        const val BUFFER_SIZE = 32 * 1024
+        const val BUFFER_SIZE = 64 * 1024
         const val UDP_BUFFER_SIZE = 64 * 1024
         /** 与 hev-socks5-tunnel 的 UDP_BUF_SIZE 一致，回程整包（含 SOCKS 头）不能超过它。 */
         const val HEV_UDP_RECV_LIMIT = 1500
         const val UDP_SOCKET_BUFFER = 512 * 1024
+        const val TCP_SOCKET_BUFFER = 256 * 1024
+
+        /** 直连失败的惩罚时长（毫秒）：此时间内该域名直接走代理，消除并发或连续请求的重复回退等待。 */
+        const val DIRECT_PENALTY_MS = 180_000L // 3 分钟
+        private val directPenaltyCache = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+        fun isDirectPenalized(host: String): Boolean {
+            val expire = directPenaltyCache[host] ?: return false
+            if (System.currentTimeMillis() < expire) return true
+            directPenaltyCache.remove(host)
+            return false
+        }
+
+        fun markDirectPenalized(host: String) {
+            directPenaltyCache[host] = System.currentTimeMillis() + DIRECT_PENALTY_MS
+        }
 
         fun isLoopback(host: String): Boolean =
             host == "127.0.0.1" || host == "localhost" || host == "::1"
