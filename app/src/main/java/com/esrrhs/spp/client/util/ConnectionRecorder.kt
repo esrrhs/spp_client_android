@@ -1,6 +1,7 @@
 package com.esrrhs.spp.client.util
 
 import android.content.Context
+import android.os.PowerManager
 import com.esrrhs.spp.client.data.ConnectionLogEntry
 import java.io.File
 import com.esrrhs.spp.client.data.ConnectionLogRepository
@@ -18,16 +19,22 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * 全局连接采集器：VPN 已连接期间由 SppVpnService 驱动，与界面是否打开无关。
+ * 全局连接采集器：VPN 已连接期间由 SppVpnService 驱动。
  *
- * - [liveGroups]：实时「当前连接」分组，页面直接订阅；
- * - 每条 hev 会话经 [ConnectionLogMerge] 跟踪生命周期，结束时落一条
- *   [ConnectionLogEntry]（方式/结果/原因/字节/起止），供历史页溯源。
+ * 功耗自适应策略：
+ * - 页面在前台查看「当前连接」时：高频 1.5s 刷新并计算完整分组、差分速率；
+ * - 亮屏但界面在后台：降频至 5s，仅采样轻量会话行供历史记录，跳过 UI 分组与速率计算；
+ * - 灭屏待机：降频至 15s，最大程度减少 CPU 唤醒以利于系统进入 Doze/深睡；
+ * - 磁盘日志截断由 4s 一次放宽至 5 分钟一次，消除频繁闪存 I/O。
  */
 object ConnectionRecorder {
 
-    private const val TICK_MS = 1500L
-    private const val SAVE_INTERVAL_MS = 4000L
+    private const val TICK_UI_ACTIVE_MS = 1500L
+    private const val TICK_BG_SCREEN_ON_MS = 5000L
+    private const val TICK_SCREEN_OFF_MS = 15000L
+
+    private const val SAVE_INTERVAL_MS = 10000L
+    private const val TRIM_INTERVAL_MS = 300_000L // 5 分钟
 
     private val _liveGroups = MutableStateFlow<List<AppConnectionGroup>>(emptyList())
     val liveGroups: StateFlow<List<AppConnectionGroup>> = _liveGroups.asStateFlow()
@@ -37,6 +44,7 @@ object ConnectionRecorder {
     private var state: ConnectionLogMerge.State = ConnectionLogMerge.State()
     private var pending = ArrayList<ConnectionLogEntry>()
     private var lastSaveMs = 0L
+    private var lastTrimMs = 0L
 
     private val eventFinder = ConnectEventFinder { host, port, notBefore ->
         ProxyEventBus.find(host, port, notBefore)?.let {
@@ -53,10 +61,12 @@ object ConnectionRecorder {
     ) {
         if (job?.isActive == true) return
         val appContext = context.applicationContext
+        val powerManager = appContext.getSystemService(Context.POWER_SERVICE) as? PowerManager
         sample = ActiveConnections.empty()
         state = ConnectionLogMerge.State()
         pending = ArrayList()
-        lastSaveMs = 0L
+        lastSaveMs = System.currentTimeMillis()
+        lastTrimMs = System.currentTimeMillis()
         _liveGroups.value = emptyList()
 
         job = scope.launch(Dispatchers.IO) {
@@ -65,18 +75,31 @@ object ConnectionRecorder {
             while (isActive) {
                 val now = System.currentTimeMillis()
                 val interval = now - lastMs
-                sample = ActiveConnections.snapshot(
-                    context = appContext,
-                    profile = profile,
-                    prev = sample,
-                    nowMs = now,
-                    intervalMs = interval,
-                    directDomains = directDomains,
-                )
-                _liveGroups.value = sample.groups
+                val isUiObserving = _liveGroups.subscriptionCount.value > 0
+
+                val liveRows = if (isUiObserving) {
+                    sample = ActiveConnections.snapshot(
+                        context = appContext,
+                        profile = profile,
+                        prev = sample,
+                        nowMs = now,
+                        intervalMs = interval,
+                        directDomains = directDomains,
+                    )
+                    _liveGroups.value = sample.groups
+                    sample.liveRows
+                } else {
+                    // 没有 UI 观察当前连接，完全跳过 groups 排序、速率差分与留痕计算
+                    ActiveConnections.historyRows(
+                        context = appContext,
+                        profile = profile,
+                        directDomains = directDomains,
+                    )
+                }
+
                 val tick = ConnectionLogMerge.tick(
                     state,
-                    sample.liveRows,
+                    liveRows,
                     now,
                     eventFinder,
                     proxyName = profile.name,
@@ -92,10 +115,20 @@ object ConnectionRecorder {
                         pending.clear()
                     }
                     lastSaveMs = now
+                }
+                if (now - lastTrimMs >= TRIM_INTERVAL_MS) {
+                    lastTrimMs = now
                     trimRuntimeLogs(appContext)
                 }
                 lastMs = now
-                delay(TICK_MS)
+
+                val isInteractive = powerManager?.isInteractive ?: true
+                val delayMs = when {
+                    isUiObserving -> TICK_UI_ACTIVE_MS
+                    isInteractive -> TICK_BG_SCREEN_ON_MS
+                    else -> TICK_SCREEN_OFF_MS
+                }
+                delay(delayMs)
             }
         }
     }
@@ -116,6 +149,7 @@ object ConnectionRecorder {
         }
         pending.clear()
         sample = ActiveConnections.empty()
+        ActiveConnections.clearAppCache()
         trimRuntimeLogs(context.applicationContext)
     }
 

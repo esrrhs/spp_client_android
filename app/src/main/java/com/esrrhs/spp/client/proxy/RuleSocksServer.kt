@@ -197,12 +197,19 @@ class RuleSocksServer(
         return socket
     }
 
+    private val bufferLocal = object : ThreadLocal<ByteArray>() {
+        override fun initialValue(): ByteArray = ByteArray(BUFFER_SIZE)
+    }
+
     /**
      * 双通道独立转发：
      * client -> target 和 target -> client 拆为两个完全独立的单向通道。
      * 当任一方向读到 EOF (FIN) 时，立即将对端输出半关闭 (shutdownOutput())，
      * 但保留反向继续传输的能力（严格兼容 HTTP/2 和 gRPC 双向流）。
      * 当双向转发全部完成，或者发生底层异常时，统一关闭两端 Socket。
+     *
+     * 线程优化：直接复用调用方线程执行反向转发，仅从池中借 1 个线程处理正向，
+     * 将每条连接的线程开销由 3 降为 2，大幅减少线程上下文切换与栈内存占用。
      */
     private fun awaitPipe(a: Socket, b: Socket) {
         val latch = java.util.concurrent.CountDownLatch(2)
@@ -222,10 +229,10 @@ class RuleSocksServer(
         }
 
         pool.execute { forwardDirection(a, b) }
-        pool.execute { forwardDirection(b, a) }
 
         // 等待两个单向通道全部完成（或异常退出）
         try {
+            forwardDirection(b, a)
             latch.await()
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
@@ -284,7 +291,7 @@ class RuleSocksServer(
 
     private fun copyDirection(from: Socket, to: Socket) {
         try {
-            val buf = ByteArray(BUFFER_SIZE)
+            val buf = bufferLocal.get() ?: ByteArray(BUFFER_SIZE)
             val input = from.getInputStream()
             val out = to.getOutputStream()
             while (running.get() && !from.isClosed && !to.isClosed) {
@@ -401,8 +408,7 @@ class RuleSocksServer(
                     }
 
                     warnIfOversized(packet.length, "to-upstream", oversizedLogged)
-                    val data = packet.data.copyOf(packet.length)
-                    upRelay.send(DatagramPacket(data, data.size, upstreamRelay))
+                    upRelay.send(DatagramPacket(packet.data, 0, packet.length, upstreamRelay))
                 } catch (_: java.net.SocketTimeoutException) {
                     // 超时后重新检查控制连接状态
                 } catch (e: Exception) {
@@ -422,8 +428,7 @@ class RuleSocksServer(
                 val peer = peerHolder.get() ?: continue
                 // 这条才是 hev 用 1500 字节缓冲接收的方向，超限会被截成坏包。
                 warnIfOversized(packet.length, "to-hev", oversizedLogged)
-                val data = packet.data.copyOf(packet.length)
-                clientRelay.send(DatagramPacket(data, data.size, peer))
+                clientRelay.send(DatagramPacket(packet.data, 0, packet.length, peer))
             } catch (_: java.net.SocketTimeoutException) {
                 // 超时后重新检查控制连接状态
             } catch (e: Exception) {

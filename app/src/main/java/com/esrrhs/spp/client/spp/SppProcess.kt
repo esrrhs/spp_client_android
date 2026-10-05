@@ -159,11 +159,10 @@ class SppProcess(context: Context) {
     private fun findFreeLoopbackPort(): Int =
         ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { it.localPort }
 
-    /** 追加到 spp.log；超出上限时只保留尾部，避免长时间运行占满存储。 */
+    /** 追加到 spp.log；由 ConnectionRecorder 定期截断，避免长时间运行占满存储。 */
     private fun appendToLogFile(line: String) {
         runCatching {
             val file = File(appContext.filesDir, LOG_FILE)
-            com.esrrhs.spp.client.util.RuntimeLogs.trim(file)
             file.appendText(line + "\n")
         }
     }
