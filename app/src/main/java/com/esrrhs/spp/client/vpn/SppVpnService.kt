@@ -26,6 +26,8 @@ import com.esrrhs.spp.client.tun.HevTunnel
 import com.esrrhs.spp.client.util.Cidr6Routes
 import com.esrrhs.spp.client.util.CidrRoutes
 import com.esrrhs.spp.client.util.CnRouteList
+import com.esrrhs.spp.client.util.Formatters
+import com.esrrhs.spp.client.util.TrafficMeter
 import kotlinx.serialization.json.Json
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -70,6 +72,9 @@ class SppVpnService : VpnService() {
     private var sessionRxTotal = 0L
 
     private var reconnectJob: Job? = null
+    private var notifRateJob: Job? = null
+    private val rateMeter = TrafficMeter()
+    private var currentProfileName: String? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -136,6 +141,7 @@ class SppVpnService : VpnService() {
     }
 
     override fun onDestroy() {
+        stopRateNotificationUpdating()
         reconnectJob?.cancel()
         if (::networkWatchdog.isInitialized) networkWatchdog.stop()
         if (::trustedWifiMonitor.isInitialized) trustedWifiMonitor.stop()
@@ -289,6 +295,7 @@ class SppVpnService : VpnService() {
         }
 
         updateNotification(getString(R.string.notif_connected, profile.name))
+        startRateNotificationUpdating(profile.name)
         VpnStateHolder.set(VpnState.Connected)
 
         // 全局连接采集（当前连接页 + 单连接历史），与界面是否打开无关
@@ -427,6 +434,7 @@ class SppVpnService : VpnService() {
 
     /** 停数据面并把本段字节计入会话累计。 */
     private suspend fun stopDataPlaneAndCount() {
+        stopRateNotificationUpdating()
         // 先收尾全局连接采集（残留会话落历史库），再停数据面
         runCatching {
             com.esrrhs.spp.client.util.ConnectionRecorder.stop(this@SppVpnService)
@@ -603,6 +611,44 @@ class SppVpnService : VpnService() {
             .notify(NOTIFICATION_ID, buildNotification(text))
     }
 
+    private fun startRateNotificationUpdating(profileName: String) {
+        currentProfileName = profileName
+        notifRateJob?.cancel()
+        rateMeter.reset()
+        HevTunnel.stats()?.let { s ->
+            val tx = s.getOrNull(1) ?: 0L
+            val rx = s.getOrNull(3) ?: 0L
+            rateMeter.rebaseline(tx, rx, System.currentTimeMillis())
+        }
+        notifRateJob = scope.launch {
+            while (true) {
+                delay(RATE_NOTIF_INTERVAL_MS)
+                if (VpnStateHolder.state.value !is VpnState.Connected) break
+                val raw = HevTunnel.stats() ?: continue
+                val now = System.currentTimeMillis()
+                val tx = raw.getOrNull(1) ?: 0L
+                val rx = raw.getOrNull(3) ?: 0L
+                val rates = rateMeter.update(tx, rx, now)
+                val txStr = Formatters.formatRate(rates.txBytesPerSec)
+                val rxStr = Formatters.formatRate(rates.rxBytesPerSec)
+                val text = getString(
+                    R.string.notif_connected_with_rate,
+                    currentProfileName.orEmpty(),
+                    txStr,
+                    rxStr,
+                )
+                updateNotification(text)
+            }
+        }
+    }
+
+    private fun stopRateNotificationUpdating() {
+        notifRateJob?.cancel()
+        notifRateJob = null
+        currentProfileName = null
+        rateMeter.reset()
+    }
+
     private fun buildNotification(text: String): Notification {
         val contentIntent = PendingIntent.getActivity(
             this, 0,
@@ -644,6 +690,7 @@ class SppVpnService : VpnService() {
 
         /** 每个配置连续失败多少次后轮换到下一个候选。 */
         private const val FAILOVER_CYCLE = 5
+        private const val RATE_NOTIF_INTERVAL_MS = 1000L
 
         /** CN IPv6 段扩展到对齐 /22 块，使路由数控制在 ~138 条内以彻底杜绝 Binder 跨进程 Parcel 溢出 (Android 15 NetworkMonitor)。 */
         private const val CN_V6_EXPAND_PREFIX = 22
