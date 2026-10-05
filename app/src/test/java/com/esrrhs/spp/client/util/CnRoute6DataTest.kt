@@ -19,7 +19,7 @@ class CnRoute6DataTest {
     @Test
     fun cnV6_cnPrefixesGoDirect() {
         val routes = Cidr6Routes.globalCidrs(cnV6(), EXPAND_PREFIX)
-        // 从 CN 分配段中取样（网段起始地址；扩展到 /26 块后仍直连）
+        // 从 CN 分配段中取样（网段起始地址；扩展到 /22 块后仍直连）
         cnV6().take(50).map { it.substringBefore("/") }.forEach { ip ->
             assertTrue("$ip (CN) should go direct", !covers6(routes, ip))
         }
@@ -39,11 +39,11 @@ class CnRoute6DataTest {
     fun cnV6_routeCountIsBounded() {
         val routes = Cidr6Routes.globalCidrs(cnV6(), EXPAND_PREFIX)
         println("v6 routes with CN bypass: ${routes.size}")
-        assertTrue("unexpected v6 route count: ${routes.size}", routes.size in 2500..4000)
+        assertTrue("unexpected v6 route count: ${routes.size}", routes.size in 100..400)
     }
 
     private companion object {
-        const val EXPAND_PREFIX = 26
+        const val EXPAND_PREFIX = 22
     }
 
     private fun covers6(cidrs: List<Cidr6>, ip: String): Boolean {

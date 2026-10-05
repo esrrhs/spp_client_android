@@ -325,5 +325,22 @@ fun ConnectionFields(
         modifier = Modifier.fillMaxWidth(),
     )
 
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Column {
+            Text(text = stringResource(R.string.field_ipv6_title), style = typography.bodyLarge)
+            Text(
+                text = stringResource(R.string.field_ipv6_subtitle),
+                style = typography.bodySmall,
+            )
+        }
+        Switch(
+            checked = config.enableIpv6,
+            onCheckedChange = { onChange(config.copy(enableIpv6 = it)) },
+        )
+    }
+
     Spacer(modifier = Modifier.width(1.dp))
 }

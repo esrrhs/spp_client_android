@@ -165,7 +165,7 @@ class ConfigRepository(context: Context) {
                 key = prefs[Keys.LEGACY_KEY] ?: "",
                 encrypt = prefs[Keys.LEGACY_ENCRYPT] ?: "",
                 compress = prefs[Keys.LEGACY_COMPRESS] ?: 0,
-                enableIpv6 = prefs[Keys.LEGACY_IPV6] ?: false,
+                enableIpv6 = prefs[Keys.LEGACY_IPV6] ?: true,
             )
             listOf(Profile(id = LEGACY_ID, name = "Default", config = config))
         }

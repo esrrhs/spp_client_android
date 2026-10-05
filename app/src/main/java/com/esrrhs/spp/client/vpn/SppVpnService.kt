@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
 import android.net.Network
 import android.net.VpnService
 import android.os.Build
@@ -250,7 +251,7 @@ class SppVpnService : VpnService() {
         tunInterface = tun
 
         // 3. hev：getFd() 只传 int，PFD 所有权保留在本类
-        val configFile = writeHevConfig(hevSocksPort, IPV6_ENABLED)
+        val configFile = writeHevConfig(hevSocksPort, profile.config.enableIpv6)
         com.esrrhs.spp.client.util.RuntimeLogs.trim(File(filesDir, "hev.log"))
         val hevStarted = try {
             HevTunnel.start(configFile.absolutePath, tun.fd)
@@ -468,7 +469,7 @@ class SppVpnService : VpnService() {
             .addDnsServer(TunConfig.DNS_ADDRESS)
             .addDnsServer(TunConfig.FALLBACK_DNS)
 
-        if (IPV6_ENABLED) {
+        if (profile.config.enableIpv6) {
             builder.addAddress(TunConfig.TUN_ADDRESS_V6, TunConfig.TUN_PREFIX_V6)
         }
 
@@ -481,7 +482,7 @@ class SppVpnService : VpnService() {
     private fun applyRouting(builder: Builder, profile: Profile) {
         if (!profile.bypassLan && !profile.bypassCn) {
             builder.addRoute("0.0.0.0", 0)
-            if (IPV6_ENABLED) builder.addRoute("::", 0)
+            if (profile.config.enableIpv6) builder.addRoute("::", 0)
             return
         }
 
@@ -492,7 +493,7 @@ class SppVpnService : VpnService() {
         CidrRoutes.publicCidrs(cnV4, CN_V4_EXPAND_PREFIX)
             .forEach { cidr -> builder.addRoute(cidr.address, cidr.prefix) }
 
-        if (IPV6_ENABLED) {
+        if (profile.config.enableIpv6) {
             // IPv6：CN 段直连，其余全球单播走代理；ULA/link-local 直连。
             // 受 Binder parcel 上限所限，CN 段扩展到对齐 /26 块。
             Cidr6Routes.globalCidrs(cnV6, CN_V6_EXPAND_PREFIX)
@@ -598,10 +599,11 @@ class SppVpnService : VpnService() {
 
     private fun updateUnderlyingNetwork(network: Network?) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
-            val networks = if (network != null) arrayOf<Network>(network) else null
+            val net = network ?: getSystemService(ConnectivityManager::class.java)?.activeNetwork
+            val networks = if (net != null) arrayOf(net) else null
             runCatching {
                 setUnderlyingNetworks(networks)
-                Log.i(TAG, "setUnderlyingNetworks: $network")
+                Log.i(TAG, "setUnderlyingNetworks: $net")
             }.onFailure {
                 Log.w(TAG, "setUnderlyingNetworks failed", it)
             }
@@ -609,9 +611,6 @@ class SppVpnService : VpnService() {
     }
 
     companion object {
-        /** 底层固定关闭 IPv6（上游服务器无 IPv6 出口，与 SocksDroid 一致）。 */
-        private const val IPV6_ENABLED = false
-
         const val ACTION_CONNECT = "com.esrrhs.spp.client.action.CONNECT"
         const val ACTION_DISCONNECT = "com.esrrhs.spp.client.action.DISCONNECT"
 
@@ -622,8 +621,8 @@ class SppVpnService : VpnService() {
         /** 每个配置连续失败多少次后轮换到下一个候选。 */
         private const val FAILOVER_CYCLE = 5
 
-        /** CN IPv6 段扩展到对齐 /26 块，使路由数适配 Binder parcel 上限。 */
-        private const val CN_V6_EXPAND_PREFIX = 26
+        /** CN IPv6 段扩展到对齐 /22 块，使路由数控制在 ~138 条内以彻底杜绝 Binder 跨进程 Parcel 溢出 (Android 15 NetworkMonitor)。 */
+        private const val CN_V6_EXPAND_PREFIX = 22
 
         /** CN IPv4 段扩展到对齐 /12 块，使路由数控制在 ~480 条内以彻底杜绝 Binder 跨进程 Parcel 溢出 (Android 15 NetworkMonitor)。 */
         private const val CN_V4_EXPAND_PREFIX = 12
