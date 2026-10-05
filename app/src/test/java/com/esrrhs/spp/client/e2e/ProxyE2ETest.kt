@@ -253,30 +253,50 @@ class ProxyE2ETest {
     @Test
     fun testHighConcurrencyStress_Socks5Mode() {
         val proxyPort = ruleSocksServerSocks5Mode.port!!
-        runConcurrencyLoadTest(proxyPort, "127.0.0.1", tcpTargetV4.port, concurrency = 50, totalRequests = 100)
+        runConcurrencyLoadTest(proxyPort, "127.0.0.1", tcpTargetV4.port, concurrency = 100, totalRequests = 200)
     }
 
     @Test
     fun testHighConcurrencyStress_SppMode() {
         val proxyPort = ruleSocksServerSppMode.port!!
-        runConcurrencyLoadTest(proxyPort, "127.0.0.1", tcpTargetV4.port, concurrency = 50, totalRequests = 100)
+        runConcurrencyLoadTest(proxyPort, "127.0.0.1", tcpTargetV4.port, concurrency = 100, totalRequests = 200)
     }
 
     @Test
-    fun testThroughputAndLatency() {
+    fun testThroughputAndLatency_10MB() {
         val proxyPort = ruleSocksServerSocks5Mode.port!!
-        // 发送 1MB 大数据流进行吞吐压测
-        val dataSize = 1024 * 1024 // 1MB
+        // 发送 10MB 大数据流进行高吞吐压测
+        val dataSize = 10 * 1024 * 1024 // 10MB
         val payload = ByteArray(dataSize) { (it % 127).toByte() }
+        val expectedSha256 = java.security.MessageDigest.getInstance("SHA-256").digest(payload)
 
         val start = System.currentTimeMillis()
         val received = sendTcpThroughProxy(proxyPort, "127.0.0.1", tcpTargetV4.port, payload)
-        val elapsed = System.currentTimeMillis() - start
+        val elapsed = (System.currentTimeMillis() - start).coerceAtLeast(1)
+        val actualSha256 = java.security.MessageDigest.getInstance("SHA-256").digest(received)
 
-        assertArrayEquals("1MB payload must match exactly", payload, received)
-        println("1MB transfer via proxy took $elapsed ms (speed: ${1000.0 / elapsed.coerceAtLeast(1)} MB/s)")
-        // 断言传输耗时在合理范围内 (本地回环应远小于 3000ms)
-        assertTrue("Transfer time should be under 3000ms (was $elapsed ms)", elapsed < 3000)
+        assertArrayEquals("10MB payload SHA-256 must match exactly", expectedSha256, actualSha256)
+        val mbps = (dataSize.toDouble() / (1024 * 1024)) / (elapsed.toDouble() / 1000.0)
+        println("10MB transfer via proxy took $elapsed ms (speed: String.format('%.2f', mbps) = ${String.format("%.2f", mbps)} MB/s)")
+        assertTrue("Transfer time should be under 8000ms (was $elapsed ms)", elapsed < 8000)
+    }
+
+    @Test
+    fun testBulkThroughput_SppMode_5MB() {
+        val proxyPort = ruleSocksServerSppMode.port!!
+        val dataSize = 5 * 1024 * 1024 // 5MB
+        val payload = ByteArray(dataSize) { ((it * 3) % 127).toByte() }
+        val expectedSha256 = java.security.MessageDigest.getInstance("SHA-256").digest(payload)
+
+        val start = System.currentTimeMillis()
+        val received = sendTcpThroughProxy(proxyPort, "127.0.0.1", tcpTargetV4.port, payload)
+        val elapsed = (System.currentTimeMillis() - start).coerceAtLeast(1)
+        val actualSha256 = java.security.MessageDigest.getInstance("SHA-256").digest(received)
+
+        assertArrayEquals("5MB payload SHA-256 must match exactly in SPP mode", expectedSha256, actualSha256)
+        val mbps = (dataSize.toDouble() / (1024 * 1024)) / (elapsed.toDouble() / 1000.0)
+        println("5MB transfer via SPP mock took $elapsed ms (speed: ${String.format("%.2f", mbps)} MB/s)")
+        assertTrue("Transfer time should be under 5000ms (was $elapsed ms)", elapsed < 5000)
     }
 
     // ==========================================

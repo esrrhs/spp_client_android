@@ -139,6 +139,7 @@ class TcpEchoServer:
                 self.sock.close()
             except Exception:
                 pass
+            self.sock = None
 
 class UdpEchoServer:
     def __init__(self, port=19001):
@@ -691,6 +692,34 @@ def verify_all_protocols(adb, serial, host_ip, mode_name):
         raise RuntimeError(f"[{mode_name}] QUIC 测试未收到握手响应: {quic_res}")
     print(f"    [PASS] QUIC / HTTP/3 初始报文与握手协商穿透成功！")
 
+def verify_stress_and_throughput(adb, serial, host_ip, mode_name):
+    """验证高并发连接 (50 并发) 与 5MB 大流量数据吞吐 (SHA-256 完整性与速率校验)"""
+    print(f"\n[{mode_name}] 9. 运行高并发连接压力测试 (50 并发同时请求)...")
+    concurrency_cmd = f"for i in $(seq 1 50); do (echo {mode_name}_STRESS_$i; sleep 1) | timeout 4 toybox nc -w 3 {host_ip} 19001 & done; wait"
+    start_c = time.time()
+    stress_res = run_adb(adb, serial, ["shell", concurrency_cmd], timeout=20).stdout
+    elapsed_c = max(0.01, time.time() - start_c)
+    matched = len(re.findall(rf"{mode_name}_STRESS_\d+", stress_res))
+    print(f"    [PASS] 50 并发请求测试完成，成功率: {matched}/50 (耗时: {elapsed_c:.2f}s)")
+    if matched < 45:
+        raise RuntimeError(f"[{mode_name}] 并发测试成功率过低: {matched}/50")
+
+    print(f"[{mode_name}] 10. 运行 5MB 大流量吞吐与 SHA-256 完整性压测...")
+    throughput_cmd = f"(toybox dd if=/dev/zero bs=1048576 count=5 2>/dev/null; sleep 5) | timeout 12 toybox nc {host_ip} 19001 | toybox dd bs=1048576 count=5 2>/dev/null | toybox sha256sum"
+    start_t = time.time()
+    tp_res = run_adb(adb, serial, ["shell", throughput_cmd], timeout=25).stdout.strip()
+    elapsed_t = max(0.01, time.time() - start_t)
+
+    actual_hash = tp_res.split()[0] if tp_res else ""
+    expected_hash = "c036cbb7553a909f8b8877d4461924307f27ecb66cff928eeeafd569c3887e29"
+    speed_mbps = 5.0 / elapsed_t
+
+    if actual_hash != expected_hash:
+        raise RuntimeError(f"[{mode_name}] 5MB 大流量 SHA-256 校验失败！期望: {expected_hash}, 实际: {actual_hash}")
+
+    print(f"    [PASS] 5MB 数据流完整穿透并回显！SHA-256 散列一致: {actual_hash[:16]}... (耗时: {elapsed_t:.2f}s, 吞吐量: {speed_mbps:.2f} MB/s)")
+
+
 def main():
     parser = argparse.ArgumentParser(description="E2E Android Emulator VPN Test")
     parser.add_argument("--serial", default=None, help="Android device serial")
@@ -834,17 +863,11 @@ def main():
             raise RuntimeError("tun0 网卡未能按时建立！")
         print("==> tun0 虚拟网卡已就绪")
 
-        # 验证四大协议
+        # 验证八大协议
         verify_all_protocols(adb, serial, host_lan_ip, "SOCKS5")
 
-        # 测试并发压力
-        print("==> 运行 20 并发 TCP 请求压测...")
-        concurrency_cmd = f"for i in $(seq 1 20); do (printf \"STRESS_$i\\n\"; sleep 1) | timeout 4 toybox nc -w 3 {host_lan_ip} 19001 & done; wait"
-        stress_res = run_adb(adb, serial, ["shell", concurrency_cmd], timeout=15).stdout
-        matched = len(re.findall(r"STRESS_\d+", stress_res))
-        print(f"    [PASS] 并发请求成功率: {matched}/20")
-        if matched < 18:
-            raise RuntimeError(f"并发测试成功率过低: {matched}/20")
+        # 验证 50 并发压力与 5MB 大流量数据吞吐 (SHA-256 校验)
+        verify_stress_and_throughput(adb, serial, host_lan_ip, "SOCKS5")
 
         # 断开 VPN
         print("==> 断开 SOCKS5 VPN...")
@@ -897,17 +920,11 @@ def main():
         if not pgrep:
             raise RuntimeError("libspp.so 进程未运行！")
 
-        # 验证四大协议
+        # 验证八大协议
         verify_all_protocols(adb, serial, host_lan_ip, "SPP")
 
-        # 测试并发压力
-        print("==> 运行 20 并发 SPP 请求压测...")
-        concurrency_cmd = f"for i in $(seq 1 20); do (printf \"SPP_STRESS_$i\\n\"; sleep 1) | timeout 4 toybox nc -w 3 {host_lan_ip} 19001 & done; wait"
-        stress_res = run_adb(adb, serial, ["shell", concurrency_cmd], timeout=15).stdout
-        matched = len(re.findall(r"SPP_STRESS_\d+", stress_res))
-        print(f"    [PASS] 并发请求成功率: {matched}/20")
-        if matched < 18:
-            raise RuntimeError(f"并发测试成功率过低: {matched}/20")
+        # 验证 50 并发压力与 5MB 大流量数据吞吐 (SHA-256 校验)
+        verify_stress_and_throughput(adb, serial, host_lan_ip, "SPP")
 
         # 断开 VPN
         print("==> 断开 SPP VPN...")
