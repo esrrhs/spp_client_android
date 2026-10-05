@@ -197,21 +197,42 @@ class RuleSocksServer(
         return socket
     }
 
-    /** 双向转发并阻塞至任一端结束，再统一关闭两端。 */
+    /**
+     * 双通道独立转发：
+     * client -> target 和 target -> client 拆为两个完全独立的单向通道。
+     * 当任一方向读到 EOF (FIN) 时，立即将对端输出半关闭 (shutdownOutput())，
+     * 但保留反向继续传输的能力（严格兼容 HTTP/2 和 gRPC 双向流）。
+     * 当双向转发全部完成，或者发生底层异常时，统一关闭两端 Socket。
+     */
     private fun awaitPipe(a: Socket, b: Socket) {
         val latch = java.util.concurrent.CountDownLatch(2)
-        val oneSide = { from: Socket, to: Socket ->
+
+        val forwardDirection = { from: Socket, to: Socket ->
             try {
-                copyCatching(from, to)
+                copyDirection(from, to)
             } finally {
+                // 该方向读取结束，通知目标端此方向已无新数据 (发送 TCP FIN)
+                runCatching {
+                    if (!to.isClosed && !to.isOutputShutdown) {
+                        to.shutdownOutput()
+                    }
+                }
                 latch.countDown()
             }
         }
-        pool.execute { oneSide(a, b) }
-        pool.execute { oneSide(b, a) }
-        latch.await()
-        runCatching { a.close() }
-        runCatching { b.close() }
+
+        pool.execute { forwardDirection(a, b) }
+        pool.execute { forwardDirection(b, a) }
+
+        // 等待两个单向通道全部完成（或异常退出）
+        try {
+            latch.await()
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        } finally {
+            runCatching { a.close() }
+            runCatching { b.close() }
+        }
     }
 
     private fun recordEvent(
@@ -261,22 +282,19 @@ class RuleSocksServer(
         throw lastError ?: java.io.IOException("cannot connect to $host:$port")
     }
 
-    private fun copyCatching(from: Socket, to: Socket) {
+    private fun copyDirection(from: Socket, to: Socket) {
         try {
             val buf = ByteArray(BUFFER_SIZE)
             val input = from.getInputStream()
             val out = to.getOutputStream()
-            while (running.get()) {
+            while (running.get() && !from.isClosed && !to.isClosed) {
                 val n = input.read(buf)
-                if (n < 0) break
+                if (n < 0) break // 读到 EOF
                 out.write(buf, 0, n)
                 out.flush()
             }
         } catch (_: Exception) {
-            // 对端关闭
-        } finally {
-            // 半关闭，通知对端
-            runCatching { to.shutdownOutput() }
+            // 对端或本地连接异常中断，快速关闭以唤醒对向读写
             runCatching { from.close() }
             runCatching { to.close() }
         }
@@ -372,6 +390,16 @@ class RuleSocksServer(
                     clientRelay.soTimeout = TIMEOUT_MS
                     clientRelay.receive(packet)
                     (packet.socketAddress as? InetSocketAddress)?.let { peerHolder.set(it) }
+
+                    // QUIC (UDP 443) 拦截：上游 SPP 代理的 UDP 无法成功接收海外 QUIC 握手回包。
+                    // 若向目标发送 QUIC 报文且无应答，Cronet/gRPC 会等待 10~30 秒才超时回退到 TCP，
+                    // 导致 Gemini 等应用首页报无网络或 RPC timeout。
+                    // 拦截 UDP 443，使 Cronet/浏览器立即回退到速度毫秒级的 TCP (HTTP/2)。
+                    val dstPort = extractUdpDstPort(packet.data, packet.length)
+                    if (dstPort == 443) {
+                        continue
+                    }
+
                     warnIfOversized(packet.length, "to-upstream", oversizedLogged)
                     val data = packet.data.copyOf(packet.length)
                     upRelay.send(DatagramPacket(data, data.size, upstreamRelay))
@@ -430,6 +458,33 @@ class RuleSocksServer(
             addr.isLoopbackAddress ||
             addr.isSiteLocalAddress ||
             addr.isLinkLocalAddress
+    }
+
+    /**
+     * 解析 SOCKS5 UDP 请求头中的目标端口。
+     * RFC 1928 SOCKS5 UDP 头部格式：
+     * +----+------+------+----------+----------+----------+
+     * |RSV | FRAG | ATYP | DST.ADDR | DST.PORT |   DATA   |
+     * +----+------+------+----------+----------+----------+
+     * | 2  |  1   |  1   | Variable |    2     | Variable |
+     * +----+------+------+----------+----------+----------+
+     */
+    private fun extractUdpDstPort(buf: ByteArray, length: Int): Int {
+        if (length < 10) return -1
+        val atyp = buf[3].toInt() and 0xFF
+        val portOffset = when (atyp) {
+            Socks5Codec.ATYP_IPV4.toInt() -> 4 + 4 // RSV(2) + FRAG(1) + ATYP(1) + IPv4(4) = 8
+            Socks5Codec.ATYP_IPV6.toInt() -> 4 + 16 // 20
+            Socks5Codec.ATYP_DOMAIN.toInt() -> {
+                val domainLen = buf[4].toInt() and 0xFF
+                5 + domainLen
+            }
+            else -> return -1
+        }
+        if (length < portOffset + 2) return -1
+        val portHi = buf[portOffset].toInt() and 0xFF
+        val portLo = buf[portOffset + 1].toInt() and 0xFF
+        return (portHi shl 8) or portLo
     }
 
     /** hev 回程缓冲是 1500（含 SOCKS 头）。每条中继只打一次，避免 QUIC 刷屏。 */

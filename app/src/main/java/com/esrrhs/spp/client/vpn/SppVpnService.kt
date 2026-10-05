@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.Network
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -71,12 +72,18 @@ class SppVpnService : VpnService() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        networkWatchdog = NetworkWatchdog(applicationContext) {
-            val id = activeProfileId
-            if (id != null && VpnStateHolder.state.value is VpnState.Connected) {
-                reconnectJob = scope.launch { recoverTunnel(id) }
-            }
-        }
+        networkWatchdog = NetworkWatchdog(
+            context = applicationContext,
+            onNetworkUpdate = { net ->
+                updateUnderlyingNetwork(net)
+            },
+            onDefaultNetworkChanged = {
+                val id = activeProfileId
+                if (id != null && VpnStateHolder.state.value is VpnState.Connected) {
+                    reconnectJob = scope.launch { recoverTunnel(id) }
+                }
+            },
+        )
         trustedWifiMonitor = TrustedWifiMonitor(
             context = applicationContext,
             evaluate = { ssid ->
@@ -273,6 +280,7 @@ class SppVpnService : VpnService() {
 
         // 4. 监视默认网络切换（WiFi↔蜂窝），切换后主动重建数据面
         networkWatchdog.start()
+        updateUnderlyingNetwork(networkWatchdog.current)
         // 可信 WiFi：本次建链的网络作为基线，之后翻转才暂停/恢复
         trustedWifiMonitor.start()
     }
@@ -458,6 +466,7 @@ class SppVpnService : VpnService() {
             .setMtu(TunConfig.MTU)
             .addAddress(TunConfig.TUN_ADDRESS, TunConfig.TUN_PREFIX)
             .addDnsServer(TunConfig.DNS_ADDRESS)
+            .addDnsServer(TunConfig.FALLBACK_DNS)
 
         if (IPV6_ENABLED) {
             builder.addAddress(TunConfig.TUN_ADDRESS_V6, TunConfig.TUN_PREFIX_V6)
@@ -587,6 +596,18 @@ class SppVpnService : VpnService() {
             .build()
     }
 
+    private fun updateUnderlyingNetwork(network: Network?) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
+            val networks = if (network != null) arrayOf<Network>(network) else null
+            runCatching {
+                setUnderlyingNetworks(networks)
+                Log.i(TAG, "setUnderlyingNetworks: $network")
+            }.onFailure {
+                Log.w(TAG, "setUnderlyingNetworks failed", it)
+            }
+        }
+    }
+
     companion object {
         /** 底层固定关闭 IPv6（上游服务器无 IPv6 出口，与 SocksDroid 一致）。 */
         private const val IPV6_ENABLED = false
@@ -604,7 +625,7 @@ class SppVpnService : VpnService() {
         /** CN IPv6 段扩展到对齐 /26 块，使路由数适配 Binder parcel 上限。 */
         private const val CN_V6_EXPAND_PREFIX = 26
 
-        /** CN IPv4 段扩展到对齐 /21 块。 */
-        private const val CN_V4_EXPAND_PREFIX = 21
+        /** CN IPv4 段扩展到对齐 /12 块，使路由数控制在 ~480 条内以彻底杜绝 Binder 跨进程 Parcel 溢出 (Android 15 NetworkMonitor)。 */
+        private const val CN_V4_EXPAND_PREFIX = 12
     }
 }
