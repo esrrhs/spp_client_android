@@ -38,10 +38,10 @@ object MockTargetServers {
             val addr = InetAddress.getByName(host)
             val ss = if (addr is java.net.Inet6Address) {
                 val ch = java.nio.channels.ServerSocketChannel.open()
-                ch.bind(InetSocketAddress(addr, 0), 64)
+                ch.bind(InetSocketAddress(addr, 0), 512)
                 ch.socket()
             } else {
-                ServerSocket(0, 64, addr)
+                ServerSocket(0, 512, addr)
             }
             serverSocket = ss
             pool.execute {

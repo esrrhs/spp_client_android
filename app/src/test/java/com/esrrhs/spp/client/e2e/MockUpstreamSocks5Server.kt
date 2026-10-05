@@ -40,7 +40,7 @@ class MockUpstreamSocks5Server(
 
     fun start() {
         if (running.getAndSet(true)) return
-        val ss = ServerSocket(0, 128, InetAddress.getByName(bindHost))
+        val ss = ServerSocket(0, 512, InetAddress.getByName(bindHost))
         serverSocket = ss
         pool.execute { acceptLoop(ss) }
     }
