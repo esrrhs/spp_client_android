@@ -775,9 +775,16 @@ def verify_stress_and_throughput(adb, serial, host_ip, mode_name):
         raise RuntimeError(f"[{mode_name}] 并发测试成功率过低: {matched}/50")
 
     print(f"[{mode_name}] 10. 运行 5MB 大流量吞吐与 SHA-256 完整性压测...")
-    throughput_cmd = f"(toybox dd if=/dev/zero bs=1048576 count=5 2>/dev/null; sleep 5) | timeout 12 toybox nc {host_ip} 19001 | toybox dd bs=1048576 count=5 2>/dev/null | toybox sha256sum"
+    # 5 MiB = 4096 * 1280。模拟器 toybox dd 用 1MiB 块会分配失败，管道得到空数据，
+    # SHA-256 变成空串的散列。sleep 保持写端打开，避免 nc 在回显读完前关掉连接。
+    throughput_cmd = (
+        f"(toybox dd if=/dev/zero bs=4096 count=1280; sleep 2) | "
+        f"timeout 20 toybox nc {host_ip} 19001 | "
+        f"toybox dd bs=4096 count=1280 | toybox sha256sum"
+    )
     start_t = time.time()
-    tp_res = run_adb(adb, serial, ["shell", throughput_cmd], timeout=25).stdout.strip()
+    tp = run_adb(adb, serial, ["shell", throughput_cmd], timeout=30)
+    tp_res = tp.stdout.strip()
     elapsed_t = max(0.01, time.time() - start_t)
 
     actual_hash = tp_res.split()[0] if tp_res else ""
@@ -785,7 +792,11 @@ def verify_stress_and_throughput(adb, serial, host_ip, mode_name):
     speed_mbps = 5.0 / elapsed_t
 
     if actual_hash != expected_hash:
-        raise RuntimeError(f"[{mode_name}] 5MB 大流量 SHA-256 校验失败！期望: {expected_hash}, 实际: {actual_hash}")
+        err = (tp.stderr or "").strip()
+        raise RuntimeError(
+            f"[{mode_name}] 5MB 大流量 SHA-256 校验失败！期望: {expected_hash}, 实际: {actual_hash}"
+            + (f"\nstderr: {err}" if err else "")
+        )
 
     print(f"    [PASS] 5MB 数据流完整穿透并回显！SHA-256 散列一致: {actual_hash[:16]}... (耗时: {elapsed_t:.2f}s, 吞吐量: {speed_mbps:.2f} MB/s)")
 
