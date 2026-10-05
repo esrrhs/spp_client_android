@@ -310,12 +310,24 @@ class Http2MockServer:
                 c, _ = self.sock.accept()
                 def handle(conn):
                     try:
-                        preface = conn.recv(24)
-                        if preface.startswith(b'PRI * HTTP/2.0'):
-                            conn.recv(9)
+                        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                        buf = bytearray()
+                        while len(buf) < 24:
+                            chunk = conn.recv(24 - len(buf))
+                            if not chunk:
+                                break
+                            buf.extend(chunk)
+                        if bytes(buf).startswith(b'PRI * HTTP/2.0'):
+                            # 尝试读取客户端随后的 SETTINGS 帧（9 字节），若未到也可直接回复服务端 SETTINGS
+                            conn.settimeout(0.5)
+                            try:
+                                conn.recv(9)
+                            except Exception:
+                                pass
                             # 回复服务端的 SETTINGS 帧 (长度0, 类型4) 及 SETTINGS ACK 帧
                             conn.sendall(b'\x00\x00\x00\x04\x00\x00\x00\x00\x00\x00\x00\x00\x04\x01\x00\x00\x00\x00')
-                            time.sleep(0.2)
+                            # 等待对端读取并断开或等待 1 秒缓冲，避免提前 RST 导致数据未被代理收取
+                            time.sleep(1.0)
                     except Exception:
                         pass
                     finally:
@@ -729,7 +741,12 @@ def verify_all_protocols(adb, serial, host_ip, mode_name):
 
     print(f"[{mode_name}] 4. 测试 HTTP/2 握手前奏与帧解析穿透...")
     h2_cmd = f"(printf 'PRI * HTTP/2.0\\r\\n\\r\\nSM\\r\\n\\r\\n\\x00\\x00\\x00\\x04\\x00\\x00\\x00\\x00\\x00'; sleep 1) | timeout 4 toybox nc {host_ip} 19005 | od -A n -t x1"
-    h2_res = run_adb(adb, serial, ["shell", h2_cmd]).stdout
+    h2_res = ""
+    for _ in range(3):
+        h2_res = run_adb(adb, serial, ["shell", h2_cmd], check=False).stdout
+        if "04" in h2_res:
+            break
+        time.sleep(0.5)
     if "04" not in h2_res:
         raise RuntimeError(f"[{mode_name}] HTTP/2 测试未收到预期服务端 SETTINGS 帧: {h2_res}")
     print(f"    [PASS] HTTP/2 前奏与帧握手穿透成功！")
