@@ -209,6 +209,12 @@
     <string name="history_connect_ms">connect %1$d ms</string>
     <string name="history_detail_line">↑ %1$s　↓ %2$s　·　%3$s</string>
     <string name="history_reason">Reason: %1$s</string>
+    <string name="history_filter_all">All</string>
+    <string name="history_filter_direct">Direct</string>
+    <string name="history_filter_empty">No records match the filter</string>
+    <string name="history_filter_reset">Reset filter</string>
+    <string name="history_count">%1$d total</string>
+    <string name="history_count_filtered">Filtered %1$d / %2$d</string>
 
     <!-- IP lookup -->
     <string name="action_ip_query">My IP</string>

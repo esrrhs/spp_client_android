@@ -33,6 +33,10 @@ data class ConnectionLogEntry(
     /** 结束时刻；0 表示仍在进行。 */
     val endMs: Long = 0,
 ) {
+    /** 目标是否为 IPv6 地址。 */
+    val isIpv6: Boolean
+        get() = remoteIp.contains(":") || (domain != null && domain.contains(":"))
+
     companion object {
         const val ROUTE_DIRECT = "direct"
         const val ROUTE_PROXY = "proxy"
