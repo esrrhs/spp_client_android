@@ -6,6 +6,7 @@
     <string name="notif_channel_name">VPN status</string>
     <string name="notif_connecting">Connecting…</string>
     <string name="notif_connected">Connected · %1$s</string>
+    <string name="notif_connected_with_rate">Connected · %1$s  ↑ %2$s  ↓ %3$s</string>
     <string name="notif_disconnecting">Disconnecting…</string>
     <string name="notif_reconnecting">Connection lost, reconnecting…</string>
     <string name="notif_failover">Switching to backup profile…</string>
