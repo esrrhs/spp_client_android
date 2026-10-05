@@ -10,7 +10,10 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** 上游 SOCKS5。SPP 模式是本机 socks5_client；SOCKS5 模式是远端代理。 */
@@ -40,6 +43,7 @@ class RuleSocksServer(
     private var server: ServerSocket? = null
     private val relays = mutableListOf<DatagramSocket>()
     private val children = mutableListOf<Socket>()
+    private val prewarmPool = ConcurrentLinkedQueue<Socket>()
     private val pool = Executors.newCachedThreadPool { r ->
         Thread(r, "rule-socks").apply { isDaemon = true }
     }
@@ -51,12 +55,16 @@ class RuleSocksServer(
         val s = ServerSocket(0, 512, InetAddress.getByName("127.0.0.1"))
         server = s
         pool.execute { acceptLoop(s) }
+        replenishPrewarmPool()
         Log.i(TAG, "rule socks proxy listening on 127.0.0.1:${s.localPort}, direct rules=${directDomains.size}")
     }
 
     fun stop() {
         if (!running.getAndSet(false)) return
         runCatching { server?.close() }
+        while (prewarmPool.isNotEmpty()) {
+            runCatching { prewarmPool.poll()?.close() }
+        }
         synchronized(children) {
             children.toList().forEach { runCatching { it.close() } }
             children.clear()
@@ -187,18 +195,67 @@ class RuleSocksServer(
         }
     }
 
-    /** 连接上游并完成 SOCKS5 CONNECT；失败抛异常。 */
-    private fun connectUpstream(req: Socks5Codec.Request): Socket {
-        val socket = openUpstream()
-        val upOut = socket.getOutputStream()
-        val upIn = DataInputStream(socket.getInputStream())
-        upOut.write(req.raw)
-        upOut.flush()
-        if (Socks5Codec.readReply(upIn) == null) {
-            runCatching { socket.close() }
-            throw java.io.IOException("upstream CONNECT rejected/timeout")
+    /** 补充上游预热池（最多 PREWARM_POOL_SIZE 条空闲认证就绪连接）。 */
+    private fun replenishPrewarmPool() {
+        if (!running.get()) return
+        pool.execute {
+            while (running.get() && prewarmPool.size < PREWARM_POOL_SIZE) {
+                try {
+                    val prewarmed = openUpstream()
+                    if (running.get()) {
+                        prewarmPool.offer(prewarmed)
+                    } else {
+                        runCatching { prewarmed.close() }
+                        break
+                    }
+                } catch (_: Exception) {
+                    break
+                }
+            }
         }
-        return socket
+    }
+
+    /** 从预热池取出一个可用连接，或实时建连。 */
+    private fun acquireUpstream(): Socket {
+        while (prewarmPool.isNotEmpty()) {
+            val sock = prewarmPool.poll() ?: break
+            if (!sock.isClosed && sock.isConnected) {
+                replenishPrewarmPool()
+                return sock
+            }
+            runCatching { sock.close() }
+        }
+        val sock = openUpstream()
+        replenishPrewarmPool()
+        return sock
+    }
+
+    /** 连接上游并完成 SOCKS5 CONNECT；优先复用已预热认证的连接。 */
+    private fun connectUpstream(req: Socks5Codec.Request): Socket {
+        var socket = acquireUpstream()
+        try {
+            val upOut = socket.getOutputStream()
+            val upIn = DataInputStream(socket.getInputStream())
+            upOut.write(req.raw)
+            upOut.flush()
+            if (Socks5Codec.readReply(upIn) == null) {
+                throw java.io.IOException("upstream CONNECT rejected/timeout")
+            }
+            return socket
+        } catch (e: Exception) {
+            runCatching { socket.close() }
+            // 预热连接可能已被服务器因空闲超时断开，重试一次新建连
+            socket = openUpstream()
+            val upOut = socket.getOutputStream()
+            val upIn = DataInputStream(socket.getInputStream())
+            upOut.write(req.raw)
+            upOut.flush()
+            if (Socks5Codec.readReply(upIn) == null) {
+                runCatching { socket.close() }
+                throw java.io.IOException("upstream CONNECT rejected/timeout")
+            }
+            return socket
+        }
     }
 
     /**
@@ -265,37 +322,86 @@ class RuleSocksServer(
     }
 
     /**
-     * 解析 [host] 的全部地址并逐个尝试连接（IPv4 优先，IPv6 兜底），
-     * 任一成功即返回已连接的 Socket；全部失败抛出最后一个异常。
+     * 解析 [host] 的全部地址并并发尝试连接（RFC 8305 Happy Eyeballs 竞速）。
+     * 首选 IPv4，若首个地址在 250ms 内未连接成功，立即发起下一个地址的尝试。
+     * 任一成功即返回已连接的 Socket，其余连接被快速取消并关闭。
      */
     private fun openConnected(host: String, port: Int): Socket {
-        val addresses = runCatching { InetAddress.getAllByName(host) }.getOrNull()
-            ?: throw java.net.UnknownHostException(host)
-        val ordered = addresses.sortedBy { if (it is Inet6Address) 1 else 0 }
+        val addresses = resolveHost(host)
+        if (addresses.isEmpty()) {
+            throw java.net.UnknownHostException(host)
+        }
+        if (addresses.size == 1) {
+            val addr = addresses[0]
+            val s = Socket()
+            s.tcpNoDelay = true
+            s.sendBufferSize = TCP_SOCKET_BUFFER
+            s.receiveBufferSize = TCP_SOCKET_BUFFER
+            s.connect(InetSocketAddress(addr, port), ADDR_CONNECT_TIMEOUT_MS.toInt())
+            return s
+        }
+
+        // 多地址：Happy Eyeballs 并发竞速
         val deadline = System.currentTimeMillis() + CONNECT_TIMEOUT_MS
-        var lastError: Exception? = null
-        for (addr in ordered) {
+        val completionQueue = java.util.concurrent.LinkedBlockingQueue<Result<Socket>>()
+        val activeSockets = java.util.concurrent.ConcurrentHashMap.newKeySet<Socket>()
+        var dispatched = 0
+        var completed = 0
+
+        for (addr in addresses) {
             val remaining = deadline - System.currentTimeMillis()
-            if (remaining <= 0) break
-            // 单个地址最多等一半预算，保证后续地址（v4↔v6）还有尝试机会
-            val perTimeout = remaining.coerceAtMost(ADDR_CONNECT_TIMEOUT_MS)
-            val attempt = try {
-                java.nio.channels.SocketChannel.open().socket()
-            } catch (_: Exception) {
-                Socket()
+            if (remaining <= 0 && dispatched > 0) break
+
+            val s = Socket()
+            activeSockets.add(s)
+            dispatched++
+
+            pool.execute {
+                try {
+                    s.tcpNoDelay = true
+                    s.sendBufferSize = TCP_SOCKET_BUFFER
+                    s.receiveBufferSize = TCP_SOCKET_BUFFER
+                    val timeout = (deadline - System.currentTimeMillis()).coerceIn(100, ADDR_CONNECT_TIMEOUT_MS)
+                    s.connect(InetSocketAddress(addr, port), timeout.toInt())
+                    completionQueue.offer(Result.success(s))
+                } catch (e: Exception) {
+                    runCatching { s.close() }
+                    activeSockets.remove(s)
+                    completionQueue.offer(Result.failure(e))
+                }
             }
-            try {
-                attempt.tcpNoDelay = true
-                attempt.sendBufferSize = TCP_SOCKET_BUFFER
-                attempt.receiveBufferSize = TCP_SOCKET_BUFFER
-                attempt.connect(InetSocketAddress(addr, port), perTimeout.toInt())
-                return attempt
-            } catch (e: Exception) {
-                lastError = e
-                runCatching { attempt.close() }
+
+            // 给予先发地址 250ms 优势窗口；如果 250ms 内有任一成功，直接返回
+            val res = completionQueue.poll(HAPPY_EYEBALLS_HEAD_START_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+            if (res != null) {
+                completed++
+                if (res.isSuccess) {
+                    val winner = res.getOrThrow()
+                    activeSockets.remove(winner)
+                    activeSockets.forEach { runCatching { it.close() } }
+                    return winner
+                }
             }
         }
-        throw lastError ?: java.io.IOException("cannot connect to $host:$port")
+
+        // 等待所有已派发连接出结果
+        var lastError: Exception? = null
+        while (completed < dispatched) {
+            val remaining = (deadline - System.currentTimeMillis()).coerceAtLeast(1)
+            val res = completionQueue.poll(remaining, java.util.concurrent.TimeUnit.MILLISECONDS) ?: break
+            completed++
+            if (res.isSuccess) {
+                val winner = res.getOrThrow()
+                activeSockets.remove(winner)
+                activeSockets.forEach { runCatching { it.close() } }
+                return winner
+            } else {
+                lastError = res.exceptionOrNull() as? Exception
+            }
+        }
+
+        activeSockets.forEach { runCatching { it.close() } }
+        throw lastError ?: java.io.IOException("cannot connect to $host:$port (Happy Eyeballs timeout)")
     }
 
     private fun copyDirection(from: Socket, to: Socket) {
@@ -407,15 +513,6 @@ class RuleSocksServer(
                     clientRelay.receive(packet)
                     (packet.socketAddress as? InetSocketAddress)?.let { peerHolder.set(it) }
 
-                    // QUIC (UDP 443) 拦截：上游 SPP 代理的 UDP 无法成功接收海外 QUIC 握手回包。
-                    // 若向目标发送 QUIC 报文且无应答，Cronet/gRPC 会等待 10~30 秒才超时回退到 TCP，
-                    // 导致 Gemini 等应用首页报无网络或 RPC timeout。
-                    // 拦截 UDP 443，使 Cronet/浏览器立即回退到速度毫秒级的 TCP (HTTP/2)。
-                    val dstPort = extractUdpDstPort(packet.data, packet.length)
-                    if (dstPort == 443) {
-                        continue
-                    }
-
                     warnIfOversized(packet.length, "to-upstream", oversizedLogged)
                     val data = packet.data.copyOf(packet.length)
                     upRelay.send(DatagramPacket(data, data.size, upstreamRelay))
@@ -476,32 +573,7 @@ class RuleSocksServer(
             addr.isLinkLocalAddress
     }
 
-    /**
-     * 解析 SOCKS5 UDP 请求头中的目标端口。
-     * RFC 1928 SOCKS5 UDP 头部格式：
-     * +----+------+------+----------+----------+----------+
-     * |RSV | FRAG | ATYP | DST.ADDR | DST.PORT |   DATA   |
-     * +----+------+------+----------+----------+----------+
-     * | 2  |  1   |  1   | Variable |    2     | Variable |
-     * +----+------+------+----------+----------+----------+
-     */
-    private fun extractUdpDstPort(buf: ByteArray, length: Int): Int {
-        if (length < 10) return -1
-        val atyp = buf[3].toInt() and 0xFF
-        val portOffset = when (atyp) {
-            Socks5Codec.ATYP_IPV4.toInt() -> 4 + 4 // RSV(2) + FRAG(1) + ATYP(1) + IPv4(4) = 8
-            Socks5Codec.ATYP_IPV6.toInt() -> 4 + 16 // 20
-            Socks5Codec.ATYP_DOMAIN.toInt() -> {
-                val domainLen = buf[4].toInt() and 0xFF
-                5 + domainLen
-            }
-            else -> return -1
-        }
-        if (length < portOffset + 2) return -1
-        val portHi = buf[portOffset].toInt() and 0xFF
-        val portLo = buf[portOffset + 1].toInt() and 0xFF
-        return (portHi shl 8) or portLo
-    }
+
 
     /** hev 回程缓冲是 1500（含 SOCKS 头）。每条中继只打一次，避免 QUIC 刷屏。 */
     private fun warnIfOversized(length: Int, dir: String, logged: AtomicBoolean) {
@@ -535,6 +607,31 @@ class RuleSocksServer(
 
         fun markDirectPenalized(host: String) {
             directPenaltyCache[host] = System.currentTimeMillis() + DIRECT_PENALTY_MS
+        }
+
+        /** RFC 8305 Happy Eyeballs 先发优势窗口（毫秒）。 */
+        const val HAPPY_EYEBALLS_HEAD_START_MS = 250L
+        /** 上游代理预热连接池上限。 */
+        const val PREWARM_POOL_SIZE = 4
+        /** 本地 DNS 缓存有效时长（毫秒）。 */
+        const val DNS_CACHE_TTL_MS = 60_000L
+
+        private data class DnsCacheEntry(val addrs: List<InetAddress>, val expireMs: Long)
+        private val dnsCache = ConcurrentHashMap<String, DnsCacheEntry>()
+
+        fun resolveHost(host: String): List<InetAddress> {
+            val now = System.currentTimeMillis()
+            val cached = dnsCache[host]
+            if (cached != null && now < cached.expireMs) {
+                return cached.addrs
+            }
+            val resolved = runCatching { InetAddress.getAllByName(host).toList() }.getOrNull().orEmpty()
+            if (resolved.isNotEmpty()) {
+                val ordered = resolved.sortedBy { if (it is Inet6Address) 1 else 0 }
+                dnsCache[host] = DnsCacheEntry(ordered, now + DNS_CACHE_TTL_MS)
+                return ordered
+            }
+            return cached?.addrs.orEmpty()
         }
 
         fun isLoopback(host: String): Boolean =
