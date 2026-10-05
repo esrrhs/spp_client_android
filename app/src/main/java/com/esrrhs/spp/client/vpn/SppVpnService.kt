@@ -539,7 +539,7 @@ class SppVpnService : VpnService() {
             appendLine("  netmask: ${TunConfig.MAPDNS_NETMASK}")
             appendLine("  cache-size: 10000")
             appendLine("misc:")
-            appendLine("  log-level: info")
+            appendLine("  log-level: warn")
             appendLine("  log-file: ${File(filesDir, "hev.log").absolutePath}")
         }
         return File(filesDir, "hev.yml").apply { writeText(yaml) }

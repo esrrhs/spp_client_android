@@ -131,7 +131,8 @@ object ActiveConnections {
         // 本轮仍活跃的连接（归属反查 + 分应用过滤 + 速率差分）
         val activeRows = sessions.mapNotNull { s ->
             val uid = ownerUid(cm, s)
-            val pkg = if (uid >= 0) pm.getPackagesForUid(uid)?.firstOrNull() else null
+            val info = resolveAppInfo(context, uid)
+            val pkg = info.packageName
             // 按配置的分应用规则过滤
             val routed = when (profile?.perAppMode ?: PerAppMode.ALL) {
                 PerAppMode.ALL -> true
@@ -140,11 +141,7 @@ object ActiveConnections {
             }
             if (!routed) return@mapNotNull null
 
-            val label = pkg?.let {
-                runCatching { pm.getApplicationLabel(pm.getApplicationInfo(it, 0)).toString() }
-                    .getOrDefault(it)
-            } ?: context.getString(com.esrrhs.spp.client.R.string.conn_unknown_app, uid)
-
+            val label = info.label
             val prevPair = prev?.prevBytes?.get(s.key)
             Temp(
                 conn = LiveConnection(
@@ -246,6 +243,32 @@ object ActiveConnections {
         return ConnectionSample(groups, bytesNow, nextRetained, liveRows)
     }
 
+    data class AppInfo(
+        val packageName: String?,
+        val label: String,
+    )
+
+    private val appInfoCache = java.util.concurrent.ConcurrentHashMap<Int, AppInfo>()
+
+    fun clearAppCache() {
+        appInfoCache.clear()
+    }
+
+    private fun resolveAppInfo(context: Context, uid: Int): AppInfo {
+        if (uid < 0) {
+            return AppInfo(null, context.getString(com.esrrhs.spp.client.R.string.conn_unknown_app, uid))
+        }
+        return appInfoCache.computeIfAbsent(uid) {
+            val pm = context.packageManager
+            val pkg = pm.getPackagesForUid(uid)?.firstOrNull()
+            val label = pkg?.let {
+                runCatching { pm.getApplicationLabel(pm.getApplicationInfo(it, 0)).toString() }
+                    .getOrDefault(it)
+            } ?: context.getString(com.esrrhs.spp.client.R.string.conn_unknown_app, uid)
+            AppInfo(pkg, label)
+        }
+    }
+
     /**
      * 供连接历史采样：解析当前会话并反查 UID/应用（含分应用过滤），
      * 不做速率差分与留痕，调用方自行维护跨轮次状态（见 ConnectionLogMerge）。
@@ -256,26 +279,22 @@ object ActiveConnections {
         directDomains: Set<String>,
     ): List<HistoryRow> {
         val cm = context.getSystemService(ConnectivityManager::class.java)
-        val pm = context.packageManager
         val allowedPackages = profile?.perAppPackages?.toSet().orEmpty()
         return parseSessions(HevTunnel.sessions().orEmpty()).mapNotNull { s ->
             val uid = ownerUid(cm, s)
-            val pkg = if (uid >= 0) pm.getPackagesForUid(uid)?.firstOrNull() else null
+            val info = resolveAppInfo(context, uid)
+            val pkg = info.packageName
             val routed = when (profile?.perAppMode ?: PerAppMode.ALL) {
                 PerAppMode.ALL -> true
                 PerAppMode.ALLOWED -> pkg != null && pkg in allowedPackages
                 PerAppMode.DISALLOWED -> pkg == null || pkg !in allowedPackages
             }
             if (!routed) return@mapNotNull null
-            val label = pkg?.let {
-                runCatching { pm.getApplicationLabel(pm.getApplicationInfo(it, 0)).toString() }
-                    .getOrDefault(it)
-            } ?: context.getString(com.esrrhs.spp.client.R.string.conn_unknown_app, uid)
             HistoryRow(
                 key = s.key,
                 uid = uid,
                 packageName = pkg,
-                label = label,
+                label = info.label,
                 destination = s.domain ?: "${s.dstIp}:${s.dstPort}",
                 domain = s.domain,
                 remoteIp = s.dstIp,
