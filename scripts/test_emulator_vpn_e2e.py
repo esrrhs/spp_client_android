@@ -2,21 +2,29 @@
 """
 端到端 Android 真实集成测试脚本 (E2E Android Emulator VPN Test)
 
-测试全流程：
-1. 本地启动 Echo 服务端 (TCP/UDP/HTTP)。
-2. 本地启动 SOCKS5 代理服务端与 SPP 协议服务端。
-3. 通过 ADB 自动安装并向 App 发送带配置的 CONNECT 意图。
-4. 验证系统 tun0 虚拟网卡创建、Native 进程 (hev-socks5-tunnel / libspp.so) 正常运作。
-5. 模拟器内通过 tun0 发起 TCP/UDP/HTTP 流量，验证数据完整往返回显。
-6. 并发压测（多并发请求 0 失败）。
-7. 断开 VPN，验证 tun0 与子进程清理。
+测试全矩阵：
+1. 代理模式：
+   - SOCKS5 代理模式 (带用户名密码认证，支持 TCP 与 UDP ASSOCIATE 中继)
+   - 真实 SPP 协议与 Native 进程模式 (libspp.so 子进程 + SPP 加密隧道)
+2. 网络与传输协议：
+   - TCP 报文穿透与数据完整性回显
+   - UDP 数据报穿透与中继回显
+   - HTTP/1.1 标准 GET 请求与 200 OK 响应
+   - HTTP/2 原生连接前奏 (Connection Preface) 与 SETTINGS 帧双向握手
+3. 高并发与可靠性：
+   - 批量并发请求压测 (0 失败)
+4. 生命周期管理：
+   - 系统虚拟网卡 tun0 干净建立与销毁
+   - Native 进程生命周期正常回收
 """
 
 import argparse
+import http.server
 import json
 import os
 import re
 import socket
+import socketserver
 import struct
 import subprocess
 import sys
@@ -72,7 +80,6 @@ def get_host_lan_ip():
     if valid_ips:
         return valid_ips[0]
 
-    # 回退到 socket 获取
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.connect(('8.8.8.8', 80))
@@ -164,7 +171,99 @@ class UdpEchoServer:
             except Exception:
                 pass
 
-class MockSocks5Server:
+class Http1EchoServer:
+    def __init__(self, port=19004):
+        self.port = port
+        self.sock = None
+        self.running = False
+
+    def start(self):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind(('0.0.0.0', self.port))
+        self.sock.listen(16)
+        self.running = True
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self):
+        while self.running:
+            try:
+                c, _ = self.sock.accept()
+                def handle(conn):
+                    try:
+                        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                        req = conn.recv(1024)
+                        if req:
+                            resp = (
+                                b"HTTP/1.1 200 OK\r\n"
+                                b"Content-Type: text/plain\r\n"
+                                b"Content-Length: 11\r\n"
+                                b"Connection: close\r\n\r\n"
+                                b"HTTP1_OK\n"
+                            )
+                            conn.sendall(resp)
+                            time.sleep(0.5)
+                    except Exception:
+                        pass
+                    finally:
+                        try: conn.close()
+                        except Exception: pass
+                threading.Thread(target=handle, args=(c,), daemon=True).start()
+            except Exception:
+                break
+
+    def stop(self):
+        self.running = False
+        if self.sock:
+            try:
+                self.sock.close()
+            except Exception:
+                pass
+
+class Http2MockServer:
+    def __init__(self, port=19005):
+        self.port = port
+        self.sock = None
+        self.running = False
+
+    def start(self):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind(('0.0.0.0', self.port))
+        self.sock.listen(16)
+        self.running = True
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self):
+        while self.running:
+            try:
+                c, _ = self.sock.accept()
+                def handle(conn):
+                    try:
+                        preface = conn.recv(24)
+                        if preface.startswith(b'PRI * HTTP/2.0'):
+                            conn.recv(9)
+                            # 回复服务端的 SETTINGS 帧 (长度0, 类型4) 及 SETTINGS ACK 帧
+                            conn.sendall(b'\x00\x00\x00\x04\x00\x00\x00\x00\x00\x00\x00\x00\x04\x01\x00\x00\x00\x00')
+                            time.sleep(0.2)
+                    except Exception:
+                        pass
+                    finally:
+                        try: conn.close()
+                        except Exception: pass
+                threading.Thread(target=handle, args=(c,), daemon=True).start()
+            except Exception:
+                break
+
+    def stop(self):
+        self.running = False
+        if self.sock:
+            try:
+                self.sock.close()
+            except Exception:
+                pass
+
+class MockSocks5ServerWithUdp:
     def __init__(self, port=19002, user="testuser", password="testpass", remap_ports=None):
         self.port = port
         self.user = user
@@ -172,7 +271,6 @@ class MockSocks5Server:
         self.remap_ports = remap_ports or {}
         self.sock = None
         self.running = False
-        self.thread = None
 
     def start(self):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -180,8 +278,7 @@ class MockSocks5Server:
         self.sock.bind(('0.0.0.0', self.port))
         self.sock.listen(64)
         self.running = True
-        self.thread = threading.Thread(target=self._accept_loop, daemon=True)
-        self.thread.start()
+        threading.Thread(target=self._accept_loop, daemon=True).start()
 
     def _accept_loop(self):
         while self.running:
@@ -194,9 +291,9 @@ class MockSocks5Server:
     def _client_loop(self, c):
         try:
             c.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            # 1. 协商认证
+            # 1. 认证协商
             ver, n = struct.unpack('!BB', c.recv(2))
-            methods = c.recv(n)
+            c.recv(n)
             c.sendall(b'\x05\x02') # 用户名密码认证
 
             subver, ulen = struct.unpack('!BB', c.recv(2))
@@ -209,52 +306,122 @@ class MockSocks5Server:
                 return
             c.sendall(b'\x01\x00')
 
-            # 2. 请求
+            # 2. 请求处理
             ver, cmd, _, atyp = struct.unpack('!BBBB', c.recv(4))
-            if atyp == 1:
-                dest = socket.inet_ntoa(c.recv(4))
-            elif atyp == 3:
-                dlen = struct.unpack('!B', c.recv(1))[0]
-                dest = c.recv(dlen).decode('utf-8', errors='ignore')
-            elif atyp == 4:
-                dest = socket.inet_ntop(socket.AF_INET6, c.recv(16))
-            else:
-                c.close()
-                return
-            port = struct.unpack('!H', c.recv(2))[0]
+            if cmd == 1:  # CONNECT (TCP)
+                if atyp == 1:
+                    dest = socket.inet_ntoa(c.recv(4))
+                elif atyp == 3:
+                    dlen = struct.unpack('!B', c.recv(1))[0]
+                    dest = c.recv(dlen).decode('utf-8', errors='ignore')
+                elif atyp == 4:
+                    dest = socket.inet_ntop(socket.AF_INET6, c.recv(16))
+                else:
+                    c.close()
+                    return
+                port = struct.unpack('!H', c.recv(2))[0]
 
-            # 端口重定向（若目标是 10.0.2.2 或回环）
-            dest_ip = '127.0.0.1' if dest in ('10.0.2.2', '127.0.0.1') else dest
-            target_port = self.remap_ports.get(port, port)
+                dest_ip = '127.0.0.1' if dest in ('10.0.2.2', '127.0.0.1') else dest
+                target_port = self.remap_ports.get(port, port)
 
-            target = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            target.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            target.connect((dest_ip, target_port))
-            c.sendall(b'\x05\x00\x00\x01\x7f\x00\x00\x01\x00\x00')
+                target = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                target.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                target.connect((dest_ip, target_port))
+                c.sendall(b'\x05\x00\x00\x01\x7f\x00\x00\x01\x00\x00')
 
-            def forward(src, dst):
-                try:
+                def forward(src, dst):
+                    try:
+                        while self.running:
+                            d = src.recv(16384)
+                            if not d: break
+                            dst.sendall(d)
+                    except Exception:
+                        pass
+                    finally:
+                        try: dst.shutdown(socket.SHUT_WR)
+                        except Exception: pass
+
+                t1 = threading.Thread(target=forward, args=(c, target), daemon=True)
+                t2 = threading.Thread(target=forward, args=(target, c), daemon=True)
+                t1.start(); t2.start(); t1.join(); t2.join()
+                c.close(); target.close()
+
+            elif cmd == 3:  # UDP ASSOCIATE
+                if atyp == 1: c.recv(4)
+                elif atyp == 3: c.recv(struct.unpack('!B', c.recv(1))[0])
+                elif atyp == 4: c.recv(16)
+                c.recv(2)
+
+                udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                udp_sock.bind(('0.0.0.0', 0))
+                bnd_port = udp_sock.getsockname()[1]
+                c.sendall(struct.pack('!BBBBIH', 5, 0, 0, 1, 0x7f000001, bnd_port))
+
+                # 每对 (client_addr, target_port) 使用独立的 backend socket，彻底避免串线和覆盖
+                backend_sockets = {}
+
+                def udp_relay():
                     while self.running:
-                        d = src.recv(16384)
-                        if not d: break
-                        dst.sendall(d)
-                except Exception:
-                    pass
-                finally:
-                    try: dst.shutdown(socket.SHUT_WR)
-                    except Exception: pass
+                        try:
+                            data, client_addr = udp_sock.recvfrom(65535)
+                            if len(data) < 10 or data[0] != 0 or data[1] != 0:
+                                continue
+                            u_atyp = data[3]
+                            idx = 4
+                            if u_atyp == 1:
+                                dest_host = socket.inet_ntoa(data[idx:idx+4])
+                                idx += 4
+                            elif u_atyp == 3:
+                                dlen = data[idx]
+                                idx += 1
+                                dest_host = data[idx:idx+dlen].decode('utf-8', errors='ignore')
+                                idx += dlen
+                            elif u_atyp == 4:
+                                dest_host = socket.inet_ntop(socket.AF_INET6, data[idx:idx+16])
+                                idx += 16
+                            else:
+                                continue
+                            t_port = struct.unpack('!H', data[idx:idx+2])[0]
+                            idx += 2
+                            payload = data[idx:]
 
-            t1 = threading.Thread(target=forward, args=(c, target), daemon=True)
-            t2 = threading.Thread(target=forward, args=(target, c), daemon=True)
-            t1.start()
-            t2.start()
-            t1.join()
-            t2.join()
+                            target_port = self.remap_ports.get(t_port, t_port)
+                            target_host = '127.0.0.1' if dest_host in ('10.0.2.2', '127.0.0.1') else dest_host
+
+                            key = (client_addr, target_host, target_port)
+                            if key not in backend_sockets:
+                                b_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                                backend_sockets[key] = b_sock
+
+                                def listen_backend(sock, c_addr, orig_host, orig_port):
+                                    while self.running:
+                                        try:
+                                            resp, _ = sock.recvfrom(65535)
+                                            # SOCKS5 UDP 头部封装回传：保留客户端请求的目标原始 IP
+                                            try:
+                                                orig_ip_bytes = socket.inet_aton(orig_host)
+                                                hdr = struct.pack('!HBB', 0, 0, 1) + orig_ip_bytes + struct.pack('!H', orig_port)
+                                            except Exception:
+                                                hdr = struct.pack('!HBB', 0, 0, 1) + socket.inet_aton('127.0.0.1') + struct.pack('!H', orig_port)
+                                            udp_sock.sendto(hdr + resp, c_addr)
+                                        except Exception:
+                                            break
+                                threading.Thread(target=listen_backend, args=(b_sock, client_addr, dest_host, t_port), daemon=True).start()
+
+                            backend_sockets[key].sendto(payload, (target_host, target_port))
+                        except Exception:
+                            break
+
+                threading.Thread(target=udp_relay, daemon=True).start()
+                while self.running:
+                    b = c.recv(1)
+                    if not b: break
+                for s in backend_sockets.values():
+                    try: s.close()
+                    except Exception: pass
+                udp_sock.close(); c.close()
         except Exception:
             pass
-        finally:
-            try: c.close()
-            except Exception: pass
 
     def stop(self):
         self.running = False
@@ -274,6 +441,37 @@ def wait_for_tun(adb_cmd, serial, should_exist=True, timeout=15):
         time.sleep(0.5)
     return False
 
+def verify_all_protocols(adb, serial, host_ip, mode_name):
+    """验证 TCP, UDP, HTTP/1.1, HTTP/2 四大核心网络协议穿透与回显"""
+    print(f"[{mode_name}] 1. 测试 TCP 报文穿透...")
+    tcp_res = run_adb(adb, serial, ["shell", f"(printf '{mode_name}_TCP_TEST\\n'; sleep 1) | timeout 4 toybox nc {host_ip} 19001"]).stdout
+    if f"{mode_name}_TCP_TEST" not in tcp_res:
+        raise RuntimeError(f"[{mode_name}] TCP 测试未收到预期回显: {tcp_res}")
+    print(f"    [PASS] TCP 穿透成功！")
+
+    print(f"[{mode_name}] 2. 测试 UDP 数据报穿透...")
+    udp_res = run_adb(adb, serial, ["shell", f"(printf '{mode_name}_UDP_TEST\\n'; sleep 1) | timeout 4 toybox nc -u {host_ip} 19001"], check=False).stdout
+    if f"{mode_name}_UDP_TEST" not in udp_res:
+        raise RuntimeError(f"[{mode_name}] UDP 测试未收到预期回显: {udp_res}")
+    print(f"    [PASS] UDP 穿透成功！")
+
+    print(f"[{mode_name}] 3. 测试 HTTP/1.1 请求穿透...")
+    h1_cmd = f"(printf 'GET / HTTP/1.1\\r\\nHost: {host_ip}:19004\\r\\nConnection: close\\r\\n\\r\\n'; sleep 1) | timeout 4 toybox nc {host_ip} 19004"
+    h1_res = run_adb(adb, serial, ["shell", h1_cmd]).stdout
+    if "HTTP1_OK" not in h1_res:
+        raise RuntimeError(f"[{mode_name}] HTTP/1.1 测试未收到预期 200 OK: {h1_res}")
+    print(f"    [PASS] HTTP/1.1 穿透成功！")
+
+    print(f"[{mode_name}] 4. 测试 HTTP/2 握手前奏与帧解析穿透...")
+    h2_preface = b'PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\x00\x00\x00\x04\x00\x00\x00\x00\x00'
+    hex_data = h2_preface.hex()
+    hex_esc = ''.join(['\\\\x' + hex_data[i:i+2] for i in range(0, len(hex_data), 2)])
+    h2_cmd = f"(printf \"{hex_esc}\"; sleep 1) | timeout 4 toybox nc {host_ip} 19005 | od -A n -t x1"
+    h2_res = run_adb(adb, serial, ["shell", h2_cmd]).stdout
+    if "04" not in h2_res:
+        raise RuntimeError(f"[{mode_name}] HTTP/2 测试未收到预期服务端 SETTINGS 帧: {h2_res}")
+    print(f"    [PASS] HTTP/2 前奏与帧握手穿透成功！")
+
 def main():
     parser = argparse.ArgumentParser(description="E2E Android Emulator VPN Test")
     parser.add_argument("--serial", default=None, help="Android device serial")
@@ -283,7 +481,7 @@ def main():
 
     adb = find_adb()
     
-    # 1. 检查设备在线并自动探测
+    # 1. 设备检查与自动识别
     devices_out = run_adb(adb, "", ["devices"]).stdout
     attached = [line.split()[0] for line in devices_out.splitlines()[1:] if '\tdevice' in line]
     if not attached:
@@ -292,38 +490,61 @@ def main():
 
     serial = args.serial
     if not serial or serial not in attached:
-        # 优先选用包含 emulator 的设备，否则选第一台
         emulators = [d for d in attached if "emulator" in d]
         serial = emulators[0] if emulators else attached[0]
 
     print(f"==> 使用 ADB: {adb}, 目标设备: {serial}")
 
-    # 2. 授权 VPN 权限
-    print("==> 预授予 VPN 权限...")
-    run_adb(adb, serial, ["shell", "appops set com.esrrhs.spp.client ACTIVATE_VPN allow"], check=False)
-    run_adb(adb, serial, ["shell", "appops set com.esrrhs.spp.client ACTIVATE_PLATFORM_VPN allow"], check=False)
+    # 尝试切换 root 权限以保障权限静默配置
+    subprocess.run([adb, "-s", serial, "root"], capture_output=True)
 
-    # 3. 安装最新 APK
+    # 2. 安装最新 APK
     if not args.skip_install and os.path.exists(args.apk):
         print(f"==> 安装 APK: {args.apk} ...")
         run_adb(adb, serial, ["install", "-r", args.apk])
         print("==> APK 安装成功")
 
+    # 3. 授权 VPN 权限
+    print("==> 预授予 VPN 权限...")
+    run_adb(adb, serial, ["shell", "appops set com.esrrhs.spp.client ACTIVATE_VPN allow"], check=False)
+    run_adb(adb, serial, ["shell", "appops set com.esrrhs.spp.client ACTIVATE_PLATFORM_VPN allow"], check=False)
+
+    # 先断开可能残留的 VPN
+    run_adb(adb, serial, [
+        "shell", "am", "start-foreground-service",
+        "-a", "com.esrrhs.spp.client.action.DISCONNECT",
+        "com.esrrhs.spp.client/.vpn.SppVpnService"
+    ], check=False)
+    wait_for_tun(adb, serial, should_exist=False, timeout=5)
+
     host_lan_ip = get_host_lan_ip()
     print(f"==> 本机局域网 IP: {host_lan_ip}")
 
-    # 4. 启动服务端
-    echo_server = TcpEchoServer(19001)
-    echo_server.start()
+    # 4. 启动目标测试服务端
+    tcp_server = TcpEchoServer(19001)
+    tcp_server.start()
     print("==> TCP Echo 服务已在端口 19001 启动")
 
-    udp_echo_server = UdpEchoServer(19001)
-    udp_echo_server.start()
+    udp_server = UdpEchoServer(19001)
+    udp_server.start()
     print("==> UDP Echo 服务已在端口 19001 启动")
 
-    socks5_server = MockSocks5Server(19002, "testuser", "testpass", remap_ports={19001: 19001})
+    h1_server = Http1EchoServer(19004)
+    h1_server.start()
+    print("==> HTTP/1.1 服务已在端口 19004 启动")
+
+    h2_server = Http2MockServer(19005)
+    h2_server.start()
+    print("==> HTTP/2 握手服务已在端口 19005 启动")
+
+    socks5_server = MockSocks5ServerWithUdp(
+        port=19002,
+        user="testuser",
+        password="testpass",
+        remap_ports={19001: 19001, 19004: 19004, 19005: 19005}
+    )
     socks5_server.start()
-    print("==> SOCKS5 服务已在端口 19002 启动")
+    print("==> SOCKS5 (带 UDP) 服务已在端口 19002 启动")
 
     # SPP 服务端检测与编译
     spp_bin = os.path.abspath("./third_party/spp/spp")
@@ -336,15 +557,16 @@ def main():
         print("==> 编译适合当前宿主机架构的本地 SPP 服务端...")
         subprocess.run(["go", "build", "-o", "spp", "main.go"], cwd="./third_party/spp", check=True)
 
+    subprocess.run(["pkill", "-f", "third_party/spp/spp"])
     spp_proc = subprocess.Popen([spp_bin, "-type", "server", "-proto", "tcp", "-listen", ":19003", "-key", "testkey", "-nolog", "1"])
     print("==> SPP 服务端进程已在端口 19003 启动")
 
     try:
         # ==========================================================
-        # 测试 1: SOCKS5 模式端到端 (TUN -> hev -> RuleSocks -> SOCKS5)
+        # 测试 1: SOCKS5 模式全协议端到端
         # ==========================================================
         print("\n" + "="*60)
-        print("【测试场景 1】: SOCKS5 模式全链路集成测试")
+        print("【测试场景 1】: SOCKS5 代理全协议全链路集成测试")
         print("="*60)
 
         socks5_profile = {
@@ -371,20 +593,16 @@ def main():
         ])
 
         print("==> 等待 tun0 网卡建立...")
-        if not wait_for_tun(adb, serial, should_exist=True, timeout=10):
+        if not wait_for_tun(adb, serial, should_exist=True, timeout=12):
             raise RuntimeError("tun0 网卡未能按时建立！")
         print("==> tun0 虚拟网卡已就绪")
 
-        # 测试 TCP Echo
-        print("==> 测试 TCP 报文穿透...")
-        tcp_res = run_adb(adb, serial, ["shell", f"(printf 'SOCKS5_E2E_TCP_TEST\\n'; sleep 1) | nc -w 4 {host_lan_ip} 19001"]).stdout
-        if "SOCKS5_E2E_TCP_TEST" not in tcp_res:
-            raise RuntimeError(f"SOCKS5 TCP 测试未收到预期回显，实际收到: {tcp_res}")
-        print("    [PASS] TCP 穿透验证成功！")
+        # 验证四大协议
+        verify_all_protocols(adb, serial, host_lan_ip, "SOCKS5")
 
-        # 测试并发连接
+        # 测试并发压力
         print("==> 运行 20 并发 TCP 请求压测...")
-        concurrency_cmd = f"for i in $(seq 1 20); do (printf \"STRESS_$i\\n\"; sleep 1) | nc -w 4 {host_lan_ip} 19001 & done; wait"
+        concurrency_cmd = f"for i in $(seq 1 20); do (printf \"STRESS_$i\\n\"; sleep 1) | timeout 4 toybox nc -w 3 {host_lan_ip} 19001 & done; wait"
         stress_res = run_adb(adb, serial, ["shell", concurrency_cmd], timeout=15).stdout
         matched = len(re.findall(r"STRESS_\d+", stress_res))
         print(f"    [PASS] 并发请求成功率: {matched}/20")
@@ -399,13 +617,13 @@ def main():
             "com.esrrhs.spp.client/.vpn.SppVpnService"
         ])
         wait_for_tun(adb, serial, should_exist=False, timeout=8)
-        print("==> SOCKS5 模式测试全部通过！\n")
+        print("==> SOCKS5 模式全协议测试全部通过！\n")
 
         # ==========================================================
-        # 测试 2: SPP 模式端到端 (TUN -> hev -> RuleSocks -> libspp -> SPP Server)
+        # 测试 2: SPP 模式全协议端到端 (TUN -> hev -> RuleSocks -> libspp -> SPP Server)
         # ==========================================================
         print("="*60)
-        print("【测试场景 2】: 真实 SPP 协议与 Native 进程全链路集成测试")
+        print("【测试场景 2】: 真实 SPP 协议与 Native 进程全协议集成测试")
         print("="*60)
 
         spp_profile = {
@@ -436,22 +654,18 @@ def main():
             raise RuntimeError("tun0 网卡未能按时建立！")
         print("==> tun0 虚拟网卡已就绪")
 
-        # 检查 libspp.so 进程在运行
+        # 检查 libspp.so 进程
         pgrep = run_adb(adb, serial, ["shell", "pgrep -f libspp.so"], check=False).stdout.strip()
         print(f"==> libspp.so 子进程 PID: {pgrep}")
         if not pgrep:
             raise RuntimeError("libspp.so 进程未运行！")
 
-        # 测试 TCP Echo
-        print("==> 测试 SPP 隧道 TCP 报文穿透...")
-        tcp_res = run_adb(adb, serial, ["shell", f"(printf 'SPP_E2E_TCP_TEST\\n'; sleep 1) | nc -w 4 {host_lan_ip} 19001"]).stdout
-        if "SPP_E2E_TCP_TEST" not in tcp_res:
-            raise RuntimeError(f"SPP TCP 测试未收到预期回显，实际收到: {tcp_res}")
-        print("    [PASS] 真实 SPP 隧道穿透验证成功！")
+        # 验证四大协议
+        verify_all_protocols(adb, serial, host_lan_ip, "SPP")
 
-        # 测试并发连接
+        # 测试并发压力
         print("==> 运行 20 并发 SPP 请求压测...")
-        concurrency_cmd = f"for i in $(seq 1 20); do (printf \"SPP_STRESS_$i\\n\"; sleep 1) | nc -w 4 {host_lan_ip} 19001 & done; wait"
+        concurrency_cmd = f"for i in $(seq 1 20); do (printf \"SPP_STRESS_$i\\n\"; sleep 1) | timeout 4 toybox nc -w 3 {host_lan_ip} 19001 & done; wait"
         stress_res = run_adb(adb, serial, ["shell", concurrency_cmd], timeout=15).stdout
         matched = len(re.findall(r"SPP_STRESS_\d+", stress_res))
         print(f"    [PASS] 并发请求成功率: {matched}/20")
@@ -466,22 +680,23 @@ def main():
             "com.esrrhs.spp.client/.vpn.SppVpnService"
         ])
         wait_for_tun(adb, serial, should_exist=False, timeout=8)
-        print("==> SPP 模式测试全部通过！\n")
+        print("==> SPP 模式全协议测试全部通过！\n")
 
         print("="*60)
-        print("🎉 全部 Android 模拟器真实端到端集成测试通过 (100% PASS)！")
+        print("🎉 全部 Android 模拟器真实端到端集成测试通过 (TCP/UDP/HTTP1/HTTP2 100% PASS)！")
         print("="*60)
 
     finally:
-        # 清理工作
         print("==> 清理环境与后台服务...")
         run_adb(adb, serial, [
             "shell", "am", "start-foreground-service",
             "-a", "com.esrrhs.spp.client.action.DISCONNECT",
             "com.esrrhs.spp.client/.vpn.SppVpnService"
         ], check=False)
-        echo_server.stop()
-        udp_echo_server.stop()
+        tcp_server.stop()
+        udp_server.stop()
+        h1_server.stop()
+        h2_server.stop()
         socks5_server.stop()
         spp_proc.terminate()
         spp_proc.wait()
