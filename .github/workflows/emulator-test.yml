@@ -44,9 +44,9 @@ jobs:
 
       - name: Build SPP Server binary
         run: |
-          cd third_party/spp
-          go build -o spp main.go
-          ./spp -h || true
+          go install github.com/esrrhs/spp@latest
+          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+          $(go env GOPATH)/bin/spp -h || true
 
       - name: Enable KVM group perms
         run: |
