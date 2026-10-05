@@ -332,13 +332,17 @@ class ProxyE2ETest {
         val rep = Socks5Codec.readReply(`in`)
         assertTrue("CONNECT through proxy must succeed", rep != null)
 
-        // 3. 发送数据
+        // 3. 全双工并发读写数据（避免 10MB 大数据在单线程发送时因填满 Socket 缓冲区导致写阻塞死锁）
+        val received = ByteArray(payload.size)
+        val readThread = Thread {
+            `in`.readFully(received)
+        }
+        readThread.start()
+
         out.write(payload)
         out.flush()
 
-        // 4. 读取回显
-        val received = ByteArray(payload.size)
-        `in`.readFully(received)
+        readThread.join()
         socket.close()
         return received
     }
