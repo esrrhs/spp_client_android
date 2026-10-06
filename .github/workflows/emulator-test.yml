@@ -88,6 +88,7 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           script: |
+            # 含 SOCKS5/SPP 全协议，以及飞行模式切网后隧道恢复
             python3 -u scripts/test_emulator_vpn_e2e.py --apk app/build/outputs/apk/debug/app-debug.apk
 
       - name: Upload Artifacts on Failure

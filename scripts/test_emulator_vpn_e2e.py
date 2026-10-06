@@ -16,6 +16,9 @@
 4. 生命周期管理：
    - 系统虚拟网卡 tun0 干净建立与销毁
    - Native 进程生命周期正常回收
+5. 物理网络切换：
+   - 飞行模式丢掉当前网络后，VPN 松开已消失的底层网络
+   - 网络回来后重建隧道，TCP 仍然穿透，且底层网络不是已拆掉的 netId
 """
 
 import argparse
@@ -710,6 +713,117 @@ class MockSocks5ServerWithUdp:
             except Exception:
                 pass
 
+def set_airplane_mode(adb, serial, enabled):
+    """开关飞行模式，让系统拆掉再重建物理网络。"""
+    action = "enable" if enabled else "disable"
+    res = run_adb(
+        adb, serial,
+        ["shell", "cmd", "connectivity", "airplane-mode", action],
+        check=False,
+    )
+    out = ((res.stdout or "") + (res.stderr or "")).strip()
+    if res.returncode != 0 or "Unknown command" in out or "Error" in out:
+        # 旧镜像没有 connectivity airplane-mode 子命令时走 settings + 广播。
+        run_adb(adb, serial, [
+            "shell", "settings", "put", "global", "airplane_mode_on",
+            "1" if enabled else "0",
+        ])
+        run_adb(adb, serial, [
+            "shell", "am", "broadcast", "-a", "android.intent.action.AIRPLANE_MODE",
+            "--ez", "state", "true" if enabled else "false",
+        ], check=False)
+        return
+    if out:
+        print(f"    airplane-mode {action}: {out}")
+
+
+def read_vpn_logs(adb, serial):
+    res = run_adb(
+        adb, serial,
+        ["shell", "logcat", "-d", "-s", "NetworkWatchdog:I", "SppVpnService:I"],
+        check=False,
+        timeout=20,
+    )
+    return ((res.stdout or "") + "\n" + (res.stderr or "")).strip()
+
+
+def wait_for_log(adb, serial, needle, timeout):
+    start = time.time()
+    last = ""
+    while time.time() - start < timeout:
+        last = read_vpn_logs(adb, serial)
+        if needle in last:
+            return last
+        time.sleep(0.5)
+    raise RuntimeError(f"超时未看到日志「{needle}」\n{last[-2500:]}")
+
+
+def read_connectivity(adb, serial):
+    res = run_adb(adb, serial, ["shell", "dumpsys", "connectivity"], check=False, timeout=60)
+    return res.stdout or ""
+
+
+def assert_underlying_network_alive(text):
+    """VPN 声明的底层网络必须还活着；没钉死则表示交给系统默认网络。"""
+    if "VPN:com.esrrhs.spp.client" not in text:
+        raise RuntimeError("dumpsys 里看不到 SPP VPN")
+    live = set(re.findall(r"NetworkAgentInfo\{network\{(\d+)\}", text))
+    match = re.search(
+        r"VPN:com\.esrrhs\.spp\.client.*?underlying\{\[([^\]]*)\]\}",
+        text,
+    )
+    if not match:
+        print("    underlying 未钉死，走系统默认网络")
+        return
+    inner = match.group(1).strip()
+    if inner in ("", "null"):
+        print("    underlying 为空，走系统默认网络")
+        return
+    ids = re.findall(r"\d+", inner)
+    missing = [net_id for net_id in ids if net_id not in live]
+    if missing:
+        raise RuntimeError(
+            f"VPN 底层网络已失效: {missing}，当前存活网络: {sorted(live)}"
+        )
+    print(f"    underlying {ids} 仍在存活网络中")
+
+
+def verify_tcp_echo(adb, serial, host_ip, token):
+    tcp_cmd = f"(printf '{token}\\n'; sleep 1) | timeout 4 toybox nc {host_ip} 19001"
+    last = ""
+    for _ in range(5):
+        last = run_adb(adb, serial, ["shell", tcp_cmd], check=False).stdout or ""
+        if token in last:
+            return
+        time.sleep(1)
+    raise RuntimeError(f"TCP 未收到预期回显: {last}")
+
+
+def verify_network_switch(adb, serial, host_ip):
+    """飞行模式丢掉物理网络再恢复，确认隧道重连且出口没有钉在死网上。"""
+    print("\n[SOCKS5] 11. 模拟切网（飞行模式）后隧道恢复...")
+    run_adb(adb, serial, ["shell", "logcat", "-c"], check=False)
+    print("==> 打开飞行模式，丢掉当前物理网络")
+    set_airplane_mode(adb, serial, True)
+    try:
+        wait_for_log(adb, serial, "physical network lost, release underlying", timeout=20)
+        print("    [PASS] 旧网络断开后已松开底层绑定")
+        print("==> 关闭飞行模式，等待新网络并重建隧道")
+        set_airplane_mode(adb, serial, False)
+        wait_for_log(adb, serial, "physical network changed", timeout=40)
+        # 改绑日志先于重建完成；等 hev 再次起来，避免打到正在拆掉的旧隧道。
+        wait_for_log(adb, serial, "hev tunnel started", timeout=40)
+        if not wait_for_tun(adb, serial, should_exist=True, timeout=15):
+            dump_vpn_log(adb, serial)
+            raise RuntimeError("切网后 tun0 未能恢复")
+        verify_tcp_echo(adb, serial, host_ip, "NETSWITCH_TCP")
+        print("    [PASS] 切网后 TCP 穿透成功")
+        assert_underlying_network_alive(read_connectivity(adb, serial))
+        print("    [PASS] 底层网络没有钉在已消失的网络上")
+    finally:
+        set_airplane_mode(adb, serial, False)
+
+
 def wait_for_tun(adb_cmd, serial, should_exist=True, timeout=15):
     start = time.time()
     while time.time() - start < timeout:
@@ -999,6 +1113,9 @@ def main():
         # 验证 50 并发压力与 5MB 大流量数据吞吐 (SHA-256 校验)
         verify_stress_and_throughput(adb, serial, host_lan_ip, "SOCKS5")
 
+        # 飞行模式切网：松开死掉的底层网络，重建隧道后流量仍通
+        verify_network_switch(adb, serial, host_lan_ip)
+
         # 断开 VPN
         print("==> 断开 SOCKS5 VPN...")
         run_adb(adb, serial, [
@@ -1063,7 +1180,7 @@ def main():
         print("==> SPP 模式全协议测试全部通过！\n")
 
         print("="*60)
-        print("🎉 全部 Android 模拟器真实端到端集成测试通过 (TCP/UDP/HTTP1/HTTP2/DNS/WS/gRPC/QUIC 100% PASS)！")
+        print("🎉 全部 Android 模拟器真实端到端集成测试通过 (含切网恢复，TCP/UDP/HTTP1/HTTP2/DNS/WS/gRPC/QUIC 100% PASS)！")
         print("="*60)
 
     finally:
