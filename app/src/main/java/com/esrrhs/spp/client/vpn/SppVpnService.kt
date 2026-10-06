@@ -6,7 +6,6 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.net.ConnectivityManager
 import android.net.Network
 import android.net.VpnService
 import android.os.Build
@@ -710,13 +709,19 @@ class SppVpnService : VpnService() {
             .build()
     }
 
+    /**
+     * 把 VPN 出口绑到当前物理网络。
+     *
+     * [network] 为 null 时必须传 null，让系统改走默认网络。
+     * 不能回退到 activeNetwork：VPN 进程里那往往是 VPN 自己，
+     * 或者是刚刚拆掉的 Wi-Fi，再写回去会把分流流量钉死。
+     */
     private fun updateUnderlyingNetwork(network: Network?) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
-            val net = network ?: getSystemService(ConnectivityManager::class.java)?.activeNetwork
-            val networks = if (net != null) arrayOf(net) else null
+            val networks = if (network != null) arrayOf(network) else null
             runCatching {
                 setUnderlyingNetworks(networks)
-                Log.i(TAG, "setUnderlyingNetworks: $net")
+                Log.i(TAG, "setUnderlyingNetworks: ${network ?: "default"}")
             }.onFailure {
                 Log.w(TAG, "setUnderlyingNetworks failed", it)
             }

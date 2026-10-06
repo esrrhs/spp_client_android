@@ -3,6 +3,7 @@ package com.esrrhs.spp.client.vpn
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
+import android.net.NetworkCapabilities
 import android.util.Log
 import com.esrrhs.spp.client.util.WifiNames
 
@@ -20,20 +21,34 @@ class TrustedWifiMonitor(
 ) {
     private val appContext = context.applicationContext
     private val cm = appContext.getSystemService(ConnectivityManager::class.java)
+    private val tracker = PhysicalNetworkTracker()
+    private val networks = HashMap<String, Network>()
+    private val gate = Any()
+    private var generation = 0
+
+    @Volatile
     private var registered = false
     private var baselineDone = false
     private var lastTrusted: Boolean? = null
 
     private val callback = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) = handle(network)
+        override fun onAvailable(network: Network) = ingest(network, null)
 
         override fun onCapabilitiesChanged(
             network: Network,
-            capabilities: android.net.NetworkCapabilities,
-        ) = handle(network)
+            capabilities: NetworkCapabilities,
+        ) = ingest(network, capabilities)
 
         override fun onLost(network: Network) {
-            // WiFi 断连后系统可能短暂没有默认网络；等下一个 onAvailable 判定
+            val chosen = synchronized(gate) {
+                if (!registered) return
+                networks.remove(key(network))
+                val action = tracker.remove(key(network))
+                // 短暂没有网络时不把空窗当成离开可信 Wi-Fi；已经切到另一张网则马上判定
+                if (action != UpstreamAction.SWITCH) return
+                tracker.currentKey?.let { networks[it] }
+            } ?: return
+            handle(chosen)
         }
     }
 
@@ -53,24 +68,67 @@ class TrustedWifiMonitor(
         }
     }
 
+    private fun ingest(network: Network, caps: NetworkCapabilities?) {
+        val resolved = caps ?: cm?.getNetworkCapabilities(network) ?: return
+        if (!resolved.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) ||
+            !resolved.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+        ) {
+            return
+        }
+        val chosen = synchronized(gate) {
+            if (!registered) return
+            networks[key(network)] = network
+            val action = tracker.upsert(resolved.toCandidate(key(network)))
+            if (action != UpstreamAction.BASELINE && action != UpstreamAction.SWITCH) return
+            tracker.currentKey?.let { networks[it] }
+        } ?: return
+        handle(chosen)
+    }
+
     /** 重新注册并重置基线（每次成功建会话时调用）。 */
     fun start() {
         stop()
-        if (cm == null) return
+        val cm = cm ?: return
         baselineDone = false
         lastTrusted = null
-        runCatching { cm.registerDefaultNetworkCallback(callback) }
-            .onFailure { Log.w(TAG, "registerDefaultNetworkCallback failed", it) }
-            .onSuccess { registered = true }
+        val gen = synchronized(gate) {
+            registered = true
+            generation += 1
+            tracker.reset()
+            networks.clear()
+            generation
+        }
+        val registeredOk = runCatching { cm.registerUnderlyingCallback(callback) }
+            .onFailure { Log.w(TAG, "register underlying callback failed", it) }
+            .isSuccess
+        synchronized(gate) {
+            if (!registeredOk || !registered || generation != gen) {
+                if (registeredOk) runCatching { cm.unregisterNetworkCallback(callback) }
+                if (generation == gen) {
+                    registered = false
+                    tracker.reset()
+                    networks.clear()
+                }
+            }
+        }
     }
 
     fun stop() {
-        if (!registered) return
-        registered = false
-        baselineDone = false
-        lastTrusted = null
-        runCatching { cm?.unregisterNetworkCallback(callback) }
+        val cm = cm
+        val shouldUnregister = synchronized(gate) {
+            if (!registered) return
+            registered = false
+            generation += 1
+            baselineDone = false
+            lastTrusted = null
+            tracker.reset()
+            networks.clear()
+            true
+        }
+        if (shouldUnregister) runCatching { cm?.unregisterNetworkCallback(callback) }
     }
+
+    private fun key(network: Network): String = network.toString()
 
     private companion object {
         const val TAG = "TrustedWifiMonitor"

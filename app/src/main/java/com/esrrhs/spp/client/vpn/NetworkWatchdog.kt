@@ -7,9 +7,11 @@ import android.net.NetworkCapabilities
 import android.util.Log
 
 /**
- * 监视系统默认网络切换（WiFi ↔ 蜂窝、基站/SSID 重连等）。
+ * 监视底层物理网络切换（Wi-Fi ↔ 蜂窝、验证状态变化）。
  *
- * 忽略 VPN 虚拟网络自身，仅在底层物理网络（WiFi / 蜂窝）发生切换时通知重建数据面。
+ * 只看带 INTERNET 且 NOT_VPN 的网络。当前出口消失时立刻松开
+ * [android.net.VpnService.setUnderlyingNetworks]，避免继续钉在已经拆掉的 Wi-Fi 上；
+ * 换到另一张已验证的网时再通知重建数据面。
  */
 class NetworkWatchdog(
     context: Context,
@@ -17,74 +19,116 @@ class NetworkWatchdog(
     private val onDefaultNetworkChanged: () -> Unit,
 ) {
     private val cm = context.getSystemService(ConnectivityManager::class.java)
-    private var registered = false
-    var current: Network? = null
-        private set
+    private val tracker = PhysicalNetworkTracker()
+    private val networks = HashMap<String, Network>()
+    private val gate = Any()
+    private var generation = 0
 
-    private fun isPhysicalNetwork(network: Network): Boolean {
-        val caps = cm?.getNetworkCapabilities(network) ?: return false
-        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
-    }
+    @Volatile
+    private var registered = false
+
+    val current: Network?
+        get() = synchronized(gate) { tracker.currentKey?.let { networks[it] } }
 
     private val callback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
-            if (isPhysicalNetwork(network)) {
-                handle(network)
-            }
+            ingest(network, null)
         }
 
         override fun onCapabilitiesChanged(
             network: Network,
             capabilities: NetworkCapabilities,
         ) {
-            if (capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) &&
-                capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-            ) {
-                handle(network)
-            }
+            ingest(network, capabilities)
         }
 
         override fun onLost(network: Network) {
-            if (network == current) {
-                current = null
-                onNetworkUpdate?.invoke(null)
-            }
-        }
-    }
-
-    private fun handle(network: Network) {
-        if (!isPhysicalNetwork(network)) return
-        val previous = current
-        current = network
-        onNetworkUpdate?.invoke(network)
-        // 首次回调只记录基线；之后出现不同的物理网络才是切换（如 WiFi ↔ 蜂窝）
-        if (previous != null && previous != network) {
-            Log.i(TAG, "default physical network changed: $previous -> $network")
-            onDefaultNetworkChanged()
+            forget(network)
         }
     }
 
     fun start() {
-        if (cm == null) return
-        if (current == null) {
-            val active = cm.activeNetwork
-            if (active != null && isPhysicalNetwork(active)) {
-                current = active
-            }
+        val cm = cm ?: return
+        val gen = synchronized(gate) {
+            if (registered) return
+            registered = true
+            generation += 1
+            tracker.reset()
+            networks.clear()
+            generation
         }
-        if (!registered) {
-            runCatching { cm.registerDefaultNetworkCallback(callback) }
-                .onFailure { Log.w(TAG, "registerDefaultNetworkCallback failed", it) }
-                .onSuccess { registered = true }
+        val registeredOk = runCatching { cm.registerUnderlyingCallback(callback) }
+            .onFailure { Log.w(TAG, "register underlying callback failed", it) }
+            .isSuccess
+        synchronized(gate) {
+            if (!registeredOk || !registered || generation != gen) {
+                if (registeredOk) runCatching { cm.unregisterNetworkCallback(callback) }
+                if (generation == gen) {
+                    registered = false
+                    tracker.reset()
+                    networks.clear()
+                }
+            }
         }
     }
 
     fun stop() {
-        if (!registered) return
-        registered = false
-        current = null
-        runCatching { cm?.unregisterNetworkCallback(callback) }
+        val cm = cm
+        val shouldUnregister = synchronized(gate) {
+            if (!registered) return
+            registered = false
+            generation += 1
+            tracker.reset()
+            networks.clear()
+            true
+        }
+        if (shouldUnregister) runCatching { cm?.unregisterNetworkCallback(callback) }
     }
+
+    private fun ingest(network: Network, caps: NetworkCapabilities?) {
+        val resolved = caps ?: cm?.getNetworkCapabilities(network) ?: return
+        if (!resolved.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) ||
+            !resolved.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+        ) {
+            forget(network)
+            return
+        }
+        synchronized(gate) {
+            if (!registered) return
+            networks[key(network)] = network
+            dispatchLocked(tracker.upsert(resolved.toCandidate(key(network))))
+        }
+    }
+
+    private fun forget(network: Network) {
+        synchronized(gate) {
+            if (!registered) return
+            networks.remove(key(network))
+            dispatchLocked(tracker.remove(key(network)))
+        }
+    }
+
+    private fun dispatchLocked(action: UpstreamAction) {
+        val chosen = tracker.currentKey?.let { networks[it] }
+        when (action) {
+            UpstreamAction.NONE -> Unit
+            UpstreamAction.BASELINE -> {
+                Log.i(TAG, "baseline physical network: $chosen")
+                onNetworkUpdate?.invoke(chosen)
+            }
+            UpstreamAction.CLEAR -> {
+                Log.i(TAG, "physical network lost, release underlying")
+                onNetworkUpdate?.invoke(null)
+            }
+            UpstreamAction.SWITCH -> {
+                Log.i(TAG, "physical network changed: $chosen")
+                onNetworkUpdate?.invoke(chosen)
+                onDefaultNetworkChanged()
+            }
+        }
+    }
+
+    private fun key(network: Network): String = network.toString()
 
     private companion object {
         const val TAG = "NetworkWatchdog"
