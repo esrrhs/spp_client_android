@@ -50,6 +50,13 @@ class SppVpnService : VpnService() {
     /** 串行化 connect / teardown / reconnect。 */
     private val lifecycleMutex = Mutex()
 
+    /**
+     * 与 [connectQueue] 一起保护 CONNECT/DISCONNECT 的状态切换。
+     * 调用方只在这段临界区内改 [VpnStateHolder]，避免「tun 已消失、状态仍是 Disconnecting」时丢掉下一次 CONNECT。
+     */
+    private val lifecycleGate = Any()
+    private val connectQueue = VpnConnectQueue()
+
     private var sppProcess: SppProcess? = null
     private var tunInterface: ParcelFileDescriptor? = null
     private var ruleServer: com.esrrhs.spp.client.proxy.RuleSocksServer? = null
@@ -133,11 +140,18 @@ class SppVpnService : VpnService() {
         return START_NOT_STICKY
     }
 
-    /** 系统收回 VPN：停 hev / spp 并复位状态。 */
+    /** 系统收回 VPN：停 hev / spp 并复位状态。收回后不再接上排队的 CONNECT。 */
     override fun onRevoke() {
         Log.i(TAG, "vpn revoked by system")
         reconnectJob?.cancel()
-        scope.launch { teardown(notifyDisconnected = true) }
+        synchronized(lifecycleGate) {
+            connectQueue.clear()
+            val current = VpnStateHolder.state.value
+            if (current != VpnState.Disconnected && current != VpnState.Disconnecting) {
+                VpnStateHolder.set(VpnState.Disconnecting)
+            }
+        }
+        scope.launch { teardown(notifyDisconnected = true, honorQueue = false) }
     }
 
     override fun onDestroy() {
@@ -155,32 +169,43 @@ class SppVpnService : VpnService() {
     }
 
     private fun requestConnect() {
-        val current = VpnStateHolder.state.value
-        if (current is VpnState.Connecting ||
-            current is VpnState.Connected ||
-            current is VpnState.Disconnecting
-        ) {
-            return
+        val command = synchronized(lifecycleGate) {
+            val command = connectQueue.onConnect(VpnStateHolder.state.value)
+            if (command == ConnectCommand.START) {
+                VpnStateHolder.set(VpnState.Connecting)
+            }
+            command
         }
-        startAsForeground(getString(R.string.notif_connecting))
-        VpnStateHolder.set(VpnState.Connecting)
-        scope.launch { connect() }
+        when (command) {
+            ConnectCommand.QUEUE ->
+                Log.i(TAG, "connect queued until teardown finishes")
+            ConnectCommand.IGNORE -> Unit
+            ConnectCommand.START -> {
+                startAsForeground(getString(R.string.notif_connecting))
+                scope.launch { connect() }
+            }
+        }
     }
 
     private fun requestDisconnect() {
-        val current = VpnStateHolder.state.value
-        if (current is VpnState.Disconnected || current is VpnState.Disconnecting) {
-            return
+        val startTeardown = synchronized(lifecycleGate) {
+            val start = connectQueue.onDisconnect(VpnStateHolder.state.value)
+            if (start) VpnStateHolder.set(VpnState.Disconnecting)
+            start
         }
+        if (!startTeardown) return
         // 用户主动断开：取消可能进行中的自动重连
         reconnectJob?.cancel()
         startAsForeground(getString(R.string.notif_disconnecting))
-        VpnStateHolder.set(VpnState.Disconnecting)
         scope.launch { teardown(notifyDisconnected = true) }
     }
 
     private suspend fun connect() = withContext(Dispatchers.IO) {
         lifecycleMutex.withLock {
+            if (VpnStateHolder.state.value !is VpnState.Connecting) {
+                Log.i(TAG, "connect aborted, state=${VpnStateHolder.state.value}")
+                return@withLock
+            }
             try {
                 val (repository, profile) = loadActiveProfile()
                 sessionTxTotal = 0L
@@ -417,18 +442,38 @@ class SppVpnService : VpnService() {
     private suspend fun teardown(
         errorMessage: String? = null,
         notifyDisconnected: Boolean = false,
+        honorQueue: Boolean = true,
     ) {
-        lifecycleMutex.withLock {
+        val followUp = lifecycleMutex.withLock {
             trustedWifiMonitor.stop()
             stopDataPlaneAndCount()
             persistSessionTraffic()
-            when {
-                errorMessage != null -> VpnStateHolder.set(VpnState.Error(errorMessage))
-                notifyDisconnected &&
-                    VpnStateHolder.state.value !is VpnState.Error ->
-                    VpnStateHolder.set(VpnState.Disconnected)
+            val follow = synchronized(lifecycleGate) {
+                val follow = if (honorQueue) {
+                    connectQueue.takeFollowUp(failed = errorMessage != null)
+                } else {
+                    connectQueue.clear()
+                    false
+                }
+                if (follow) {
+                    VpnStateHolder.set(VpnState.Connecting)
+                } else {
+                    when {
+                        errorMessage != null -> VpnStateHolder.set(VpnState.Error(errorMessage))
+                        notifyDisconnected &&
+                            VpnStateHolder.state.value !is VpnState.Error ->
+                            VpnStateHolder.set(VpnState.Disconnected)
+                    }
+                }
+                follow
             }
-            finishService()
+            if (!follow) finishService()
+            follow
+        }
+        if (followUp) {
+            Log.i(TAG, "connect resumed after teardown")
+            startAsForeground(getString(R.string.notif_connecting))
+            connect()
         }
     }
 
