@@ -82,19 +82,35 @@ class ActiveConnectionsTest {
     }
 
     @Test
-    fun isDirect_matchesRuleSocksServerLogic() {
-        val rules = setOf("hupu.com", "cn")
-        // TCP + 命中域名（含子域名/大小写/尾点）→ 直连
-        assertTrue(ActiveConnections.isDirect(6, "www.hupu.com", rules))
-        assertTrue(ActiveConnections.isDirect(6, "HUPU.COM.", rules))
-        assertTrue(ActiveConnections.isDirect(6, "a.b.cn", rules))
-        // UDP/QUIC 即使域名命中也一律走代理
-        assertTrue(!ActiveConnections.isDirect(17, "www.hupu.com", rules))
-        // 无域名（IP 字面量）→ 代理
-        assertTrue(!ActiveConnections.isDirect(6, null, rules))
-        // 未命中域名 → 代理
-        assertTrue(!ActiveConnections.isDirect(6, "www.google.com", rules))
-        // 规则集合为空（域名直连关闭）→ 全部代理
-        assertTrue(!ActiveConnections.isDirect(6, "www.hupu.com", emptySet()))
+    fun directLabel_matchesRuleSocksServerLogic() {
+        val classifier = DirectClassifier(
+            directDomains = setOf("hupu.com", "cn"),
+            directIpv4Cidrs = listOf("220.181.0.0/16"),
+            directIpv6Cidrs = listOf("2400:3200::/32"),
+        )
+        // 有 mapped-DNS 域名时按域名（含子域名/大小写/尾点），TCP/UDP 判定一致
+        assertTrue(classifier.isDirectSession("www.hupu.com", "198.18.64.1"))
+        assertTrue(classifier.isDirectSession("HUPU.COM.", "198.18.64.1"))
+        assertTrue(classifier.isDirectSession("a.b.cn", "198.18.64.1"))
+        // UDP/QUIC 域名命中同样直连（与 RuleSocksServer 的 UDP 分流一致）
+        assertTrue(classifier.isDirectSession("www.hupu.com", "198.18.64.1"))
+        // 未命中域名 → 代理（即使碰巧落在 CN 段，域名型会话以域名判定为准）
+        assertTrue(!classifier.isDirectSession("www.google.com", "220.181.1.1"))
+        // 无域名（App 自带 DoH/硬编码 IP）→ 按真实目标 IP：CN 段直连、非 CN 代理
+        assertTrue(classifier.isDirectSession(null, "220.181.38.148"))
+        assertTrue(!classifier.isDirectSession(null, "8.8.8.8"))
+        assertTrue(classifier.isDirectSession(null, "2400:3200:1::"))
+        assertTrue(!classifier.isDirectSession(null, "2001:4860:4860::8888"))
+        // 全代理判定器：任何会话都不直连
+        assertTrue(!DirectClassifier.EMPTY.isDirectSession("www.hupu.com", "220.181.1.1"))
+    }
+
+    @Test
+    fun directLabel_bypassLan_coversPrivateOnly() {
+        val classifier = DirectClassifier(bypassPrivate = true)
+        listOf("127.0.0.1", "192.168.1.1", "100.64.0.1").forEach {
+            assertTrue(it, classifier.isDirectSession(null, it))
+        }
+        assertTrue(!classifier.isDirectSession(null, "8.8.8.8"))
     }
 }

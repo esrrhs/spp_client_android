@@ -16,6 +16,59 @@ class Socks5CodecTest {
         assertArrayEquals(byteArrayOf(0x05, 0x01, 0x00), Socks5Codec.greeting())
     }
 
+    // ---------------- UDP 报文头 ----------------
+
+    @Test
+    fun udpHeader_ipv4RoundTripsWithPayloadOffset() {
+        val payload = "hello".toByteArray()
+        val header = Socks5Codec.buildUdpHeader(Socks5Codec.ATYP_IPV4.toInt(), "1.2.3.4", 53)
+        val packet = ByteArray(header.size + payload.size)
+        System.arraycopy(header, 0, packet, 0, header.size)
+        System.arraycopy(payload, 0, packet, header.size, payload.size)
+
+        val (endpoint, offset) = Socks5Codec.parseUdpPacket(packet, packet.size)!!
+        assertEquals(Socks5Codec.ATYP_IPV4.toInt(), endpoint.atyp)
+        assertEquals("1.2.3.4", endpoint.host)
+        assertEquals(53, endpoint.port)
+        assertEquals(header.size, offset)
+        assertArrayEquals(payload, packet.copyOfRange(offset, packet.size))
+    }
+
+    @Test
+    fun udpHeader_domainRoundTrips() {
+        val header = Socks5Codec.buildUdpHeader(Socks5Codec.ATYP_DOMAIN.toInt(), "dns.alidns.com", 443)
+        val parsed = Socks5Codec.parseUdpPacket(header, header.size)!!
+        assertEquals(Socks5Codec.ATYP_DOMAIN.toInt(), parsed.first.atyp)
+        assertEquals("dns.alidns.com", parsed.first.host)
+        assertEquals(443, parsed.first.port)
+    }
+
+    @Test
+    fun udpHeader_ipv6RoundTrips() {
+        val header = Socks5Codec.buildUdpHeader(Socks5Codec.ATYP_IPV6.toInt(), "2001:db8::1", 5353)
+        val parsed = Socks5Codec.parseUdpPacket(header, header.size)!!
+        assertEquals(Socks5Codec.ATYP_IPV6.toInt(), parsed.first.atyp)
+        // hostAddress 的压缩形式随 JDK 版本不同，按字节比较最稳妥
+        assertArrayEquals(
+            Socks5Codec.ipv6Bytes("2001:db8::1"),
+            Socks5Codec.ipv6Bytes(parsed.first.host),
+        )
+        assertEquals(5353, parsed.first.port)
+    }
+
+    @Test
+    fun udpPacket_rejectsFragmentsAndGarbage() {
+        // FRAG != 0 → null（不支持分片）
+        val frag = Socks5Codec.buildUdpHeader(Socks5Codec.ATYP_IPV4.toInt(), "1.1.1.1", 53)
+        frag[2] = 1
+        assertEquals(null, Socks5Codec.parseUdpPacket(frag, frag.size))
+        // RSV 非零 → null
+        val badRsv = frag.copyOf().also { it[2] = 0; it[1] = 5 }
+        assertEquals(null, Socks5Codec.parseUdpPacket(badRsv, badRsv.size))
+        // 截断 → null
+        assertEquals(null, Socks5Codec.parseUdpPacket(ByteArray(3), 3))
+    }
+
     @Test
     fun domainRequest_roundTripsThroughBuilder() {
         val raw = Socks5Codec.buildRequest(

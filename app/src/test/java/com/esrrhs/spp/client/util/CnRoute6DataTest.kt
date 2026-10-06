@@ -1,11 +1,15 @@
 package com.esrrhs.spp.client.util
 
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.io.File
 
-/** 基于真实 APNIC CN IPv6 数据的验证（缺文件则跳过）。 */
+/**
+ * 基于真实 APNIC CN IPv6 数据的精度回归测试（缺文件则跳过）。
+ * 用户态精确分流：完整 CN v6 CIDR 进入 [IpRouteMatcher]，不做任何块扩展。
+ */
 class CnRoute6DataTest {
 
     private val asset = File("src/main/assets/cn_ipv6_cidr.txt")
@@ -18,42 +22,31 @@ class CnRoute6DataTest {
 
     @Test
     fun cnV6_cnPrefixesGoDirect() {
-        val routes = Cidr6Routes.globalCidrs(cnV6(), EXPAND_PREFIX)
-        // 从 CN 分配段中取样（网段起始地址；扩展到 /22 块后仍直连）
+        val matcher = IpRouteMatcher(cnV6())
+        // 从 CN 分配段中取样：网段起始地址与若干偏移地址都应直连
         cnV6().take(50).map { it.substringBefore("/") }.forEach { ip ->
-            assertTrue("$ip (CN) should go direct", !covers6(routes, ip))
+            assertTrue("$ip (CN) should go direct", matcher.contains(ip))
         }
     }
 
     @Test
     fun cnV6_nonCnGlobalAddressesAreProxied() {
-        val routes = Cidr6Routes.globalCidrs(cnV6(), EXPAND_PREFIX)
+        val matcher = IpRouteMatcher(cnV6())
         listOf(
-            "2001:4860:4860::8888", "2606:4700:4700::1111", "2620:fe::fe",
+            "2001:4860:4860::8888", // Google DNS
+            "2606:4700:4700::1111", // Cloudflare
+            "2620:fe::fe",          // Quad9
         ).forEach { ip ->
-            assertTrue("$ip should be proxied", covers6(routes, ip))
+            assertFalse("$ip must be proxied", matcher.contains(ip))
         }
     }
 
     @Test
-    fun cnV6_routeCountIsBounded() {
-        val routes = Cidr6Routes.globalCidrs(cnV6(), EXPAND_PREFIX)
-        println("v6 routes with CN bypass: ${routes.size}")
-        assertTrue("unexpected v6 route count: ${routes.size}", routes.size in 100..400)
-    }
-
-    private companion object {
-        const val EXPAND_PREFIX = 22
-    }
-
-    private fun covers6(cidrs: List<Cidr6>, ip: String): Boolean {
-        val value = Cidr6Routes.parseAddress(ip)
-        return cidrs.any { cidr ->
-            val network = Cidr6Routes.parseAddress(cidr.address)
-            val hostBits = 128 - cidr.prefix
-            val size = if (hostBits == 128) java.math.BigInteger.ONE.shiftLeft(128)
-            else java.math.BigInteger.ONE.shiftLeft(hostBits)
-            value >= network && value < network + size
-        }
+    fun cnV6_datasetIsLoadedAtExpectedScale() {
+        val cidrs = cnV6()
+        val matcher = IpRouteMatcher(cidrs)
+        println("CN v6 exact ranges: ${cidrs.size} allocations, ${matcher.rangeCount} merged intervals")
+        assertTrue("cn v6 dataset shrunk: ${cidrs.size}", cidrs.size > 1500)
+        assertTrue("matcher must keep exact ranges, was ${matcher.rangeCount}", matcher.rangeCount > 1800)
     }
 }

@@ -10,7 +10,15 @@ import java.net.Socket
 import com.esrrhs.spp.client.util.LogSanitizer
 import java.util.concurrent.TimeUnit
 
-class SppException(message: String) : Exception(message)
+open class SppException(message: String) : Exception(message)
+
+/**
+ * SPP 会话认证失败（key/encrypt 与服务器不匹配）。
+ *
+ * 这是确定性错误：同样的配置再重试多少次都不会成功，重连逻辑据此跳过该候选、
+ * 直接轮换备用配置，而不是空耗重试。
+ */
+class SppAuthException(message: String) : SppException(message)
 
 /**
  * 以独立子进程运行 SPP `socks5_client`（打包为 jniLibs 里的 libspp.so，
@@ -105,13 +113,16 @@ class SppProcess(context: Context) {
             val tail = synchronized(outputLines) { outputLines.joinToString("\n") }
             stop()
             val detail = tail.ifBlank { appContext.getString(R.string.log_no_output) }
-            throw SppException(
-                when {
-                    // SOCKS 端口只在到 server 的会话（认证+加密）建立后才绑定
-                    alive -> appContext.getString(R.string.error_spp_session, detail)
-                    else -> appContext.getString(R.string.error_spp_exited, detail)
-                },
-            )
+            // 认证错误是确定性的：抛出专用异常，让上层直接轮换候选而不是无限重试
+            val isAuthError = AUTH_ERROR_MARKERS.any { marker ->
+                detail.contains(marker, ignoreCase = true)
+            }
+            val message = when {
+                // SOCKS 端口只在到 server 的会话（认证+加密）建立后才绑定
+                alive -> appContext.getString(R.string.error_spp_session, detail)
+                else -> appContext.getString(R.string.error_spp_exited, detail)
+            }
+            throw if (isAuthError) SppAuthException(message) else SppException(message)
         }
         return port
     }
@@ -171,5 +182,8 @@ class SppProcess(context: Context) {
         const val MAX_OUTPUT_LINES = 50
         const val LOG_FILE = "spp.log"
         const val TAG = "SppProcess"
+
+        /** spp 服务端拒绝认证时日志中的确定性标记（实测：processLoginRsp fail tcp auth proof error）。 */
+        val AUTH_ERROR_MARKERS = listOf("auth proof error")
     }
 }

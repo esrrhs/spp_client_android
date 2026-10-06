@@ -1,6 +1,8 @@
 package com.esrrhs.spp.client.proxy
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.net.InetSocketAddress
 
@@ -36,5 +38,69 @@ class RuleSocksServerTest {
         val server = RuleSocksServer(SocksUpstream("sh.esrrhs.xyz", 1080), emptySet())
         val addr = server.upstreamRelayAddress("1.1.1.1", 51880)
         assertEquals(InetSocketAddress("1.1.1.1", 51880), addr)
+    }
+
+    // ---------------- 用户态分流分类 ----------------
+
+    private val ipv4 = Socks5Codec.ATYP_IPV4.toInt()
+    private val ipv6 = Socks5Codec.ATYP_IPV6.toInt()
+    private val domain = Socks5Codec.ATYP_DOMAIN.toInt()
+
+    @Test
+    fun classify_cnCidrs_onlyExactAllocationsGoDirect() {
+        // 模拟 chnroute 中的 1.1.0.0/24（CN）与 220.181.0.0/16
+        val server = RuleSocksServer(
+            upstream = SocksUpstream("127.0.0.1", 1080),
+            directDomains = emptySet(),
+            directIpv4Cidrs = listOf("1.1.0.0/24", "220.181.0.0/16"),
+        )
+        assertTrue(server.shouldDirect("1.1.0.1", ipv4))
+        assertTrue(server.shouldDirect("1.1.0.255", ipv4))
+        assertTrue(server.shouldDirect("220.181.38.148", ipv4))
+        // 旧 /21、/12 聚合回归点：紧邻 CN 分配的非 CN 地址必须代理
+        assertFalse(server.shouldDirect("1.1.1.1", ipv4))
+        assertFalse(server.shouldDirect("8.8.8.8", ipv4))
+        assertFalse(server.shouldDirect("157.240.1.1", ipv4))
+        // 未配置 v6 规则时，所有 v6 代理
+        assertFalse(server.shouldDirect("2400:3200::1", ipv6))
+        // 域名规则为空时，域名一律代理
+        assertFalse(server.shouldDirect("baidu.com", domain))
+    }
+
+    @Test
+    fun classify_bypassPrivate_coversLoopbackRfc1918AndCgnat() {
+        val server = RuleSocksServer(
+            upstream = SocksUpstream("127.0.0.1", 1080),
+            directDomains = emptySet(),
+            bypassPrivate = true,
+        )
+        // v4 私有/CGNAT/回环/链路本地
+        listOf(
+            "127.0.0.1", "10.1.2.3", "172.16.5.5", "172.31.255.255",
+            "192.168.9.9", "100.64.0.1", "100.127.255.255", "169.254.1.1",
+        ).forEach { assertTrue("$it should be LAN-direct", server.shouldDirect(it, ipv4)) }
+        // 公网仍然代理（CGNAT 边界外）
+        listOf("8.8.8.8", "100.128.0.1", "172.32.0.1", "169.253.0.1").forEach {
+            assertFalse("$it should stay proxied", server.shouldDirect(it, ipv4))
+        }
+        // v6 回环/ULA/link-local
+        listOf("::1", "fc00::1", "fdab::1", "fe80::12").forEach {
+            assertTrue("$it should be LAN-direct", server.shouldDirect(it, ipv6))
+        }
+        assertFalse(server.shouldDirect("2001:4860:4860::8888", ipv6))
+    }
+
+    @Test
+    fun classify_domainRules_matchDomainAndSubdomains() {
+        val server = RuleSocksServer(
+            upstream = SocksUpstream("127.0.0.1", 1080),
+            directDomains = setOf("baidu.com", "taobao.com"),
+        )
+        assertTrue(server.shouldDirect("baidu.com", domain))
+        assertTrue(server.shouldDirect("www.baidu.com", domain))
+        assertFalse(server.shouldDirect("notbaidu.com", domain))
+        assertFalse(server.shouldDirect("example.com", domain))
+        // 域名规则不影响 IP 字面量
+        assertFalse(server.shouldDirect("1.2.3.4", ipv4))
     }
 }

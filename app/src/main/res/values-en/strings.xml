@@ -25,19 +25,21 @@
     <string name="error_hev_missing">libhev-socks5-tunnel.so is missing. Run scripts/build_native.sh before packaging.</string>
     <string name="error_rule_proxy">Failed to start the domain rule proxy</string>
     <string name="setting_domain_direct_title">Direct domain rules</string>
-    <string name="setting_domain_direct_subtitle">~110k built-in mainland China domains (dnsmasq-china-list, including subdomains) go direct; everything else is proxied. Add your own domains below. UDP/IP traffic stays proxied</string>
+    <string name="setting_domain_direct_subtitle">~110k built-in mainland China domains (dnsmasq-china-list, including subdomains) go direct over both TCP and UDP; everything else is proxied. Add your own domains below.</string>
     <string name="domain_rules_hint">Extra direct domains, one per line, e.g. baidu.com; lines starting with # are comments</string>
     <string name="error_no_profile">Please add a profile first</string>
     <string name="error_connect_failed">Connection failed</string>
     <string name="error_tunnel_lost">SPP connection lost. Check your network and reconnect.</string>
     <string name="error_reconnect_failed">Reconnect failed after multiple attempts. Check your network or server.</string>
+    <string name="error_no_network">Network unavailable. Check your connection and retry.</string>
+    <string name="error_auth_failed">Server authentication failed (key/encrypt mismatch). Reconnect stopped.</string>
     <string name="err_name_required">Please enter a profile name</string>
     <string name="err_apps_required">Select at least one app for the \"selected apps only\" mode</string>
     <string name="err_host_required">Please enter the server address</string>
     <string name="err_port_range">Port must be between 1 and 65535</string>
     <string name="err_key_required">Please enter the auth key</string>
     <string name="error_missing_native">libspp.so is missing. Run scripts/build_native.sh before packaging.</string>
-    <string name="error_spp_session">Cannot establish an SPP session (15s timeout). Check the server address, key/encrypt and network:\n%1$s</string>
+    <string name="error_spp_session">Cannot establish an SPP session (connection timeout). Check the server address, key/encrypt and network:\n%1$s</string>
     <string name="error_spp_exited">The SPP client exited early:\n%1$s</string>
     <string name="log_no_output">no logs</string>
 
