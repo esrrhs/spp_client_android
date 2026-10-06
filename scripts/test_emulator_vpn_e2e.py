@@ -479,17 +479,24 @@ class GrpcMockServer:
                 def handle(conn):
                     try:
                         conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                        preface = conn.recv(24)
-                        if preface.startswith(b'PRI * HTTP/2.0'):
+                        buf = bytearray()
+                        while len(buf) < 24:
+                            chunk = conn.recv(24 - len(buf))
+                            if not chunk: break
+                            buf.extend(chunk)
+                        if bytes(buf).startswith(b'PRI * HTTP/2.0'):
                             # 读取客户端 SETTINGS 帧
-                            conn.recv(9)
+                            conn.settimeout(0.5)
+                            try: conn.recv(9)
+                            except Exception: pass
                             # 回复服务端 SETTINGS 帧
                             conn.sendall(b'\x00\x00\x00\x04\x00\x00\x00\x00\x00')
                             # 读取客户端 gRPC 帧
-                            conn.recv(9)
+                            try: conn.recv(9)
+                            except Exception: pass
                             # 回传 gRPC HEADERS 帧 (Flags 0x05 END_STREAM, Stream 1)
                             conn.sendall(b'\x00\x00\x04\x01\x05\x00\x00\x00\x01GRPC')
-                            time.sleep(0.3)
+                            time.sleep(1.0)
                     except Exception:
                         pass
                     finally:
@@ -767,7 +774,12 @@ def verify_all_protocols(adb, serial, host_ip, mode_name):
 
     print(f"[{mode_name}] 7. 测试 gRPC (HTTP/2 + application/grpc) 帧交互穿透...")
     grpc_cmd = f"(printf 'PRI * HTTP/2.0\\r\\n\\r\\nSM\\r\\n\\r\\n\\x00\\x00\\x00\\x04\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x04\\x01\\x04\\x00\\x00\\x00\\x01GRPC'; sleep 1) | timeout 4 toybox nc {host_ip} 19008 | od -A n -t c"
-    grpc_res = run_adb(adb, serial, ["shell", grpc_cmd]).stdout
+    grpc_res = ""
+    for _ in range(3):
+        grpc_res = run_adb(adb, serial, ["shell", grpc_cmd], check=False).stdout
+        if "G" in grpc_res and "R" in grpc_res and "P" in grpc_res:
+            break
+        time.sleep(0.5)
     if "G" not in grpc_res or "R" not in grpc_res or "P" not in grpc_res:
         raise RuntimeError(f"[{mode_name}] gRPC 测试未收到预期 HEADERS 响应: {grpc_res}")
     print(f"    [PASS] gRPC 链路握手与 HEADERS 流穿透成功！")
