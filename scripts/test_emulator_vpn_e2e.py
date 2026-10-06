@@ -86,7 +86,7 @@ def dump_vpn_log(adb, serial):
     # 模拟器 logcat 是 *:V，不能只看最后几百行再 grep，否则服务日志会被冲掉。
     res = run_adb(
         adb, serial,
-        ["shell", "logcat", "-d", "-s", "SppVpnService:V", "HevTunnel:V", "AndroidRuntime:E"],
+        ["shell", "logcat", "-d", "-s", "SppVpnService:V", "SppProcess:V", "HevTunnel:V", "AndroidRuntime:E"],
         check=False,
     )
     text = ((res.stdout or "") + "\n" + (res.stderr or "")).strip()
