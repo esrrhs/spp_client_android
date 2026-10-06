@@ -161,21 +161,18 @@ Default ABIs are `arm64-v8a` + `x86_64` (matching abiFilters); extend with `SPP_
 ```
 
 CN-direct mode covers both IPv4 and IPv6: CN allocations go direct and every
-other public/global address is proxied. Because `Builder.establish()` packs all
-routes into **one** Binder transaction (about 1 MB), the exact CN sets (roughly
-12k v4 routes / 14s, far larger for v6) do not fit. Each CN segment is therefore
-expanded to its enclosing aligned block before the complement is computed:
-
-| Family | Block size | Routes installed | Inflation vs exact CN union |
-|---|---|---|---|
-| IPv4 | `/21` | ~7.5k | ~3.5M extra addresses (~1%) |
-| IPv6 | `/26` | ~3.3k | 2x |
-
-Consequence of the approximation: non-CN addresses that share an expanded block
-with a CN allocation also go direct (for example, `1.1.1.1` shares `1.1.0.0/21`
-with CN's `1.1.0.0/24`). Non-CN-bypass modes are unaffected. IPv6 smart split
-(without CN bypass) covers global unicast `2000::/3` only; ULA/link-local ranges
-stay direct.
+other public/global address is proxied. The TUN interface is **always created
+with the two default routes only** (`0.0.0.0/0`, plus `::/0` when IPv6 is on);
+CN/LAN split decisions are performed by the in-process userspace proxy
+(`RuleSocksServer`) against the **exact** CIDR sets (8.8k IPv4 / 2k IPv6
+ranges, sorted interval + binary search). This avoids the
+`TransactionTooLargeException` that Android 15 NetworkMonitor throws when the
+VPN LinkProperties (one Binder transaction) carry thousands of routes — an
+earlier TUN-route approach that expanded CN segments to aligned /12 blocks
+forced 300M+ non-CN addresses (e.g. `1.1.1.1`) direct and made those sites
+unreachable, and is removed. Private/CGNAT ranges (`100.64.0.0/10` included)
+go direct only in bypass-LAN mode; the mapdns fake-ip pool lives inside
+`198.18.64.0/18` and never overlaps carrier CGNAT.
 
 ---
 

@@ -49,12 +49,12 @@ object ConnectionRecorder {
         }
     }
 
-    /** 开始一轮 VPN 会话的采集；[profile]/[directDomains] 在本次会话内固定。 */
+    /** 开始一轮 VPN 会话的采集；[direct] 在本次会话内固定（与 RuleSocksServer 同源）。 */
     fun start(
         scope: CoroutineScope,
         context: Context,
         profile: Profile,
-        directDomains: Set<String>,
+        direct: DirectClassifier,
     ) {
         if (job?.isActive == true) return
         val appContext = context.applicationContext
@@ -81,7 +81,7 @@ object ConnectionRecorder {
                         prev = sample,
                         nowMs = now,
                         intervalMs = interval,
-                        directDomains = directDomains,
+                        direct = direct,
                     )
                     _liveGroups.value = sample.groups
                     sample.liveRows
@@ -90,7 +90,7 @@ object ConnectionRecorder {
                     ActiveConnections.historyRows(
                         context = appContext,
                         profile = profile,
-                        directDomains = directDomains,
+                        direct = direct,
                     )
                 }
 

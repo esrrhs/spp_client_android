@@ -1,5 +1,6 @@
 *.iml
 .gradle/
+.kotlin/
 local.properties
 keystore.properties
 *.keystore
@@ -15,3 +16,7 @@ captures/
 third_party/
 app/src/main/jniLibs/*/libspp.so
 app/src/main/jniLibs/*/libhev-socks5-tunnel.so
+
+# Python
+__pycache__/
+*.pyc

@@ -1,6 +1,7 @@
 package com.esrrhs.spp.client.proxy
 
 import android.util.Log
+import com.esrrhs.spp.client.util.DirectClassifier
 import java.io.DataInputStream
 import java.io.OutputStream
 import java.net.DatagramPacket
@@ -15,6 +16,7 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /** 上游 SOCKS5。SPP 模式是本机 socks5_client；SOCKS5 模式是远端代理。 */
 data class SocksUpstream(
@@ -27,17 +29,31 @@ data class SocksUpstream(
 /**
  * 本地 SOCKS5 分流代理，位于 hev-socks5-tunnel 与上游 SOCKS5 之间。
  *
- * - CONNECT 带域名且命中 [directDomains]：本进程直连（App 自身被排除在 VPN 外，
+ * TUN 始终全量抓包（0.0.0.0/0），所有「直连 vs 代理」决策都在本类用户态完成，
+ * 因此不存在 VpnService 路由表 Binder parcel 尺寸限制（Android 15 NetworkMonitor
+ * TransactionTooLargeException），CN 集合零近似、零膨胀：
+ *
+ * - CONNECT 携带域名且命中 [directDomains]：本进程直连（App 自身被排除在 VPN 外，
  *   socket 天然走物理网络），域名由本地解析；
- * - 其它 CONNECT（含所有 IP 字面量）：转发给 [upstream]（本机 SPP 或远端 SOCKS5）；
- * - UDP ASSOCIATE：在本地与上游各建一个 UDP 中继，数据报文统一转发上游。
- *   远端 SOCKS5 的中继地址用服务器回复的 BND，不再假定 127.0.0.1。
+ * - CONNECT 携带 IP 字面量（App 自带 DoH/自建 DNS 解析后直连的场景）：命中
+ *   [directIpv4Cidrs]/[directIpv6Cidrs]（精确 chnroute）或 [bypassPrivate] 的
+ *   私有/CGNAT 段时本进程直连；
+ * - 其它 CONNECT：转发给 [upstream]（本机 SPP 或远端 SOCKS5），域名型请求仍由
+ *   服务端解析（mapdns 防 DNS 泄漏链路不变）；
+ * - UDP ASSOCIATE：逐报文解析 SOCKS5 目标，直连目标由本进程 DatagramSocket 直发，
+ *   其余经上游 UDP 中继；上游中继按需懒建立，纯直连会话零上游连接。
  *
  * 纯阻塞 IO + 守护线程，生命周期与 VPN 数据面一致。
  */
 class RuleSocksServer(
     private val upstream: SocksUpstream,
     private val directDomains: Set<String>,
+    /** 命中即本地直连的 IPv4 CIDR（精确 chnroute，无块扩展）。 */
+    private val directIpv4Cidrs: List<String> = emptyList(),
+    /** 命中即本地直连的 IPv6 CIDR（精确 chnroute）。 */
+    private val directIpv6Cidrs: List<String> = emptyList(),
+    /** 把私有/保留网段（RFC1918、CGNAT、ULA 等）也纳入直连（绕过局域网）。 */
+    private val bypassPrivate: Boolean = false,
 ) {
     private val running = AtomicBoolean(false)
     private var server: ServerSocket? = null
@@ -48,6 +64,19 @@ class RuleSocksServer(
         Thread(r, "rule-socks").apply { isDaemon = true }
     }
 
+    private val classifier = DirectClassifier(
+        directDomains = directDomains,
+        directIpv4Cidrs = directIpv4Cidrs,
+        directIpv6Cidrs = directIpv6Cidrs,
+        bypassPrivate = bypassPrivate,
+    )
+
+    /** 直连失败短期惩罚缓存（实例级：网络切换/会话停止随本对象一起丢弃）。 */
+    private val directPenaltyCache = ConcurrentHashMap<String, Long>()
+
+    /** 直连域名 DNS 缓存（实例级，TTL 60s；网络切换后随会话重建清空）。 */
+    private val dnsCache = ConcurrentHashMap<String, DnsCacheEntry>()
+
     val port: Int? get() = server?.localPort
 
     fun start() {
@@ -56,7 +85,7 @@ class RuleSocksServer(
         server = s
         pool.execute { acceptLoop(s) }
         replenishPrewarmPool()
-        Log.i(TAG, "rule socks proxy listening on 127.0.0.1:${s.localPort}, direct rules=${directDomains.size}")
+        Log.i(TAG, "rule socks proxy listening on 127.0.0.1:${s.localPort}, ${classifier.summary()}")
     }
 
     fun stop() {
@@ -73,6 +102,8 @@ class RuleSocksServer(
             relays.toList().forEach { runCatching { it.close() } }
             relays.clear()
         }
+        directPenaltyCache.clear()
+        dnsCache.clear()
         pool.shutdownNow()
     }
 
@@ -103,7 +134,7 @@ class RuleSocksServer(
             }
             when (req.command) {
                 Socks5Codec.CMD_CONNECT.toInt() -> handleConnect(req, input, out, client)
-                Socks5Codec.CMD_UDP_ASSOCIATE.toInt() -> handleUdpAssociate(req, out, client)
+                Socks5Codec.CMD_UDP_ASSOCIATE.toInt() -> handleUdpAssociate(out, client)
                 else -> out.write(Socks5Codec.failureReply(Socks5Codec.REP_COMMAND_NOT_SUPPORTED))
             }
         } catch (e: Exception) {
@@ -114,14 +145,24 @@ class RuleSocksServer(
         }
     }
 
+    /**
+     * SOCKS5 请求目标是否应该本地直连（域名规则 / 精确 CIDR / 私有段）。
+     * internal 以便单测直接锁定分流判定，而不必依赖真实连通性。
+     */
+    internal fun shouldDirect(endpointHost: String, atyp: Int): Boolean = when (atyp) {
+        Socks5Codec.ATYP_DOMAIN.toInt() -> classifier.isDirectDomain(endpointHost)
+        Socks5Codec.ATYP_IPV4.toInt(),
+        Socks5Codec.ATYP_IPV6.toInt() -> classifier.isDirectIp(endpointHost)
+        else -> false
+    }
+
     private fun handleConnect(
         req: Socks5Codec.Request,
         input: DataInputStream,
         out: OutputStream,
         client: Socket,
     ) {
-        val ruleDirect = req.atyp == Socks5Codec.ATYP_DOMAIN.toInt() &&
-            com.esrrhs.spp.client.util.DomainRuleMatcher.matches(req.host, directDomains)
+        val ruleDirect = shouldDirect(req.host, req.atyp)
         val started = System.currentTimeMillis()
 
         val inDirectPenalty = ruleDirect && isDirectPenalized(req.host)
@@ -422,126 +463,255 @@ class RuleSocksServer(
         }
     }
 
-    private fun handleUdpAssociate(
-        req: Socks5Codec.Request,
-        out: OutputStream,
-        control: Socket,
-    ) {
-        // 1. 与上游建立 UDP ASSOCIATE
-        var upControl: Socket? = null
-        var clientRelay: DatagramSocket? = null
-        var upRelay: DatagramSocket? = null
-        try {
-            upControl = openUpstream()
-            // 面向 hev 的中继（hev 把报文发到这里）
-            clientRelay = DatagramSocket(0, InetAddress.getByName("127.0.0.1"))
-            // 面向上游中继。远端 SOCKS5 的 BND 不在回环上，不能绑 127.0.0.1，
-            // 否则发往公网的 UDP 会被内核丢掉。本进程已被排除在 VPN 外。
-            upRelay = if (isLoopback(upstream.host)) {
-                DatagramSocket(0, InetAddress.getByName("127.0.0.1"))
-            } else {
-                DatagramSocket()
-            }
-            val upOut = upControl.getOutputStream()
-            val upIn = DataInputStream(upControl.getInputStream())
-            upOut.write(
-                Socks5Codec.buildRequest(
-                    Socks5Codec.CMD_UDP_ASSOCIATE,
-                    Socks5Codec.ATYP_IPV4.toInt(),
-                    "0.0.0.0",
-                    0,
-                ),
-            )
-            upOut.flush()
-            val bound = Socks5Codec.readReply(upIn) ?: run {
-                out.write(Socks5Codec.failureReply(Socks5Codec.REP_GENERAL_FAILURE))
-                return
-            }
-            val upstreamRelay = upstreamRelayAddress(bound.first, bound.second)
+    // ============================== UDP ==============================
 
-            // 2. 把本地中继地址回复给 hev
+    private fun handleUdpAssociate(out: OutputStream, control: Socket) {
+        // 面向 hev 的中继（hev 把报文发到这里）；上游/直连中继在 UdpSplitter 内按需建立
+        val clientRelay = DatagramSocket(0, InetAddress.getByName("127.0.0.1"))
+        val splitter = UdpSplitter(clientRelay, control)
+        synchronized(relays) { relays.add(clientRelay) }
+        try {
+            clientRelay.receiveBufferSize = UDP_SOCKET_BUFFER
             out.write(Socks5Codec.successReply("127.0.0.1", clientRelay.localPort))
             out.flush()
-
-            // hev 回程按 1500 字节整包接收（含 SOCKS 头）。本地回环能发出更大的包，
-            // 但超限后 hev 会截断，QUIC 校验失败。把缓冲加大，避免突发时在中继处丢包。
-            clientRelay.receiveBufferSize = UDP_SOCKET_BUFFER
-            upRelay.receiveBufferSize = UDP_SOCKET_BUFFER
-            synchronized(relays) {
-                relays.add(clientRelay)
-                relays.add(upRelay)
-            }
-            Log.i(
-                TAG,
-                "udp relay 127.0.0.1:${clientRelay.localPort} -> ${upstreamRelay.hostString}:${upstreamRelay.port}",
-            )
-            relayUdp(clientRelay, upRelay, upstreamRelay, upControl, control)
+            Log.i(TAG, "udp splitter relay on 127.0.0.1:${clientRelay.localPort}, upstream=$upstream")
+            splitter.run()
         } catch (e: Exception) {
             Log.w(TAG, "udp associate failed: ${e.message}")
-            runCatching {
-                out.write(Socks5Codec.failureReply(Socks5Codec.REP_GENERAL_FAILURE))
-            }
         } finally {
-            runCatching { upControl?.close() }
-            runCatching { clientRelay?.close() }
-            runCatching { upRelay?.close() }
-            synchronized(relays) {
-                clientRelay?.let { relays.remove(it) }
-                upRelay?.let { relays.remove(it) }
-            }
+            splitter.close()
+            synchronized(relays) { relays.remove(clientRelay) }
+            runCatching { clientRelay.close() }
         }
     }
 
-    /** 在 hev ↔ 上游 SOCKS UDP 中继之间转发报文（头部格式相同，原样透传）。 */
-    private fun relayUdp(
-        clientRelay: DatagramSocket,
-        upRelay: DatagramSocket,
-        upstreamRelay: InetSocketAddress,
-        upControl: Socket,
-        clientControl: Socket,
+    /**
+     * 单个 UDP ASSOCIATE 会话的分流中继。
+     *
+     * - hev -> 本进程：解析 SOCKS5 UDP 头，按 [shouldDirect] 判定：
+     *   直连报文经本地 wildcard DatagramSocket 直发物理网络（App 已被排除 VPN），
+     *   代理报文整包转发上游 UDP 中继（上游中继懒建立，纯直连会话不产生上游连接）；
+     * - 目标/上游 -> 本进程：封装（直连）或透传（上游已封装）SOCKS5 UDP 头后回给 hev。
+     */
+    private inner class UdpSplitter(
+        private val clientRelay: DatagramSocket,
+        private val control: Socket,
     ) {
-        val peerHolder = java.util.concurrent.atomic.AtomicReference<InetSocketAddress>()
-        val oversizedLogged = AtomicBoolean(false)
+        private val gate = Any()
+        private var upControl: Socket? = null
+        private var upRelay: DatagramSocket? = null
+        private var upstreamRelay: InetSocketAddress? = null
+        private var directV4: DatagramSocket? = null
+        private var directV6: DatagramSocket? = null
+        private val oversizeLogged = AtomicBoolean(false)
 
-        // hev -> 上游
-        pool.execute {
+        /** RFC 1928：只与发起 ASSOCIATE 的客户端地址通信，首个报文锁定。 */
+        private val peer = AtomicReference<InetSocketAddress>()
+
+        fun run() {
             val buf = ByteArray(UDP_BUFFER_SIZE)
-            while (running.get() && !upControl.isClosed && !clientControl.isClosed) {
+            while (running.get() && !control.isClosed && !clientRelay.isClosed) {
                 val packet = DatagramPacket(buf, buf.size)
                 try {
                     clientRelay.soTimeout = TIMEOUT_MS
                     clientRelay.receive(packet)
-                    (packet.socketAddress as? InetSocketAddress)?.let { peerHolder.set(it) }
-
-                    warnIfOversized(packet.length, "to-upstream", oversizedLogged)
-                    val data = packet.data.copyOf(packet.length)
-                    upRelay.send(DatagramPacket(data, data.size, upstreamRelay))
                 } catch (_: java.net.SocketTimeoutException) {
-                    // 超时后重新检查控制连接状态
+                    continue
                 } catch (e: Exception) {
-                    if (running.get()) Log.w(TAG, "udp to-upstream: ${e.message}")
+                    if (running.get()) Log.w(TAG, "udp from-hev: ${e.message}")
+                    break
+                }
+
+                val sender = packet.socketAddress as? InetSocketAddress ?: continue
+                val lockedPeer = peer.get()
+                if (lockedPeer != null && lockedPeer != sender) continue
+
+                val parsed = Socks5Codec.parseUdpPacket(packet.data, packet.length) ?: continue
+                if (lockedPeer == null) peer.set(sender)
+
+                val (endpoint, payloadOffset) = parsed
+                val payloadLen = packet.length - payloadOffset
+                if (shouldDirect(endpoint.host, endpoint.atyp)) {
+                    sendDirect(endpoint, packet.data, payloadOffset, payloadLen)
+                } else {
+                    sendUpstream(packet.data, packet.length)
+                }
+            }
+        }
+
+        fun close() {
+            runCatching { upControl?.close() }
+            runCatching { upRelay?.close() }
+            runCatching { directV4?.close() }
+            runCatching { directV6?.close() }
+            synchronized(relays) {
+                upRelay?.let { relays.remove(it) }
+                directV4?.let { relays.remove(it) }
+                directV6?.let { relays.remove(it) }
+            }
+            upControl = null
+            upRelay = null
+            directV4 = null
+            directV6 = null
+            upstreamRelay = null
+        }
+
+        /** 整包（仍带 SOCKS 头）转发上游 UDP 中继；上游未建立时懒建立。 */
+        private fun sendUpstream(data: ByteArray, len: Int) {
+            if (!ensureUpstream()) return
+            val relay = upRelay ?: return
+            val target = upstreamRelay ?: return
+            try {
+                relay.send(DatagramPacket(data.copyOf(len), len, target))
+            } catch (e: Exception) {
+                if (running.get()) Log.w(TAG, "udp to-upstream: ${e.message}")
+            }
+        }
+
+        private fun ensureUpstream(): Boolean {
+            upstreamRelay?.let { return true }
+            synchronized(gate) {
+                upstreamRelay?.let { return true }
+                var ctrl: Socket? = null
+                var relay: DatagramSocket? = null
+                try {
+                    ctrl = openUpstream()
+                    // 远端 SOCKS5 的 BND 不在回环上时不能绑 127.0.0.1（公网回包会被内核丢弃）
+                    relay = if (isLoopback(upstream.host)) {
+                        DatagramSocket(0, InetAddress.getByName("127.0.0.1"))
+                    } else {
+                        DatagramSocket()
+                    }
+                    relay.receiveBufferSize = UDP_SOCKET_BUFFER
+                    val ctrlOut = ctrl.getOutputStream()
+                    val ctrlIn = DataInputStream(ctrl.getInputStream())
+                    ctrlOut.write(
+                        Socks5Codec.buildRequest(
+                            Socks5Codec.CMD_UDP_ASSOCIATE,
+                            Socks5Codec.ATYP_IPV4.toInt(),
+                            "0.0.0.0",
+                            0,
+                        ),
+                    )
+                    ctrlOut.flush()
+                    val bound = Socks5Codec.readReply(ctrlIn)
+                        ?: throw java.io.IOException("upstream UDP ASSOCIATE rejected")
+
+                    upControl = ctrl
+                    upRelay = relay
+                    upstreamRelay = upstreamRelayAddress(bound.first, bound.second)
+                    synchronized(relays) { relays.add(relay) }
+                    pool.execute { receiveUpstreamLoop(relay, ctrl) }
+                    Log.i(
+                        TAG,
+                        "udp upstream relay 127.0.0.1:${relay.localPort} -> " +
+                            "${upstreamRelay?.hostString}:${upstreamRelay?.port}",
+                    )
+                    return true
+                } catch (e: Exception) {
+                    Log.w(TAG, "udp upstream associate failed: ${e.message}")
+                    runCatching { ctrl?.close() }
+                    runCatching { relay?.close() }
+                    upControl = null
+                    upRelay = null
+                    upstreamRelay = null
+                    return false
+                }
+            }
+        }
+
+        private fun receiveUpstreamLoop(relay: DatagramSocket, ctrl: Socket) {
+            val buf = ByteArray(UDP_BUFFER_SIZE)
+            while (running.get() && !ctrl.isClosed && !relay.isClosed) {
+                val packet = DatagramPacket(buf, buf.size)
+                try {
+                    relay.soTimeout = TIMEOUT_MS
+                    relay.receive(packet)
+                } catch (_: java.net.SocketTimeoutException) {
+                    continue
+                } catch (e: Exception) {
+                    if (running.get()) Log.w(TAG, "udp from-upstream: ${e.message}")
+                    break
+                }
+                val target = peer.get() ?: continue
+                // 上游回复本身已带 SOCKS UDP 头；防御性校验后透传给 hev
+                if (packet.length < 4 ||
+                    packet.data[0] != 0.toByte() || packet.data[1] != 0.toByte()
+                ) {
+                    continue
+                }
+                warnIfOversized(packet.length, "to-hev", oversizeLogged)
+                try {
+                    clientRelay.send(DatagramPacket(packet.data.copyOf(packet.length), packet.length, target))
+                } catch (_: Exception) {
                     break
                 }
             }
         }
 
-        // 上游 -> hev（发回最近一个客户端地址）
-        val buf = ByteArray(UDP_BUFFER_SIZE)
-        while (running.get() && !upControl.isClosed && !clientControl.isClosed) {
-            val packet = DatagramPacket(buf, buf.size)
+        /** 直连：域名走本地 DNS 解析（命中域名直连规则），IP 字面量直接用。 */
+        private fun sendDirect(
+            endpoint: Socks5Codec.UdpEndpoint,
+            raw: ByteArray,
+            payloadOffset: Int,
+            payloadLen: Int,
+        ) {
+            if (payloadLen <= 0) return
+            val address: InetAddress? = when (endpoint.atyp) {
+                Socks5Codec.ATYP_DOMAIN.toInt() -> resolveHost(endpoint.host).firstOrNull()
+                else -> runCatching { InetAddress.getByName(endpoint.host) }.getOrNull()
+            }
+            val socket = address?.let { obtainDirectSocket(it is Inet6Address) } ?: return
             try {
-                upRelay.soTimeout = TIMEOUT_MS
-                upRelay.receive(packet)
-                val peer = peerHolder.get() ?: continue
-                // 这条才是 hev 用 1500 字节缓冲接收的方向，超限会被截成坏包。
-                warnIfOversized(packet.length, "to-hev", oversizedLogged)
-                val data = packet.data.copyOf(packet.length)
-                clientRelay.send(DatagramPacket(data, data.size, peer))
-            } catch (_: java.net.SocketTimeoutException) {
-                // 超时后重新检查控制连接状态
+                val payload = ByteArray(payloadLen)
+                System.arraycopy(raw, payloadOffset, payload, 0, payloadLen)
+                socket.send(DatagramPacket(payload, payloadLen, InetSocketAddress(address, endpoint.port)))
             } catch (e: Exception) {
-                if (running.get()) Log.w(TAG, "udp to-hev: ${e.message}")
-                break
+                if (running.get()) Log.v(TAG, "udp direct send ${endpoint.host}: ${e.message}")
+            }
+        }
+
+        private fun obtainDirectSocket(useV6: Boolean): DatagramSocket? = synchronized(gate) {
+            val existing = if (useV6) directV6 else directV4
+            if (existing != null) return existing
+            val socket = runCatching {
+                DatagramSocket().apply { receiveBufferSize = UDP_SOCKET_BUFFER }
+            }.getOrNull() ?: return null
+            if (useV6) directV6 = socket else directV4 = socket
+            synchronized(relays) { relays.add(socket) }
+            pool.execute { receiveDirectLoop(socket, useV6) }
+            socket
+        }
+
+        private fun receiveDirectLoop(socket: DatagramSocket, useV6: Boolean) {
+            val buf = ByteArray(UDP_BUFFER_SIZE)
+            while (running.get() && !control.isClosed && !socket.isClosed) {
+                val packet = DatagramPacket(buf, buf.size)
+                try {
+                    socket.soTimeout = TIMEOUT_MS
+                    socket.receive(packet)
+                } catch (_: java.net.SocketTimeoutException) {
+                    continue
+                } catch (e: Exception) {
+                    if (running.get()) Log.v(TAG, "udp direct recv: ${e.message}")
+                    break
+                }
+                val target = peer.get() ?: continue
+                val src = packet.socketAddress as? InetSocketAddress ?: continue
+                val host = src.address?.hostAddress?.substringBefore('%') ?: continue
+                // 这条才是 hev 用 1500 字节缓冲接收的方向，超限会被截成坏包。
+                warnIfOversized(packet.length, "to-hev", oversizeLogged)
+                val atyp = if (useV6) Socks5Codec.ATYP_IPV6.toInt()
+                else Socks5Codec.ATYP_IPV4.toInt()
+                val header = Socks5Codec.buildUdpHeader(atyp, host, src.port)
+                val out = ByteArray(header.size + packet.length)
+                System.arraycopy(header, 0, out, 0, header.size)
+                System.arraycopy(packet.data, 0, out, header.size, packet.length)
+                try {
+                    clientRelay.send(DatagramPacket(out, out.size, target))
+                } catch (_: Exception) {
+                    break
+                }
             }
         }
     }
@@ -573,13 +743,43 @@ class RuleSocksServer(
             addr.isLinkLocalAddress
     }
 
-
-
     /** hev 回程缓冲是 1500（含 SOCKS 头）。每条中继只打一次，避免 QUIC 刷屏。 */
     private fun warnIfOversized(length: Int, dir: String, logged: AtomicBoolean) {
         if (length <= HEV_UDP_RECV_LIMIT || !logged.compareAndSet(false, true)) return
         Log.w(TAG, "udp $dir datagram ${length}B > $HEV_UDP_RECV_LIMIT; hev will truncate QUIC")
     }
+
+    private fun isDirectPenalized(host: String): Boolean {
+        val expire = directPenaltyCache[host] ?: return false
+        if (System.currentTimeMillis() < expire) return true
+        directPenaltyCache.remove(host)
+        return false
+    }
+
+    private fun markDirectPenalized(host: String) {
+        directPenaltyCache[host] = System.currentTimeMillis() + DIRECT_PENALTY_MS
+    }
+
+    /**
+     * 本地解析直连目标（App 自身被排除 VPN，走物理网络的系统解析器）。
+     * 结果缓存 [DNS_CACHE_TTL_MS]；失败时在 TTL 内沿用上次的成功结果。
+     * IPv4 排在前面（Happy Eyeballs 由调用方再做竞速）。
+     */
+    private fun resolveHost(host: String): List<InetAddress> {
+        val now = System.currentTimeMillis()
+        dnsCache[host]?.let { cached ->
+            if (now < cached.expireMs) return cached.addrs
+        }
+        val resolved = runCatching { InetAddress.getAllByName(host).toList() }.getOrNull().orEmpty()
+        if (resolved.isNotEmpty()) {
+            val ordered = resolved.sortedBy { if (it is Inet6Address) 1 else 0 }
+            dnsCache[host] = DnsCacheEntry(ordered, now + DNS_CACHE_TTL_MS)
+            return ordered
+        }
+        return dnsCache[host]?.addrs.orEmpty()
+    }
+
+    private data class DnsCacheEntry(val addrs: List<InetAddress>, val expireMs: Long)
 
     private companion object {
         const val TAG = "RuleSocksServer"
@@ -594,20 +794,8 @@ class RuleSocksServer(
         const val UDP_SOCKET_BUFFER = 512 * 1024
         const val TCP_SOCKET_BUFFER = 256 * 1024
 
-        /** 直连失败的惩罚时长（毫秒）：此时间内该域名直接走代理，消除并发或连续请求的重复回退等待。 */
+        /** 直连失败的惩罚时长（毫秒）：此时间内该目标直接走代理，消除并发或连续请求的重复回退等待。 */
         const val DIRECT_PENALTY_MS = 180_000L // 3 分钟
-        private val directPenaltyCache = java.util.concurrent.ConcurrentHashMap<String, Long>()
-
-        fun isDirectPenalized(host: String): Boolean {
-            val expire = directPenaltyCache[host] ?: return false
-            if (System.currentTimeMillis() < expire) return true
-            directPenaltyCache.remove(host)
-            return false
-        }
-
-        fun markDirectPenalized(host: String) {
-            directPenaltyCache[host] = System.currentTimeMillis() + DIRECT_PENALTY_MS
-        }
 
         /** RFC 8305 Happy Eyeballs 先发优势窗口（毫秒）。 */
         const val HAPPY_EYEBALLS_HEAD_START_MS = 250L
@@ -615,24 +803,6 @@ class RuleSocksServer(
         const val PREWARM_POOL_SIZE = 4
         /** 本地 DNS 缓存有效时长（毫秒）。 */
         const val DNS_CACHE_TTL_MS = 60_000L
-
-        private data class DnsCacheEntry(val addrs: List<InetAddress>, val expireMs: Long)
-        private val dnsCache = ConcurrentHashMap<String, DnsCacheEntry>()
-
-        fun resolveHost(host: String): List<InetAddress> {
-            val now = System.currentTimeMillis()
-            val cached = dnsCache[host]
-            if (cached != null && now < cached.expireMs) {
-                return cached.addrs
-            }
-            val resolved = runCatching { InetAddress.getAllByName(host).toList() }.getOrNull().orEmpty()
-            if (resolved.isNotEmpty()) {
-                val ordered = resolved.sortedBy { if (it is Inet6Address) 1 else 0 }
-                dnsCache[host] = DnsCacheEntry(ordered, now + DNS_CACHE_TTL_MS)
-                return ordered
-            }
-            return cached?.addrs.orEmpty()
-        }
 
         fun isLoopback(host: String): Boolean =
             host == "127.0.0.1" || host == "localhost" || host == "::1"

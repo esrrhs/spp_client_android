@@ -111,10 +111,11 @@ object ActiveConnections {
         nowMs: Long,
         intervalMs: Long,
         /**
-         * 当前生效的域名直连规则集合（内置大陆域名表 + 用户自定义）；
-         * 域名直连开关关闭时传空集（全部按代理展示）。
+         * 当前生效的用户态分流判定器（域名直连 + CN CIDR + 绕过局域网）。
+         * 与 RuleSocksServer 使用同一份规则构建，保证标记与真实路径一致；
+         * 无规则（纯全局代理）时传 [DirectClassifier.EMPTY]。
          */
-        directDomains: Set<String> = emptySet(),
+        direct: DirectClassifier = DirectClassifier.EMPTY,
     ): ConnectionSample {
         val sessions = parseSessions(HevTunnel.sessions().orEmpty())
 
@@ -158,7 +159,7 @@ object ActiveConnections {
                     txRate = rateBetween(prevPair?.first, s.upload, intervalMs),
                     rxRate = rateBetween(prevPair?.second, s.download, intervalMs),
                     createdMs = s.createdMs,
-                    direct = isDirect(s.proto, s.domain, directDomains),
+                    direct = direct.isDirectSession(s.domain, s.dstIp),
                     active = true,
                     lastSeenMs = nowMs,
                 ),
@@ -276,7 +277,7 @@ object ActiveConnections {
     fun historyRows(
         context: Context,
         profile: Profile?,
-        directDomains: Set<String>,
+        direct: DirectClassifier = DirectClassifier.EMPTY,
     ): List<HistoryRow> {
         val cm = context.getSystemService(ConnectivityManager::class.java)
         val allowedPackages = profile?.perAppPackages?.toSet().orEmpty()
@@ -302,7 +303,7 @@ object ActiveConnections {
                 proto = if (s.proto == 6) "TCP" else "UDP",
                 txBytes = s.upload,
                 rxBytes = s.download,
-                direct = isDirect(s.proto, s.domain, directDomains),
+                direct = direct.isDirectSession(s.domain, s.dstIp),
                 createdMs = s.createdMs,
             )
         }
@@ -312,14 +313,6 @@ object ActiveConnections {
         if (old == null || new < old || intervalMs <= 0L) return 0L
         return (new - old) * 1000L / intervalMs
     }
-
-    /**
-     * 是否走域名直连，与 proxy/RuleSocksServer 的判定一致：
-     * 仅 TCP（IPPROTO_TCP=6）且 mapped-DNS 反查到的域名命中规则集合；
-     * UDP/QUIC 与无域名（IP 字面量）会话一律走代理。
-     */
-    internal fun isDirect(proto: Int, domain: String?, directDomains: Set<String>): Boolean =
-        proto == 6 && DomainRuleMatcher.matches(domain, directDomains)
 
     private fun ownerUid(cm: ConnectivityManager?, s: RawSession): Int {
         if (cm == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return -1

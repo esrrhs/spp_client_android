@@ -835,6 +835,22 @@ def wait_for_tun(adb_cmd, serial, should_exist=True, timeout=15):
         time.sleep(0.5)
     return False
 
+
+def assert_tun_default_routes(adb_cmd, serial, expect_ipv6=False):
+    """新分流架构下 tun0 必须恒定承载默认路由（CN/LAN 分流已下沉到用户态，
+    不再有成百上千条明细路由）。"""
+    res = run_adb(adb_cmd, serial, ["shell", "ip", "route", "show", "dev", "tun0"], check=False)
+    v4 = (res.stdout or "") + (res.stderr or "")
+    if "default" not in v4:
+        raise RuntimeError(f"tun0 缺少 IPv4 默认路由: {v4!r}")
+    print("    [PASS] tun0 承载 IPv4 默认路由（全量抓包，用户态分流）")
+    if expect_ipv6:
+        res6 = run_adb(adb_cmd, serial, ["shell", "ip", "-6", "route", "show", "dev", "tun0"], check=False)
+        v6 = (res6.stdout or "") + (res6.stderr or "")
+        if "default" not in v6:
+            raise RuntimeError(f"tun0 缺少 IPv6 默认路由: {v6!r}")
+        print("    [PASS] tun0 承载 IPv6 默认路由")
+
 def verify_all_protocols(adb, serial, host_ip, mode_name):
     """验证 TCP, UDP, HTTP/1.1, HTTP/2, DNS, WebSocket, gRPC, QUIC 八大常见网络协议穿透与回显"""
     time.sleep(1) # 等待网络路由与规则完全收敛
@@ -1106,6 +1122,7 @@ def main():
             dump_vpn_log(adb, serial)
             raise RuntimeError("tun0 网卡未能按时建立！")
         print("==> tun0 虚拟网卡已就绪")
+        assert_tun_default_routes(adb, serial, expect_ipv6=False)
 
         # 验证八大协议
         verify_all_protocols(adb, serial, host_lan_ip, "SOCKS5")
@@ -1162,6 +1179,10 @@ def main():
         print(f"==> libspp.so 子进程 PID: {pgrep}")
         if not pgrep:
             raise RuntimeError("libspp.so 进程未运行！")
+
+        # 纯全局 SPP 模式下 hev 直连 spp（不经过用户态分流器），
+        # 但 TUN 仍必须是默认路由全抓。
+        assert_tun_default_routes(adb, serial, expect_ipv6=False)
 
         # 验证八大协议
         verify_all_protocols(adb, serial, host_lan_ip, "SPP")

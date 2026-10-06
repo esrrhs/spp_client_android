@@ -36,6 +36,12 @@ class MockUpstreamSocks5Server(
     private val activeSockets = ConcurrentHashMap.newKeySet<Socket>()
     private val activeDatagrams = ConcurrentHashMap.newKeySet<DatagramSocket>()
 
+    // 分流测试断言用：真正到达上游的 CONNECT / UDP ASSOCIATE 次数
+    private val connectCount = java.util.concurrent.atomic.AtomicInteger(0)
+    private val udpAssociateCount = java.util.concurrent.atomic.AtomicInteger(0)
+    val tcpConnectCount: Int get() = connectCount.get()
+    val udpAssociateRequests: Int get() = udpAssociateCount.get()
+
     val port: Int get() = serverSocket?.localPort ?: 0
 
     fun start() {
@@ -128,6 +134,7 @@ class MockUpstreamSocks5Server(
         clientOut: OutputStream,
         client: Socket,
     ) {
+        connectCount.incrementAndGet()
         val target = try {
             val addr = InetAddress.getByName(req.host)
             val s = try {
@@ -191,6 +198,7 @@ class MockUpstreamSocks5Server(
     }
 
     private fun handleUdpAssociate(clientOut: OutputStream, clientControl: Socket) {
+        udpAssociateCount.incrementAndGet()
         // 创建 UDP relay socket (IPv4)
         val relaySocket = try {
             DatagramSocket(0, InetAddress.getByName("127.0.0.1"))

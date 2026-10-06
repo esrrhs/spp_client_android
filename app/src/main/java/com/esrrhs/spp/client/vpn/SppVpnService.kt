@@ -6,7 +6,9 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
 import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -18,12 +20,11 @@ import com.esrrhs.spp.client.data.ConfigRepository
 import com.esrrhs.spp.client.data.SettingsRepository
 import com.esrrhs.spp.client.spp.PerAppMode
 import com.esrrhs.spp.client.spp.Profile
+import com.esrrhs.spp.client.spp.SppAuthException
 import com.esrrhs.spp.client.spp.SppException
 import com.esrrhs.spp.client.spp.SppProcess
 import com.esrrhs.spp.client.spp.ValidationError
 import com.esrrhs.spp.client.tun.HevTunnel
-import com.esrrhs.spp.client.util.Cidr6Routes
-import com.esrrhs.spp.client.util.CidrRoutes
 import com.esrrhs.spp.client.util.CnRouteList
 import com.esrrhs.spp.client.util.Formatters
 import com.esrrhs.spp.client.util.TrafficMeter
@@ -37,10 +38,13 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+import kotlin.coroutines.resume
 
 class SppVpnService : VpnService() {
 
@@ -224,13 +228,26 @@ class SppVpnService : VpnService() {
         }
     }
 
-    /** 建立一次完整数据面（spp → TUN → hev）；成功后状态为 Connected。 */
-    private suspend fun establishSession(repository: ConfigRepository, profile: Profile) {
+    /**
+     * 建立一次完整数据面（spp → 分流器 → TUN → hev）；成功后状态为 Connected。
+     *
+     * @param sppStartupTimeoutMs 等待 spp SOCKS 端口上线的超时：手动连接给足 15s，
+     *        自动重连路径收紧到 6s，让故障服务器被快速跳过。
+     */
+    private suspend fun establishSession(
+        repository: ConfigRepository,
+        profile: Profile,
+        sppStartupTimeoutMs: Long = SPP_STARTUP_TIMEOUT_MS,
+    ) {
         profile.validate()?.let { throw SppException(validationText(it)) }
         // prepare() 在已授权（含 appops ACTIVATE_VPN）时把本包登记为当前 VPN，
         // 否则 establish() 会直接返回 null。界面路径会先调用它；adb / 磁贴直启服务时也要补上。
         if (VpnService.prepare(this) != null) {
             throw SppException(getString(R.string.error_vpn_consent))
+        }
+        // 无任何具备 INTERNET 能力的物理网络时快速失败，比干等 spp 15s 超时体验好
+        if (!hasInternetNetwork()) {
+            throw SppException(getString(R.string.error_no_network))
         }
         val config = profile.config
         activeProfileId = profile.id
@@ -250,15 +267,23 @@ class SppVpnService : VpnService() {
                     reconnectJob = scope.launch { recoverTunnel(profile.id) }
                 }
             }
-            val port = spp.start(config)
+            val port = spp.start(config, sppStartupTimeoutMs)
             Log.i(TAG, "spp socks5 listening on 127.0.0.1:$port")
             sppProcess = spp
             port
         }
 
-        // 1b. 域名直连规则：hev 先接本地分流器，再由其转发上游
-        //     生效集合 = 内置大陆域名表 + 用户自定义规则
-        //     SOCKS5 模式必须经过分流器，才能在这里完成用户名密码认证。
+        // 1b. 用户态分流器：TUN 全量抓包后，由它决定每一条连接本地直连还是转发上游。
+        //     以下任一条件成立就必须经过分流器：
+        //       - SOCKS5 上游（需要在此完成用户名密码认证）；
+        //       - 启用域名直连规则（内置大陆域名表 + 用户自定义）；
+        //       - bypass LAN（私有/CGNAT 段直连）；
+        //       - bypass CN（精确 chnroute，零块扩展）。
+        //     纯全局代理的 SPP 模式保留 hev → spp 直连路径，减少一跳转发开销。
+        val useRuleServer = config.isSocks5 ||
+            cachedSettings.domainDirectEnabled ||
+            profile.bypassLan ||
+            profile.bypassCn
         val directRules: Set<String> = if (cachedSettings.domainDirectEnabled) {
             LinkedHashSet<String>(
                 com.esrrhs.spp.client.util.BundledDirectDomains.load(this),
@@ -271,9 +296,24 @@ class SppVpnService : VpnService() {
         } else {
             emptySet()
         }
-        val hevSocksPort = if (config.isSocks5 || cachedSettings.domainDirectEnabled) {
+        val directCidrsV4 = if (profile.bypassCn) CnRouteList.loadV4(this) else emptyList()
+        val directCidrsV6 = if (profile.bypassCn) CnRouteList.loadV6(this) else emptyList()
+
+        // 与分流器同输入的判定器：连接采集器据此标记「直连」，保证展示即真实路径。
+        // 纯全局 SPP 模式下所有输入为空，等价于 DirectClassifier.EMPTY。
+        val directClassifier = com.esrrhs.spp.client.util.DirectClassifier(
+            directDomains = directRules,
+            directIpv4Cidrs = directCidrsV4,
+            directIpv6Cidrs = directCidrsV6,
+            bypassPrivate = profile.bypassLan,
+        )
+
+        val hevSocksPort = if (useRuleServer) {
             if (cachedSettings.domainDirectEnabled) {
                 Log.i(TAG, "domain direct rules: ${directRules.size} domains")
+            }
+            if (profile.bypassCn) {
+                Log.i(TAG, "cn split: ${directCidrsV4.size} v4 + ${directCidrsV6.size} v6 exact CIDRs")
             }
             val upstream = if (config.isSocks5) {
                 com.esrrhs.spp.client.proxy.SocksUpstream(
@@ -285,7 +325,13 @@ class SppVpnService : VpnService() {
             } else {
                 com.esrrhs.spp.client.proxy.SocksUpstream("127.0.0.1", socksPort!!)
             }
-            val server = com.esrrhs.spp.client.proxy.RuleSocksServer(upstream, directRules)
+            val server = com.esrrhs.spp.client.proxy.RuleSocksServer(
+                upstream = upstream,
+                directDomains = directRules,
+                directIpv4Cidrs = directCidrsV4,
+                directIpv6Cidrs = directCidrsV6,
+                bypassPrivate = profile.bypassLan,
+            )
             server.start()
             ruleServer = server
             server.port ?: throw SppException(getString(R.string.error_rule_proxy))
@@ -293,8 +339,7 @@ class SppVpnService : VpnService() {
             socksPort!!
         }
         ActiveSession.socksPort = hevSocksPort
-
-        // 2. 建立 TUN（含分应用 / 智能分流路由）
+        // 2. 建立 TUN（分应用规则；路由始终全抓，CN/LAN 分流在用户态分流器完成）
         val tun = buildTun(profile)
             .establish() ?: throw SppException(getString(R.string.error_establish))
         Log.i(TAG, "tun established")
@@ -327,7 +372,7 @@ class SppVpnService : VpnService() {
             scope = scope,
             context = this,
             profile = profile,
-            directDomains = directRules,
+            direct = directClassifier,
         )
 
         // 4. 监视默认网络切换（WiFi↔蜂窝），切换后主动重建数据面
@@ -399,8 +444,12 @@ class SppVpnService : VpnService() {
             var attempt = 1
             var index = 0
             while (true) {
+                // 无网时反复拉起 spp 只会拿到超时报错并推迟真正的建链时机：
+                // 挂起等网络，物理网络恢复的瞬间立即建链；最长等 30s 兜底放行。
+                awaitInternetNetwork()
                 delay(ReconnectBackoff.delayMs(attempt))
                 val candidateId = candidates[index]
+                var authFailed = false
                 try {
                     val (repository, profile) = loadActiveProfile()
                     // 候选在重连期间被删除：从轮换列表移除
@@ -415,20 +464,43 @@ class SppVpnService : VpnService() {
                         index %= candidates.size
                         continue
                     }
-                    establishSession(repository, profile)
+                    establishSession(repository, profile, RECONNECT_SPP_TIMEOUT_MS)
                     return
                 } catch (e: CancellationException) {
                     throw e
+                } catch (e: SppAuthException) {
+                    // key/encrypt 不匹配是确定性错误：同一候选重试无意义，立即轮换
+                    authFailed = true
+                    Log.w(TAG, "reconnect candidate=$candidateId rejected by server auth")
+                    stopDataPlaneAndCount()
                 } catch (e: Exception) {
                     Log.w(TAG, "reconnect attempt $attempt (candidate=$candidateId) failed: ${e.message}")
                     stopDataPlaneAndCount()
                 }
+
+                if (authFailed) {
+                    candidates.removeAt(index)
+                    if (candidates.isEmpty()) {
+                        persistSessionTraffic()
+                        VpnStateHolder.set(VpnState.Error(getString(R.string.error_auth_failed)))
+                        finishService()
+                        return
+                    }
+                    index %= candidates.size
+                    attempt = 1
+                    ConfigRepository(this).setActive(candidates[index])
+                    Log.i(TAG, "auth failure, failover to profile ${candidates[index]}")
+                    updateNotification(getString(R.string.notif_failover))
+                    continue
+                }
+
                 attempt++
                 // 当前候选连续失败一个周期：轮换到下一个配置（环状）
                 if (candidates.size > 1 && (attempt - 1) % FAILOVER_CYCLE == 0) {
                     val next = (index + 1) % candidates.size
                     if (next != index) {
                         index = next
+                        attempt = 1
                         ConfigRepository(this).setActive(candidates[index])
                         Log.i(TAG, "failover to profile ${candidates[index]}")
                         updateNotification(getString(R.string.notif_failover))
@@ -547,32 +619,15 @@ class SppVpnService : VpnService() {
             builder.addAddress(TunConfig.TUN_ADDRESS_V6, TunConfig.TUN_PREFIX_V6)
         }
 
-        applyRouting(builder, profile)
+        // 路由恒定为全抓（IPv4 一条、IPv6 一条）：
+        //  - 物理上不可能再触发 VpnService 路由表 Binder parcel / Android 15
+        //    NetworkMonitor 的 TransactionTooLargeException；
+        //  - CN 直连、绕过局域网全部下沉到 RuleSocksServer 用户态精确判定。
+        builder.addRoute("0.0.0.0", 0)
+        if (profile.config.enableIpv6) builder.addRoute("::", 0)
+
         applyPerApp(builder, profile)
         return builder
-    }
-
-    /** IPv4/IPv6 路由：全局、仅公网（绕过私有网段）或 CN 直连。 */
-    private fun applyRouting(builder: Builder, profile: Profile) {
-        if (!profile.bypassLan && !profile.bypassCn) {
-            builder.addRoute("0.0.0.0", 0)
-            if (profile.config.enableIpv6) builder.addRoute("::", 0)
-            return
-        }
-
-        val cnV4 = if (profile.bypassCn) CnRouteList.loadV4(this) else emptyList()
-        val cnV6 = if (profile.bypassCn) CnRouteList.loadV6(this) else emptyList()
-
-        // CN 段扩展到对齐 /21 块（v6 为 /26）以适配 Binder parcel 上限
-        CidrRoutes.publicCidrs(cnV4, CN_V4_EXPAND_PREFIX)
-            .forEach { cidr -> builder.addRoute(cidr.address, cidr.prefix) }
-
-        if (profile.config.enableIpv6) {
-            // IPv6：CN 段直连，其余全球单播走代理；ULA/link-local 直连。
-            // 受 Binder parcel 上限所限，CN 段扩展到对齐 /26 块。
-            Cidr6Routes.globalCidrs(cnV6, CN_V6_EXPAND_PREFIX)
-                .forEach { cidr -> builder.addRoute(cidr.address, cidr.prefix) }
-        }
     }
 
     /** 分应用代理规则；已卸载的包忽略。 */
@@ -728,6 +783,51 @@ class SppVpnService : VpnService() {
         }
     }
 
+    /** 当前是否存在带 INTERNET 能力的物理（非 VPN）网络。 */
+    private fun hasInternetNetwork(): Boolean {
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return false
+        val network = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(network) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+    }
+
+    /**
+     * 重连门控：物理网络不可用时挂起等待，网络一恢复立即放行（比固定轮询恢复更快）。
+     *
+     * 只要求声明了 INTERNET 能力、不要求 VALIDATED——受限网络里直连探测不通但
+     * SPP 服务器可达的场景必须允许建链；[NETWORK_GATE_MAX_WAIT_MS] 后兜底放行一次。
+     */
+    private suspend fun awaitInternetNetwork() {
+        if (hasInternetNetwork()) return
+        Log.i(TAG, "reconnect gated: no physical network with INTERNET capability")
+        withTimeoutOrNull(NETWORK_GATE_MAX_WAIT_MS) {
+            suspendCancellableCoroutine { cont ->
+                val cm = getSystemService(ConnectivityManager::class.java)
+                if (cm == null) {
+                    cont.resume(Unit)
+                    return@suspendCancellableCoroutine
+                }
+                val callback = object : ConnectivityManager.NetworkCallback() {
+                    override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                        if (cont.isActive &&
+                            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+                        ) {
+                            Log.i(TAG, "reconnect gate released: physical network available")
+                            cont.resume(Unit)
+                        }
+                    }
+                }
+                runCatching { cm.registerDefaultNetworkCallback(callback) }
+                    .onFailure { if (cont.isActive) cont.resume(Unit) }
+                cont.invokeOnCancellation {
+                    runCatching { cm.unregisterNetworkCallback(callback) }
+                }
+            }
+        }
+    }
+
     companion object {
         const val ACTION_CONNECT = "com.esrrhs.spp.client.action.CONNECT"
         const val ACTION_DISCONNECT = "com.esrrhs.spp.client.action.DISCONNECT"
@@ -739,13 +839,14 @@ class SppVpnService : VpnService() {
         private const val TAG = "SppVpnService"
 
         /** 每个配置连续失败多少次后轮换到下一个候选。 */
-        private const val FAILOVER_CYCLE = 5
+        private const val FAILOVER_CYCLE = 2
         private const val RATE_NOTIF_INTERVAL_MS = 1000L
 
-        /** CN IPv6 段扩展到对齐 /22 块，使路由数控制在 ~138 条内以彻底杜绝 Binder 跨进程 Parcel 溢出 (Android 15 NetworkMonitor)。 */
-        private const val CN_V6_EXPAND_PREFIX = 22
-
-        /** CN IPv4 段扩展到对齐 /12 块，使路由数控制在 ~480 条内以彻底杜绝 Binder 跨进程 Parcel 溢出 (Android 15 NetworkMonitor)。 */
-        private const val CN_V4_EXPAND_PREFIX = 12
+        /** 手动连接时等待 spp SOCKS 端口上线的超时（服务器不可达时的报错上限）。 */
+        private const val SPP_STARTUP_TIMEOUT_MS = 15_000L
+        /** 自动重连时收紧到 6s：故障服务器被快速跳过，尽快轮到备用配置。 */
+        private const val RECONNECT_SPP_TIMEOUT_MS = 6_000L
+        /** 无物理网络时重连门控的最长等待，超时后兜底尝试一次。 */
+        private const val NETWORK_GATE_MAX_WAIT_MS = 30_000L
     }
 }

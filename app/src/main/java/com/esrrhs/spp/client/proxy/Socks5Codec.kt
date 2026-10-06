@@ -173,6 +173,69 @@ object Socks5Codec {
     fun failureReply(rep: Byte): ByteArray =
         byteArrayOf(VER, rep, 0x00, ATYP_IPV4, 0, 0, 0, 0, 0, 0)
 
+    /** SOCKS5 UDP 报文承载的目标端点。 */
+    data class UdpEndpoint(val atyp: Int, val host: String, val port: Int)
+
+    /**
+     * 解析 SOCKS5 UDP ASSOCIATE 数据报文（RSV(2) + FRAG + ATYP + ADDR + PORT + payload）。
+     *
+     * 返回 (端点, payload 起始偏移)；以下情况返回 null：
+     * - RSV 不为 0 的非法报文；
+     * - FRAG != 0（分片不支持，RFC 1928 允许直接丢弃）；
+     * - 报文截断或 ATYP 未知。
+     */
+    fun parseUdpPacket(buf: ByteArray, len: Int): Pair<UdpEndpoint, Int>? {
+        if (len < 4 || buf[0] != 0.toByte() || buf[1] != 0.toByte()) return null
+        if (buf[2].toInt() and 0xFF != 0) return null // 不支持分片
+        var offset = 3
+        val atyp = buf[offset++].toInt() and 0xFF
+        val host: String = when (atyp) {
+            0x01 -> {
+                if (len < offset + 4 + 2) return null
+                val b = ByteArray(4)
+                System.arraycopy(buf, offset, b, 0, 4)
+                offset += 4
+                b.joinToString(".") { (it.toInt() and 0xFF).toString() }
+            }
+            0x03 -> {
+                if (len < offset + 1) return null
+                val dlen = buf[offset++].toInt() and 0xFF
+                if (len < offset + dlen + 2) return null
+                val b = ByteArray(dlen)
+                System.arraycopy(buf, offset, b, 0, dlen)
+                offset += dlen
+                String(b, Charsets.US_ASCII)
+            }
+            0x04 -> {
+                if (len < offset + 16 + 2) return null
+                val b = ByteArray(16)
+                System.arraycopy(buf, offset, b, 0, 16)
+                offset += 16
+                InetAddress.getByAddress(b).hostAddress?.substringBefore('%') ?: return null
+            }
+            else -> return null
+        }
+        if (len < offset + 2) return null
+        val port = ((buf[offset].toInt() and 0xFF) shl 8) or (buf[offset + 1].toInt() and 0xFF)
+        offset += 2
+        return UdpEndpoint(atyp, host, port) to offset
+    }
+
+    /** 构造 SOCKS5 UDP 报文头（RSV/FRAG 为 0）；[atyp] 取 ATYP_* 常量。 */
+    fun buildUdpHeader(atyp: Int, host: String, port: Int): ByteArray {
+        val addr = when (atyp) {
+            ATYP_IPV4.toInt() -> host.substringBefore('%').split(".")
+                .map { it.toInt().toByte() }.toByteArray()
+            ATYP_IPV6.toInt() -> ipv6Bytes(host.substringBefore('%'))
+            else -> {
+                val b = host.toByteArray(Charsets.US_ASCII)
+                byteArrayOf(b.size.toByte()) + b
+            }
+        }
+        return byteArrayOf(0, 0, 0, atyp.toByte()) + addr +
+            byteArrayOf((port ushr 8).toByte(), port.toByte())
+    }
+
     /** 读取上游回复，返回 BND 地址（host, port）；REP 非 0 或报文非法时返回 null。 */
     fun readReply(input: DataInputStream): Pair<String, Int>? {
         if (input.readUnsignedByte() != 0x05) return null
