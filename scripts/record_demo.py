@@ -298,7 +298,7 @@ def chrome_present():
     return "package:com.android.chrome" in sh("pm list packages com.android.chrome")
 
 def warmup_chrome():
-    """录屏外走完 Chrome 首次引导，确保录屏内 VIEW intent 直达网页。"""
+    """录屏外走完 Chrome 首次引导并预热全部目标页，确保录屏内 VIEW intent 直达网页。"""
     if not chrome_present():
         log("Chrome not present, shell traffic only")
         return False
@@ -310,9 +310,16 @@ def warmup_chrome():
                     "使用时不登录账号", "不用了", "接受并继续") is None:
             break
         dismiss_chrome_dialogs()
+    # Chrome 渲染是 CPU 大头：降其优先级，避免录制中把 App 主线程挤 ANR
+    sh("renice -n 8 $(pidof com.android.chrome) 2>/dev/null || true")
+    # 预热录制中要访问的三个页面：DNS/TLS/HTTP 缓存变热，录制内加载更快、峰值更低
     open_url("https://www.bing.com")
-    ok = wait_page("Search the web", "Images", "Bing", timeout=12)
-    log(f"chrome warmup ok={ok}")
+    wait_page("Search the web", "Images", "Bing", timeout=18)
+    open_url("https://www.baidu.com")
+    wait_page("百度一下", "百度热搜", timeout=18)
+    open_url("https://www.bing.com/images/search?q=city+night&form=HDRSC2")
+    wait_page("IMAGES", "Images", "Wallpaper", timeout=18)
+    log("chrome warmup done")
     return True
 
 def dump_texts(tag):
@@ -457,9 +464,18 @@ def main():
     time.sleep(1.5)  # 片头：主界面停留
 
     # 1) 点击连接
-    connect = wait_any("SPP VPN", timeout=20)
+    connect = None
+    cend = time.time() + 45
+    while time.time() < cend:
+        # Chrome 刚预热完系统可能仍在抖动：ANR 弹窗时点 Wait 续命，别直接判死
+        dismiss_anr()
+        connect = find_any("SPP VPN")
+        if connect is not None:
+            break
+        time.sleep(0.7)
     if connect is None:
         dump_texts("connect-button")
+        save_logcat("connect")
         raise RuntimeError("connect button not found")
     tap_node(connect)
     log("MARK connect-tap")
