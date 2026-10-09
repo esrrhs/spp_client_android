@@ -14,12 +14,13 @@ trap 'kill $SPP_PID 2>/dev/null || true' EXIT
 python3 -u scripts/record_demo.py
 RC=$?
 
-ls -la demo.mp4 part1.mp4 part2.mp4 2>/dev/null || true
+ls -la take*.mp4 2>/dev/null || true
 # 失败时尽量从设备拉回分段，便于诊断
 if [ $RC -ne 0 ]; then
   adb shell killall -INT screenrecord 2>/dev/null || true
   sleep 2
-  adb pull /sdcard/part2.mp4 part2.mp4 2>/dev/null || true
-  adb pull /sdcard/part1.mp4 part1.mp4 2>/dev/null || true
+  for f in $(adb shell ls /sdcard/take*.mp4 2>/dev/null | tr -d '\r'); do
+    adb pull "$f" "$(basename "$f")" 2>/dev/null || true
+  done
 fi
 exit $RC
