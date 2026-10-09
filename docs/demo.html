@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SPP VPN Client — Demo Video · 演示视频</title>
+  <meta name="description" content="SPP Client for Android: one-tap VPN connection, live per-app traffic view. SPP VPN 客户端演示：一键连接、实时流量可视化。">
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #0f1115; --card: #171a21; --fg: #e8eaed; --muted: #9aa3b2;
+      --green: #4caf7d; --line: #262b36; --link: #7fc8f8;
+    }
+    @media (prefers-color-scheme: light) {
+      :root { --bg: #f4f6f8; --card: #ffffff; --fg: #1b1f27; --muted: #5c6675; --line: #e3e7ec; --link: #0b63a8; }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--fg);
+      font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    .wrap { max-width: 1080px; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+    header { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: .5rem; }
+    h1 { font-size: 1.6rem; margin: 0 0 .25rem; }
+    .zh-sub { color: var(--muted); font-size: 1rem; margin: 0 0 1.5rem; }
+    nav a { color: var(--link); text-decoration: none; font-size: .95rem; }
+    nav a:hover { text-decoration: underline; }
+    .stage { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 1.5rem; align-items: start; }
+    @media (max-width: 860px) { .stage { grid-template-columns: 1fr; } }
+    .player {
+      position: relative; background: #000; border-radius: 18px; overflow: hidden;
+      border: 1px solid var(--line); box-shadow: 0 12px 40px rgba(0,0,0,.25);
+    }
+    video { display: block; width: 100%; height: auto; max-height: 82vh; margin: 0 auto; background: #000; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 1.1rem 1.25rem; }
+    .card h2 { font-size: 1.05rem; margin: 0 0 .75rem; }
+    ol { margin: 0; padding-left: 1.2rem; }
+    li { margin: .55rem 0; font-size: .94rem; }
+    li .t { color: var(--muted); font-variant-numeric: tabular-nums; font-size: .85rem; margin-right: .4rem; }
+    li .zh { display: block; color: var(--muted); font-size: .85rem; }
+    .dl { margin-top: 1.5rem; display: flex; gap: .75rem; flex-wrap: wrap; }
+    .btn {
+      display: inline-block; padding: .65rem 1.1rem; border-radius: 10px;
+      background: var(--green); color: #08130d; font-weight: 600; text-decoration: none;
+    }
+    .btn.ghost { background: transparent; color: var(--link); border: 1px solid var(--line); }
+    .note { color: var(--muted); font-size: .85rem; margin-top: 1.25rem; }
+    .badge { display: inline-block; background: rgba(76,175,125,.15); color: var(--green);
+      border: 1px solid rgba(76,175,125,.4); border-radius: 999px; padding: .15rem .6rem; font-size: .78rem; margin-bottom: .75rem; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <span class="badge">Google Play review demo · 审核演示</span>
+        <h1>SPP Client — VPN behavior demo</h1>
+        <p class="zh-sub">SPP 客户端功能演示：一键连接 VPN，实时查看经隧道转发的应用流量</p>
+      </div>
+      <nav><a href="./index.html">← Privacy policy · 隐私政策</a></nav>
+    </header>
+
+    <div class="stage">
+      <div>
+        <div class="player">
+          <video controls playsinline preload="metadata"
+                 poster="media/poster.jpg"
+                 src="media/spp-vpn-demo.mp4#t=0.5"></video>
+        </div>
+        <p class="note">
+          Recorded on an Android 14 emulator with a real SPP server backend.
+          Captions are English-primary with Chinese subtitles. ·
+          视频在 Android 14 模拟器 + 真实 SPP 服务端环境录制，字幕英文为主、中文为辅。
+        </p>
+        <div class="dl">
+          <a class="btn" href="media/spp-vpn-demo.mp4" download>Download MP4 · 下载视频</a>
+          <a class="btn ghost" href="https://github.com/esrrhs/spp_client_android">Source code · 源码</a>
+        </div>
+      </div>
+
+      <aside class="card">
+        <h2>What the video shows · 视频内容</h2>
+        <ol>
+          <li><span class="t">0:00</span>Tap the power button to connect<span class="zh">点击电源按钮发起连接</span></li>
+          <li><span class="t">0:17</span>Android system VPN consent dialog<span class="zh">Android 系统 VPN 授权弹窗</span></li>
+          <li><span class="t">0:21</span>Connected — tunnel established, key icon shown<span class="zh">连接成功，隧道建立，显示钥匙图标</span></li>
+          <li><span class="t">0:27</span>Persistent notification with live speed<span class="zh">常驻通知，实时上下行速率</span></li>
+          <li><span class="t">0:33</span>Real Chrome traffic routed via the VPN<span class="zh">Chrome 真实网页流量经 VPN 转发</span></li>
+          <li><span class="t">0:57</span>Live per-app sessions: destination, direct/proxy path, speed, bytes<span class="zh">实时连接列表：目标、直连/代理路径、速率、字节数</span></li>
+          <li><span class="t">1:26</span>Per-profile traffic statistics<span class="zh">按配置统计累计流量</span></li>
+          <li><span class="t">1:33</span>One tap disconnect<span class="zh">一键断开</span></li>
+        </ol>
+        <p class="note">
+          Traffic is tunneled only to the SPP/SOCKS5 server <strong>you</strong> configure;
+          the app never collects browsing data. ·
+          流量仅发往你自行配置的 SPP/SOCKS5 服务器，App 不收集任何浏览数据。
+        </p>
+      </aside>
+    </div>
+  </div>
+</body>
+</html>
