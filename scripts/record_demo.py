@@ -1,24 +1,20 @@
 #!/usr/bin/env python3
 """录制 Google Play 审核演示视频：SPP VPN 一键连接 + 实时流量可视化。
 
-在已启动的模拟器（KVM/x86_64，API 34 google_apis）内执行：
-  宿主侧：TCP/UDP echo（19001）供设备制造确定性的隧道流量；
-  设备侧：安装 App → 导入配置 → 一键连接（保留系统 VPN 授权弹窗）
-          → 通知栏常驻 VPN → Chrome 真实网页流量
-          →「Active connections」实时会话/速率/字节 →「Stats」流量统计
-          → 断开。
-全程 screenrecord 录屏，结束后拉取到 $OUT（默认 demo.mp4）。
-
-前置（由 workflow 准备）：
-  - spp 服务端运行在宿主 :19003（-key testkey）
-  - app-debug.apk 已安装
+设计为两段录屏后用 ffmpeg 拼接（慢启动的等待发生在录屏之外）：
+  part1_consent.mp4：主界面 → 系统 VPN 授权弹窗（保留 4s）→ 连接成功
+  part2_traffic.mp4：通知栏 → Chrome 真实网页 → 实时会话/速率/字节
+                      → 流量统计 → 断开
+输出 demo.mp4。
 """
 import base64
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
+import threading
 import time
 import xml.etree.ElementTree as ET
 
@@ -41,15 +37,39 @@ def adb(*args, check=True, timeout=30):
 def sh(cmd):
     return adb("shell", cmd, check=False)
 
-# ---------------- 宿主 echo 服务（制造确定性流量） ----------------
-import socket
-import threading
+# ---------------- 录屏 ----------------
+class Recorder:
+    def __init__(self, name):
+        self.name = name
+        self.proc = None
 
+    def start(self):
+        sh(f"rm -f /sdcard/{self.name}")
+        self.proc = subprocess.Popen(
+            [ADB, "shell", "screenrecord", "--bit-rate", "12000000",
+             "--time-limit", "180", f"/sdcard/{self.name}"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        time.sleep(1.0)
+        log(f"recording {self.name}")
+
+    def stop(self):
+        # SIGINT/SIGTERM 触发 screenrecord 正常封装 mp4
+        sh("pkill -TERM screenrecord 2>/dev/null; killall screenrecord 2>/dev/null")
+        if self.proc:
+            try:
+                self.proc.wait(timeout=15)
+            except Exception:
+                pass
+        time.sleep(1.0)
+        adb("pull", f"/sdcard/{self.name}", self.name)
+        log(f"saved {self.name} ({os.path.getsize(self.name)} bytes)")
+
+# ---------------- 宿主 echo ----------------
 def tcp_echo_server(port, stop):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    s.bind(("0.0.0.0", port)); s.listen(128)
-    s.settimeout(1.0)
+    s.bind(("0.0.0.0", port)); s.listen(128); s.settimeout(1.0)
     def handle(c):
         try:
             c.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -86,15 +106,14 @@ def udp_echo_server(port, stop):
             continue
     s.close()
 
-# ---------------- UI 驱动 ----------------
+# ---------------- UI ----------------
 def dump_ui():
     adb("shell", "uiautomator", "dump", "/sdcard/ui.xml", check=False)
     return adb("exec-out", "cat", "/sdcard/ui.xml", check=False)
 
 def nodes():
     try:
-        root = ET.fromstring(dump_ui())
-        return list(root.iter("node"))
+        return list(ET.fromstring(dump_ui()).iter("node"))
     except Exception:
         return []
 
@@ -107,15 +126,18 @@ def node_bounds(node):
         return None
     return x1, y1, x2, y2
 
-def find_node(*needles):
+def find_any(*needles):
     needles = [s.lower() for s in needles]
     for n in nodes():
         if node_bounds(n) is None:
             continue
         hay = ((n.get("text") or "") + "\n" + (n.get("content-desc") or "")).lower()
-        if all(k in hay for k in needles):
+        if any(k in hay for k in needles):
             return n
     return None
+
+def find_all_text(*needles):
+    return find_any(*needles)
 
 def center(node):
     x1, y1, x2, y2 = node_bounds(node)
@@ -127,24 +149,21 @@ def tap_node(n):
     adb("shell", "input", "tap", str(x), str(y))
     log(f"tap ({x},{y}) '{label}'")
 
-def wait_tap(*needles, timeout=15):
+def wait_any(*needles, timeout=60, period=1.0):
     end = time.time() + timeout
     while time.time() < end:
-        n = find_node(*needles)
-        if n is not None:
-            tap_node(n)
-            return n
-        time.sleep(0.6)
-    raise RuntimeError(f"node not found: {needles}")
-
-def wait_text(*needles, timeout=20):
-    end = time.time() + timeout
-    while time.time() < end:
-        n = find_node(*needles)
+        n = find_any(*needles)
         if n is not None:
             return n
-        time.sleep(0.6)
+        time.sleep(period)
     return None
+
+def wait_tap(*needles, timeout=60):
+    n = wait_any(*needles, timeout=timeout)
+    if n is None:
+        raise RuntimeError(f"node not found: {needles}")
+    tap_node(n)
+    return n
 
 def swipe_up():
     adb("shell", "input", "swipe", "540", "1600", "540", "600", "300")
@@ -153,47 +172,24 @@ def open_url(url):
     log(f"open {url}")
     adb("shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", url, check=False)
 
-def dismiss_chrome_dialogs():
-    """Chrome 首启可能弹 FRE/账号选择，尝试通用按钮关闭。"""
-    for label in ("Accept & continue", "No thanks", "Use without an account",
-                  "接受并继续", "不用了", "接受并继续"):
-        n = find_node(label)
+def dismiss_anr():
+    if find_any("isn't responding", "未响应") is not None:
+        n = find_any("Wait", "等待")
         if n is not None:
             tap_node(n)
-            time.sleep(2.0)
-    # 偶发的通知/同步提示
-    for label in "Allow", "Deny", "允许", "拒绝":
-        if find_node("Chrome"):
-            break
-        n = find_node(label)
+        return True
+    return False
+
+def dismiss_chrome_dialogs():
+    for label in ("Use without an account", "Accept & continue", "No thanks",
+                  "使用时不登录账号", "不用了", "接受并继续"):
+        n = find_any(label)
         if n is not None:
-            tap_node(n); time.sleep(1.0)
-
-def start_shell_traffic(seconds=25):
-    """在设备上用 shell 发起大量经隧道的 TCP/UDP 连接（确定性补充流量）。"""
-    log("start on-device shell traffic generator")
-    script = (
-        "end=$(( $(date +%s) + %d }); "
-        "while [ $(date +%s) -lt $end ]; do "
-        "(printf 'ping-$$\\n' | timeout 2 toybox nc 10.0.2.2 %d >/dev/null 2>&1) & "
-        "(echo q | timeout 2 toybox nc -u -w1 10.0.2.2 %d >/dev/null 2>&1) & "
-        "sleep 0.2; done" % (seconds, HOST_ECHO_PORT, HOST_ECHO_PORT)
-    )
-    subprocess.Popen([ADB, "shell", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-# ---------------- 配置深链 ----------------
-def make_deeplink():
-    p = {
-        "id": "demo-spp", "name": "SPP Demo",
-        "config": {
-            "serverHost": "10.0.2.2", "serverPort": 19003,
-            "proto": "tcp", "key": "testkey",
-            "enableIpv6": False, "kind": "spp",
-        },
-        "perAppMode": "ALL", "bypassLan": False, "bypassCn": False, "pingMs": -1,
-    }
-    raw = json.dumps(p, separators=(",", ":"))
-    return "spp://" + base64.b64encode(raw.encode()).decode()
+            tap_node(n); time.sleep(1.5); return
+    for label in ("Allow", "允许"):
+        n = find_any(label)
+        if n is not None:
+            tap_node(n); time.sleep(1.0); return
 
 def dump_texts(tag):
     print(f"--- UI DUMP {tag} ---", flush=True)
@@ -203,154 +199,122 @@ def dump_texts(tag):
             print(f"  UI: {t}", flush=True)
     print("-------------------", flush=True)
 
-def dismiss_anr():
-    """冷启动软件渲染时启动器/应用偶发 ANR，点 Wait 等待而不是关闭。"""
-    if find_node("isn't responding", "未响应") is not None or find_node("Wait", "等待") is not None:
-        n = find_node("Wait", "等待")
-        if n is not None:
-            tap_node(n)
+def tunnel_up():
+    if find_any("Connected", "已连接") is not None:
         return True
-    return False
+    out = sh("logcat -d -s SppVpnService:I HevTunnel:I").lower()
+    return "tun established" in out or "hev tunnel started" in out
 
-def preflight_main(timeout=90):
-    """确保主界面就绪：配置卡片与电源钮都在，期间消化启动器 ANR。"""
+def wait_tunnel(timeout=120):
     end = time.time() + timeout
     while time.time() < end:
         dismiss_anr()
-        adb("shell", "am", "start", "-n", ACT, check=False)
-        time.sleep(4.0)
-        if find_node("SPP Demo") is not None and find_node("SPP VPN") is not None:
+        if tunnel_up():
             return True
-        time.sleep(2.0)
+        time.sleep(1.0)
     return False
 
-# ---------------- main ----------------
+def start_shell_traffic(seconds=30):
+    log("start on-device shell traffic generator")
+    # 占位符替换，避免 %s 被当成格式化占位
+    script = (
+        "end=$(( $(date +XsX) + SECS )); "
+        "while [ $(date +XsX) -lt $end ]; do "
+        "(printf 'ping-x\\n' | timeout 2 toybox nc 10.0.2.2 PORT >/dev/null 2>&1) & "
+        "sleep 0.2; done"
+    )
+    script = script.replace("XsX", "%s").replace("SECS", str(seconds)).replace("PORT", str(HOST_ECHO_PORT))
+    subprocess.Popen([ADB, "shell", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+def make_deeplink():
+    p = {
+        "id": "demo-spp", "name": "SPP Demo",
+        "config": {"serverHost": "10.0.2.2", "serverPort": 19003, "proto": "tcp",
+                   "key": "testkey", "enableIpv6": False, "kind": "spp"},
+        "perAppMode": "ALL", "bypassLan": False, "bypassCn": False, "pingMs": -1,
+    }
+    return "spp://" + base64.b64encode(json.dumps(p, separators=(",", ":")).encode()).decode()
+
 def main():
     stop = threading.Event()
     threading.Thread(target=tcp_echo_server, args=(HOST_ECHO_PORT, stop), daemon=True).start()
     threading.Thread(target=udp_echo_server, args=(HOST_ECHO_PORT, stop), daemon=True).start()
     log("host echo servers up")
 
-    # 设备准备（不预授 VPN，保留授权弹窗；只给通知权限以展示常驻通知）
-    sh("settings put global window_animation_scale 1.0")
-    sh("settings put global transition_animation_scale 1.0")
-    sh("settings put global animator_duration_scale 1.0")
     sh("svc power stayon usb")
     sh("input keyevent 82")
     sh(f"pm grant {PKG} android.permission.POST_NOTIFICATIONS")
     sh("logcat -c")
-    sh("rm -f /sdcard/demo.mp4")
 
-    # 导入配置并预检（不录屏，避免把启动等待拍进视频）
+    # 导入配置（录屏外等待，慢 runner 不污染成片）
     adb("shell", "am", "start", "-a", "android.intent.action.VIEW",
-        "-d", make_deeplink(), PKG + "/.MainActivity", check=False)
-    if not preflight_main():
+        "-d", make_deeplink(), ACT, check=False)
+    end = time.time() + 90
+    while time.time() < end:
+        dismiss_anr()
+        adb("shell", "am", "start", "-n", ACT, check=False)
+        time.sleep(3.0)
+        if find_any("SPP Demo") is not None and find_any("SPP VPN") is not None:
+            break
+        time.sleep(2.0)
+    else:
         dump_texts("preflight")
         raise RuntimeError("main screen not ready")
     log("main screen ready")
-    time.sleep(1.5)
-
-    # 开始录屏（≤150s）
-    rec = subprocess.Popen(
-        [ADB, "shell", "screenrecord", "--bit-rate", "12000000",
-         "--time-limit", "180", "/sdcard/demo.mp4"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    log("screenrecord started")
-    time.sleep(1.0)
-
-    # 1. 主界面
-    adb("shell", "am", "start", "-n", ACT)
-    time.sleep(3.0)
-
-    # 2. 大圆钮 → 系统 VPN 授权（给审核员看清弹窗内容）
-    wait_tap("SPP VPN")
-    # 软件渲染下弹窗可能 20s+ 才出现
-    dialog_deadline = time.time() + 35
-    while time.time() < dialog_deadline:
-        dismiss_anr()
-        if find_node("Connection request", "连接请求") is not None:
-            break
-        time.sleep(1.0)
-    ok = None
-    for _ in range(10):
-        ok = find_node("OK", "允许", "确定")
-        if ok is not None:
-            break
-        time.sleep(1.0)
-    log("VPN consent dialog visible")
-    if ok is not None:
-        ok_x, ok_y = center(ok)
-    else:
-        ok_x, ok_y = 830, 1500  # 像素 6 上 VpnDialog 右下按钮的兜底坐标
-    # 停留 4s 让审核员看清弹窗内容
-    time.sleep(4.0)
-    adb("shell", "input", "tap", str(ok_x), str(ok_y))
-    log(f"consent granted at ({ok_x},{ok_y})")
-
-    # 3. Connected：UI 文本与 logcat 隧道日志双通道判定
-    def tunnel_up():
-        if find_node("Connected", "已连接") is not None:
-            return True
-        out = sh("logcat -d -s SppVpnService:I HevTunnel:I").lower()
-        return "tun established" in out or "hev tunnel started" in out
-
-    end = time.time() + 40
-    connected = False
-    while time.time() < end:
-        dismiss_anr()
-        if tunnel_up():
-            connected = True
-            break
-        time.sleep(1.0)
-    if not connected:
-        log("DUMP current UI texts:")
-        for n in nodes():
-            t = n.get("text") or n.get("content-desc")
-            if t:
-                print("  UI:", t, flush=True)
-        print(sh("logcat -d -s SppVpnService:* SppProcess:* HevTunnel:* | tail -40"))
-        raise RuntimeError("did not reach Connected")
-    # 确保回前台再确认状态文本
-    adb("shell", "am", "start", "-n", ACT)
-    time.sleep(3.0)
-    log("connected")
     time.sleep(2.0)
 
-    # 4. 通知栏常驻 VPN
-    sh("cmd statusbar expand-notifications")
-    time.sleep(4.0)
-    sh("cmd statusbar collapse")
-    time.sleep(1.5)
+    # ============ Part 1: 授权 + 连接 ============
+    rec1 = Recorder("part1.mp4")
+    rec1.start()
+    time.sleep(2.0)
+    wait_tap("SPP VPN", timeout=30)
+    # 等系统授权弹窗（慢 runner 可能 60s+）
+    ok = wait_any("Connection request", "连接请求", timeout=120)
+    log("consent dialog visible")
+    time.sleep(1.0)
+    ok_btn = wait_any("OK", "允许", "确定", timeout=8)
+    time.sleep(4.0)  # 让审核员看清弹窗
+    if ok_btn is not None:
+        tap_node(ok_btn)
+    else:
+        x, y = 830, 1500
+        adb("shell", "input", "tap", str(x), str(y))
+        log(f"fallback consent tap ({x},{y})")
+    if not wait_tunnel(timeout=120):
+        dump_texts("connect")
+        raise RuntimeError("did not reach Connected")
+    adb("shell", "am", "start", "-n", ACT)
+    time.sleep(4.0)  # 绿色已连接状态停留
+    rec1.stop()
 
-    # 5. 真实网页流量（Chrome 不存在时降级为纯 shell 流量）
+    # ============ Part 2: 通知/流量/统计/断开 ============
+    rec2 = Recorder("part2.mp4")
+    rec2.start()
+
+    # 通知栏常驻 VPN
+    sh("cmd statusbar expand-notifications"); time.sleep(4.0)
+    sh("cmd statusbar collapse"); time.sleep(1.5)
+
     has_chrome = "package:com.android.chrome" in sh("pm list packages com.android.chrome")
     if has_chrome:
         open_url("https://www.bing.com")
-        time.sleep(5.0)
-        dismiss_chrome_dialogs()
-        time.sleep(1.0)
-        dismiss_chrome_dialogs()
-        # FRE 弹窗可能吞掉首次导航，关闭后重新打开
+        time.sleep(5.0); dismiss_chrome_dialogs()
         open_url("https://www.bing.com")
-        time.sleep(5.0)
-        swipe_up(); time.sleep(2.0)
+        time.sleep(5.0); swipe_up(); time.sleep(1.5)
         open_url("https://www.baidu.com")
-        time.sleep(4.0)
-        swipe_up(); time.sleep(2.0)
-        for i, q in enumerate(("city+night", "mountain+lake", "ocean+wave")):
+        time.sleep(4.0); swipe_up(); time.sleep(1.5)
+        for q in ("city+night", "mountain+lake", "ocean+wave"):
             open_url(f"https://www.bing.com/images/search?q={q}&form=HDRSC2")
-            time.sleep(1.2)
+            time.sleep(1.0)
     else:
         log("Chrome not present, shell traffic only")
 
-    # 6. 回 App，注入持续后台流量
-    start_shell_traffic(seconds=40)
+    # 持续后台隧道流量 + 回 App
+    start_shell_traffic(30)
     adb("shell", "am", "start", "-n", ACT)
     time.sleep(2.0)
 
-    # 7. Active connections 实时会话页
-    wait_tap("Sessions", "当前连接", timeout=8)
+    wait_tap("Sessions", "当前连接", timeout=15)
     log("sessions screen")
     for i in range(5):
         time.sleep(5)
@@ -358,31 +322,36 @@ def main():
             open_url(f"https://www.bing.com/images/search?q=forest+{i}&form=HDRSC2")
             time.sleep(1.5)
             adb("shell", "am", "start", "-n", ACT)
-            wait_text("Active connections", "连接", timeout=5)
+            wait_any("Active connections", "连接", timeout=5)
     log("sessions hold done")
 
-    # 8. Stats
     adb("shell", "input", "keyevent", "4"); time.sleep(1.5)
-    wait_tap("Stats", "统计", timeout=6)
+    wait_tap("Stats", "统计", timeout=10)
     log("stats screen")
     time.sleep(6.0)
 
-    # 9. 断开
     adb("shell", "input", "keyevent", "4"); time.sleep(1.5)
-    wait_tap("SPP VPN")
+    wait_tap("SPP VPN", timeout=10)
     log("disconnect tapped")
     time.sleep(6.0)
 
+    rec2.stop()
     stop.set()
-    log("waiting screenrecord finalize")
-    while rec.poll() is None:
-        time.sleep(0.5)
 
-    pull = subprocess.run([ADB, "pull", "/sdcard/demo.mp4", OUT], capture_output=True, text=True)
-    print(pull.stdout, pull.stderr)
+    # ffmpeg 拼接
+    with open("concat.txt", "w") as f:
+        f.write("file 'part1.mp4'\nfile 'part2.mp4'\n")
+    r = subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "concat.txt",
+                        "-c", "copy", OUT], capture_output=True, text=True)
+    if r.returncode != 0 or not os.path.exists(OUT):
+        log("concat -c copy failed, re-encoding")
+        r = subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "concat.txt",
+                            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", OUT],
+                           capture_output=True, text=True)
     if not os.path.exists(OUT):
-        sys.exit("pull failed")
-    log(f"saved {OUT} size={os.path.getsize(OUT)}")
+        print(r.stderr[-2000:])
+        sys.exit("concat failed")
+    log(f"FINAL {OUT} size={os.path.getsize(OUT)}")
 
 if __name__ == "__main__":
     try:
