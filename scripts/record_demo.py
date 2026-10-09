@@ -230,16 +230,79 @@ def dismiss_anr():
         return True
     return False
 
+FRE_LABELS = ("Use without an account", "No thanks", "Accept & continue",
+              "使用时不登录账号", "不用了", "接受并继续")
+
+def _find_in(ns, *labels):
+    labels = [s.lower() for s in labels]
+    for n in ns:
+        if node_bounds(n) is None:
+            continue
+        hay = ((n.get("text") or "") + "\n" + (n.get("content-desc") or "")).lower()
+        if any(k in hay for k in labels):
+            return n
+    return None
+
 def dismiss_chrome_dialogs():
-    for label in ("Use without an account", "Accept & continue", "No thanks",
-                  "使用时不登录账号", "不用了", "接受并继续"):
-        n = find_any(label)
-        if n is not None:
-            tap_node(n); time.sleep(1.2); return
-    for label in ("Allow", "允许"):
-        n = find_any(label)
-        if n is not None:
-            tap_node(n); time.sleep(0.8); return
+    # 单次 uiautomator dump 内完成全部判断；无弹窗时只花一次 dump 开销。
+    # uiautomator 在多窗口下给的中心坐标偶尔偏移（实测差 ~150px），
+    # 先按节点点，再补已知坐标，直到弹窗消失。
+    ns = nodes()
+    fre = _find_in(ns, *FRE_LABELS)
+    if fre is None:
+        allow = _find_in(ns, "Allow", "允许")
+        if allow is not None:
+            tap_node(allow)
+            time.sleep(0.8)
+        return True
+    groups = [
+        (("Use without an account", "使用时不登录账号"), [(540, 2247), (540, 2093)]),
+        (("No thanks", "不用了"), None),
+        (("Accept & continue", "接受并继续"), [(540, 2100)]),
+    ]
+    for labels, fallback in groups:
+        n = _find_in(nodes(), *labels)
+        if n is None:
+            continue
+        tap_node(n)
+        time.sleep(1.0)
+        for x, y in (fallback or []):
+            if _find_in(nodes(), *labels) is None:
+                break
+            adb("shell", "input", "tap", str(x), str(y))
+            time.sleep(1.0)
+    return _find_in(nodes(), *FRE_LABELS) is None
+
+def wait_page(*needles, timeout=12):
+    """等网页特征文本出现，确认页面真正加载（而非停在引导页）。"""
+    end = time.time() + timeout
+    while time.time() < end:
+        dismiss_chrome_dialogs()
+        if find_any(*needles) is not None:
+            return True
+        time.sleep(1.0)
+    return False
+
+def chrome_present():
+    return "package:com.android.chrome" in sh("pm list packages com.android.chrome")
+
+def warmup_chrome():
+    """录屏外走完 Chrome 首次引导，确保录屏内 VIEW intent 直达网页。"""
+    if not chrome_present():
+        log("Chrome not present, shell traffic only")
+        return False
+    log("warmup chrome FRE")
+    open_url("https://www.bing.com")
+    for _ in range(8):
+        time.sleep(2.0)
+        if find_any("Use without an account", "No thanks", "Accept & continue",
+                    "使用时不登录账号", "不用了", "接受并继续") is None:
+            break
+        dismiss_chrome_dialogs()
+    open_url("https://www.bing.com")
+    ok = wait_page("Search the web", "Images", "Bing", timeout=12)
+    log(f"chrome warmup ok={ok}")
+    return True
 
 def dump_texts(tag):
     print(f"--- UI DUMP {tag} ---", flush=True)
@@ -311,6 +374,10 @@ def main():
         dump_texts("preflight")
         raise RuntimeError("main screen not ready")
     log("main screen ready")
+
+    # 录屏外走完 Chrome 首次引导（慢 runner 上引导可能耗 30s+）
+    has_chrome = warmup_chrome()
+    adb("shell", "am", "start", "-n", ACT)
     time.sleep(1.5)
 
     # ============ 一镜到底：录屏贯穿全部操作 ============
@@ -356,23 +423,23 @@ def main():
     sh("cmd statusbar collapse")
     time.sleep(1.2)
 
-    # 5) Chrome 真实网页流量：Bing → 百度 → 图片搜索，中间滑动
-    has_chrome = "package:com.android.chrome" in sh("pm list packages com.android.chrome")
+    # 后台持续造流（覆盖浏览器 + Sessions 展示窗口）
+    start_shell_traffic(90)
+
+    # 5) Chrome 真实网页流量：Bing → 百度 → 图片搜索，每页确认真正加载
     if has_chrome:
         open_url("https://www.bing.com")
-        time.sleep(4.0); dismiss_chrome_dialogs()
-        open_url("https://www.bing.com")
-        time.sleep(3.0); swipe_up(); time.sleep(1.0)
+        wait_page("Search the web", "Images", "Bing", timeout=8)
+        time.sleep(2.0); swipe_up(); time.sleep(1.0)
         open_url("https://www.baidu.com")
-        time.sleep(3.0); swipe_up(); time.sleep(1.0)
+        wait_page("百度一下", "百度热搜", timeout=8)
+        time.sleep(2.0); swipe_up(); time.sleep(1.0)
         open_url("https://www.bing.com/images/search?q=city+night&form=HDRSC2")
+        wait_page("IMAGES", "Images", "Wallpaper", timeout=10)
         time.sleep(3.0)
-    else:
-        log("Chrome not present, shell traffic only")
     log("MARK chrome-done")
 
-    # 6) 持续后台隧道流量 + 回 App 看实时连接
-    start_shell_traffic(20)
+    # 6) 回 App 看实时连接（Chrome 仍在后台保持连接）
     adb("shell", "am", "start", "-n", ACT)
     time.sleep(1.8)
 
@@ -389,18 +456,26 @@ def main():
         raise RuntimeError("overflow menu did not open")
     wait_tap("Sessions", "当前连接", timeout=15)
     log("MARK sessions-screen")
-    for i in range(3):
+    # 停留展示实时列表；期间继续打开图片页制造并发连接
+    extra_urls = (
+        "https://www.bing.com/images/search?q=mountain+lake&form=HDRSC2",
+        "https://www.bing.com/images/search?q=ocean+wave&form=HDRSC2",
+    )
+    for i in range(4):
         time.sleep(4.0)
-        if has_chrome and i == 1:
-            open_url("https://www.bing.com/images/search?q=forest+aerial&form=HDRSC2")
-            time.sleep(1.2)
+        if has_chrome and i in (1, 2):
+            open_url(extra_urls[i - 1])
+            wait_page("IMAGES", "Images", "Wallpaper", timeout=10)
+            time.sleep(2.0)
             adb("shell", "am", "start", "-n", ACT)
             wait_any("Active connections", "连接", timeout=5)
     log("MARK sessions-done")
+    # Chrome 任务结束，防止回退栈把它重新带到前台
+    if has_chrome:
+        sh("am force-stop com.android.chrome")
 
     # 7) 流量统计（SPP Demo 卡片 → 弹窗 → Stats）
     adb("shell", "input", "keyevent", "4"); time.sleep(1.2)
-    dismiss_chrome_dialogs()
     adb("shell", "am", "start", "-n", ACT); time.sleep(1.5)
     wait_tap("SPP Demo", timeout=10)
     time.sleep(1.2)
@@ -411,7 +486,6 @@ def main():
     # 8) 退回主界面，一键断开
     adb("shell", "input", "keyevent", "4"); time.sleep(1.0)
     adb("shell", "input", "keyevent", "4"); time.sleep(1.2)
-    dismiss_chrome_dialogs()
     adb("shell", "am", "start", "-n", ACT); time.sleep(1.2)
     wait_tap("SPP VPN", timeout=10)
     log("MARK disconnect-tap")
