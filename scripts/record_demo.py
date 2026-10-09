@@ -340,10 +340,16 @@ def main():
     adb("shell", "input", "keyevent", "4"); time.sleep(1.5)
     dismiss_chrome_dialogs()
     adb("shell", "am", "start", "-n", ACT); time.sleep(2.0)
+    # Stats 在配置选择器弹窗里：点 SPP Demo 卡片 → 弹窗 → Stats
+    wait_tap("SPP Demo", timeout=10)
+    time.sleep(1.5)
     wait_tap("Stats", "统计", timeout=10)
     log("stats screen")
     time.sleep(6.0)
 
+    # 统计返回会留在配置弹窗上：退两次回主界面，再断开
+    adb("shell", "input", "keyevent", "4"); time.sleep(1.0)
+    adb("shell", "input", "keyevent", "4"); time.sleep(1.5)
     dismiss_chrome_dialogs()
     adb("shell", "am", "start", "-n", ACT); time.sleep(1.5)
     wait_tap("SPP VPN", timeout=10)
