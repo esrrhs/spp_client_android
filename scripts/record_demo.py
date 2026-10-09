@@ -224,6 +224,15 @@ def open_url(url):
     log(f"open {url}")
     adb("shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", url, check=False)
 
+def anr_subject():
+    """ANR 对话框标题（如 'SPP Client isn't responding'），返回卡死主体名。"""
+    n = find_any("isn't responding", "未响应")
+    if n is None:
+        return None
+    title = (n.get("text") or n.get("content-desc") or "").strip()
+    m = re.match(r"(.+?)\s*(?:isn't responding|未响应)", title)
+    return m.group(1).strip() if m else title
+
 def dismiss_anr():
     if find_any("isn't responding", "未响应") is not None:
         n = find_any("Wait", "等待")
@@ -314,6 +323,16 @@ def dump_texts(tag):
             print(f"  UI: {t}", flush=True)
     print("-------------------", flush=True)
 
+def save_logcat(tag):
+    """把设备 logcat 拉回宿主文件（ANR 原因/CPU 占用都在里面），随 artifact 上传。"""
+    try:
+        out = adb("shell", "logcat", "-d", check=False, timeout=60)
+        with open(f"{tag}-logcat.txt", "w") as f:
+            f.write(out)
+        log(f"saved {tag}-logcat.txt ({len(out)} bytes)")
+    except Exception as e:
+        log(f"save_logcat failed: {e}")
+
 def tunnel_up():
     if find_any("Connected", "已连接") is not None:
         return True
@@ -364,31 +383,66 @@ def main():
     # 导入配置（录屏外等待，慢 runner 不污染成片）
     adb("shell", "am", "start", "-a", "android.intent.action.VIEW",
         "-d", make_deeplink(), ACT, check=False)
-    anr_seen = 0
-    end = time.time() + 180
+    app_anr = 0       # SPP App 自身连续 ANR 轮数
+    other_anr = 0     # Launcher 等其他进程连续 ANR 轮数
+    imported = False  # 界面上是否已出现 SPP Demo 配置
+    end = time.time() + 200
     while time.time() < end:
-        if dismiss_anr():
-            anr_seen += 1
-            # Launcher 反复 ANR（冷启动 flaky）：Wait 两次仍复发就杀进程，
-            # HOME 会让系统重启 Launcher，再强拉 Activity。
-            if anr_seen >= 2:
-                close = find_any("Close app", "关闭应用")
-                if close is not None:
-                    tap_node(close)
+        subject = anr_subject()
+        if subject is not None:
+            if "SPP Client" in subject:
+                # App 自身 ANR：先 Wait 一轮；连续两轮仍卡死就强杀冷启动，
+                # 否则在 launcher 已禁用的一次性 AVD 上只会无限 Wait 到超时
+                app_anr += 1
+                other_anr = 0
+                if app_anr < 2:
+                    dismiss_anr()
+                else:
+                    log("SPP app ANR persists across rounds; cold-restart app")
+                    close = find_any("Close app", "关闭应用")
+                    if close is not None:
+                        tap_node(close)
+                        time.sleep(1.5)
+                    sh(f"am force-stop {PKG}")
                     time.sleep(2.0)
-                for pkg in ("com.google.android.apps.nexuslauncher",
-                            "com.android.launcher3"):
-                    sh(f"am force-stop {pkg}")
-                time.sleep(2.0)
-                anr_seen = 0
-        adb("shell", "am", "start", "-a", "android.intent.action.VIEW",
-            "-d", make_deeplink(), ACT, check=False)
-        time.sleep(3.0)
-        if find_any("SPP Demo") is not None and find_any("SPP VPN") is not None:
+                    if imported:
+                        adb("shell", "am", "start", "-n", ACT, check=False)
+                    else:
+                        adb("shell", "am", "start", "-a", "android.intent.action.VIEW",
+                            "-d", make_deeplink(), ACT, check=False)
+                    time.sleep(2.5)
+                    app_anr = 0
+            else:
+                # Launcher 反复 ANR（冷启动 flaky）：Wait 两次仍复发就杀进程，
+                # HOME 会让系统重启 Launcher，再强拉 Activity。
+                other_anr += 1
+                app_anr = 0
+                dismiss_anr()
+                if other_anr >= 2:
+                    close = find_any("Close app", "关闭应用")
+                    if close is not None:
+                        tap_node(close)
+                        time.sleep(2.0)
+                    for pkg in ("com.google.android.apps.nexuslauncher",
+                                "com.android.launcher3"):
+                        sh(f"am force-stop {pkg}")
+                    time.sleep(2.0)
+                    other_anr = 0
+
+        if find_any("SPP Demo") is not None:
+            imported = True
+        if imported and find_any("SPP VPN") is not None:
             break
-        time.sleep(2.0)
+        # 已导入则只把 Activity 拉前台，避免反复 deeplink 导入+Toast 加重主线程
+        if imported:
+            adb("shell", "am", "start", "-n", ACT, check=False)
+        else:
+            adb("shell", "am", "start", "-a", "android.intent.action.VIEW",
+                "-d", make_deeplink(), ACT, check=False)
+        time.sleep(3.5)
     else:
         dump_texts("preflight")
+        save_logcat("preflight")
         raise RuntimeError("main screen not ready")
     log("main screen ready")
 
@@ -527,6 +581,10 @@ if __name__ == "__main__":
         traceback.print_exc()
         try:
             dump_texts("fatal")
+        except Exception:
+            pass
+        try:
+            save_logcat("fatal")
         except Exception:
             pass
         raise
