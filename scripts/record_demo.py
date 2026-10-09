@@ -362,10 +362,26 @@ def main():
     # 导入配置（录屏外等待，慢 runner 不污染成片）
     adb("shell", "am", "start", "-a", "android.intent.action.VIEW",
         "-d", make_deeplink(), ACT, check=False)
-    end = time.time() + 90
+    anr_seen = 0
+    end = time.time() + 180
     while time.time() < end:
-        dismiss_anr()
-        adb("shell", "am", "start", "-n", ACT, check=False)
+        if dismiss_anr():
+            anr_seen += 1
+            # Launcher 反复 ANR（冷启动 flaky）：Wait 两次仍复发就杀进程，
+            # HOME 会让系统重启 Launcher，再强拉 Activity。
+            if anr_seen >= 2:
+                close = find_any("Close app", "关闭应用")
+                if close is not None:
+                    tap_node(close)
+                    time.sleep(2.0)
+                for pkg in ("com.google.android.apps.nexuslauncher",
+                            "com.android.launcher3"):
+                    sh(f"am force-stop {pkg}")
+                sh("input keyevent HOME")
+                time.sleep(3.0)
+                anr_seen = 0
+        adb("shell", "am", "start", "-a", "android.intent.action.VIEW",
+            "-d", make_deeplink(), ACT, check=False)
         time.sleep(3.0)
         if find_any("SPP Demo") is not None and find_any("SPP VPN") is not None:
             break
