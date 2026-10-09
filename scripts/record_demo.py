@@ -203,12 +203,22 @@ def dump_texts(tag):
             print(f"  UI: {t}", flush=True)
     print("-------------------", flush=True)
 
-def preflight_main(timeout=45):
-    """确保主界面就绪：配置卡片与电源钮都在。"""
+def dismiss_anr():
+    """冷启动软件渲染时启动器/应用偶发 ANR，点 Wait 等待而不是关闭。"""
+    if find_node("isn't responding", "未响应") is not None or find_node("Wait", "等待") is not None:
+        n = find_node("Wait", "等待")
+        if n is not None:
+            tap_node(n)
+        return True
+    return False
+
+def preflight_main(timeout=90):
+    """确保主界面就绪：配置卡片与电源钮都在，期间消化启动器 ANR。"""
     end = time.time() + timeout
     while time.time() < end:
+        dismiss_anr()
         adb("shell", "am", "start", "-n", ACT, check=False)
-        time.sleep(3.0)
+        time.sleep(4.0)
         if find_node("SPP Demo") is not None and find_node("SPP VPN") is not None:
             return True
         time.sleep(2.0)
@@ -274,6 +284,7 @@ def main():
     end = time.time() + 40
     connected = False
     while time.time() < end:
+        dismiss_anr()
         if tunnel_up():
             connected = True
             break
