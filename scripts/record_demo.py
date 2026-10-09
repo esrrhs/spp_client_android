@@ -377,8 +377,7 @@ def main():
                 for pkg in ("com.google.android.apps.nexuslauncher",
                             "com.android.launcher3"):
                     sh(f"am force-stop {pkg}")
-                sh("input keyevent HOME")
-                time.sleep(3.0)
+                time.sleep(2.0)
                 anr_seen = 0
         adb("shell", "am", "start", "-a", "android.intent.action.VIEW",
             "-d", make_deeplink(), ACT, check=False)
