@@ -17,7 +17,7 @@ RC=$?
 ls -la demo.mp4 part1.mp4 part2.mp4 2>/dev/null || true
 # 失败时尽量从设备拉回分段，便于诊断
 if [ $RC -ne 0 ]; then
-  adb shell pkill -TERM screenrecord 2>/dev/null || true
+  adb shell killall -INT screenrecord 2>/dev/null || true
   sleep 2
   adb pull /sdcard/part2.mp4 part2.mp4 2>/dev/null || true
   adb pull /sdcard/part1.mp4 part1.mp4 2>/dev/null || true
