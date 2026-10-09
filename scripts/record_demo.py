@@ -314,6 +314,17 @@ def main():
     adb("shell", "am", "start", "-n", ACT)
     time.sleep(2.0)
 
+    # Sessions 在右上角 ⋮ 溢出菜单内（按钮无 contentDescription，用坐标 + 重试）
+    opened = None
+    for x, y in ((1010, 145), (985, 165), (1010, 120)):
+        adb("shell", "input", "tap", str(x), str(y))
+        time.sleep(1.5)
+        opened = find_any("Sessions", "当前连接")
+        if opened is not None:
+            break
+    if opened is None:
+        dump_texts("overflow")
+        raise RuntimeError("overflow menu did not open")
     wait_tap("Sessions", "当前连接", timeout=15)
     log("sessions screen")
     for i in range(5):
