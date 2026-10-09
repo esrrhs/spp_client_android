@@ -16,7 +16,17 @@ adb shell am start -n com.esrrhs.spp.client/.MainActivity || true
 # 宿主 SPP server（App 配置指向 10.0.2.2:19003）
 "$RUNNER_TEMP/spp-server" -type server -proto tcp -listen :19003 -key testkey -nolog 1 &
 SPP_PID=$!
-trap 'kill $SPP_PID 2>/dev/null || true' EXIT
+
+# 限速长流 HTTP 服务（用于 Sessions 页展示持续存在的实时连接）
+python3 -u scripts/demo_stream_server.py 19080 64 0.25 60 &
+STREAM_PID=$!
+trap 'kill $SPP_PID $STREAM_PID 2>/dev/null || true' EXIT
+
+# SPP server 代设备拨号时使用宿主自身的可达 IP（不能用 10.0.2.2 模拟器别名）
+LAN_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+[ -z "$LAN_IP" ] && LAN_IP=$(ip -4 addr show | awk '/inet /{print $2}' | cut -d/ -f1 | grep -v '^127\.' | head -1)
+export DEMO_STREAM_URL="http://${LAN_IP}:19080/slow"
+echo "DEMO_STREAM_URL=$DEMO_STREAM_URL"
 
 python3 -u scripts/record_demo.py
 RC=$?
