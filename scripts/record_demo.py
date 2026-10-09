@@ -98,17 +98,28 @@ def nodes():
     except Exception:
         return []
 
+def node_bounds(node):
+    m = re.search(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", node.get("bounds") or "")
+    if not m:
+        return None
+    x1, y1, x2, y2 = map(int, m.groups())
+    if x2 - x1 <= 0 or y2 - y1 <= 0:
+        return None
+    return x1, y1, x2, y2
+
 def find_node(*needles):
     needles = [s.lower() for s in needles]
     for n in nodes():
+        if node_bounds(n) is None:
+            continue
         hay = ((n.get("text") or "") + "\n" + (n.get("content-desc") or "")).lower()
         if all(k in hay for k in needles):
             return n
     return None
 
 def center(node):
-    m = re.search(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", node.get("bounds"))
-    return (int(m.group(1)) + int(m.group(3))) // 2, (int(m.group(2)) + int(m.group(4))) // 2
+    x1, y1, x2, y2 = node_bounds(node)
+    return (x1 + x2) // 2, (y1 + y2) // 2
 
 def tap_node(n):
     x, y = center(n)
