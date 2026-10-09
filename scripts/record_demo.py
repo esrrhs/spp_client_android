@@ -195,6 +195,25 @@ def make_deeplink():
     raw = json.dumps(p, separators=(",", ":"))
     return "spp://" + base64.b64encode(raw.encode()).decode()
 
+def dump_texts(tag):
+    print(f"--- UI DUMP {tag} ---", flush=True)
+    for n in nodes():
+        t = n.get("text") or n.get("content-desc")
+        if t and node_bounds(n) is not None:
+            print(f"  UI: {t}", flush=True)
+    print("-------------------", flush=True)
+
+def preflight_main(timeout=45):
+    """确保主界面就绪：配置卡片与电源钮都在。"""
+    end = time.time() + timeout
+    while time.time() < end:
+        adb("shell", "am", "start", "-n", ACT, check=False)
+        time.sleep(3.0)
+        if find_node("SPP Demo") is not None and find_node("SPP VPN") is not None:
+            return True
+        time.sleep(2.0)
+    return False
+
 # ---------------- main ----------------
 def main():
     stop = threading.Event()
@@ -212,11 +231,14 @@ def main():
     sh("logcat -c")
     sh("rm -f /sdcard/demo.mp4")
 
-    # 导入配置
+    # 导入配置并预检（不录屏，避免把启动等待拍进视频）
     adb("shell", "am", "start", "-a", "android.intent.action.VIEW",
         "-d", make_deeplink(), PKG + "/.MainActivity", check=False)
-    wait_text("SPP Demo", timeout=20)
-    time.sleep(2.0)
+    if not preflight_main():
+        dump_texts("preflight")
+        raise RuntimeError("main screen not ready")
+    log("main screen ready")
+    time.sleep(1.5)
 
     # 开始录屏（≤150s）
     rec = subprocess.Popen(
@@ -229,12 +251,12 @@ def main():
 
     # 1. 主界面
     adb("shell", "am", "start", "-n", ACT)
-    time.sleep(2.5)
+    time.sleep(3.0)
 
     # 2. 大圆钮 → 系统 VPN 授权（给审核员看清弹窗内容）
     wait_tap("SPP VPN")
     time.sleep(2.0)
-    ok = wait_text("OK", "允许", "确定", timeout=10)
+    ok = wait_text("OK", "允许", "确定", timeout=15)
     log("VPN consent dialog visible")
     # 记住按钮坐标，停留 4s 后点同一位置（避免重新 dump 抖动丢失节点）
     ok_x, ok_y = center(ok)
@@ -305,9 +327,9 @@ def main():
     # 7. Active connections 实时会话页
     wait_tap("Sessions", "当前连接", timeout=8)
     log("sessions screen")
-    for i in range(6):
+    for i in range(5):
         time.sleep(5)
-        if has_chrome and i in (2, 4):
+        if has_chrome and i in (1, 3):
             open_url(f"https://www.bing.com/images/search?q=forest+{i}&form=HDRSC2")
             time.sleep(1.5)
             adb("shell", "am", "start", "-n", ACT)
@@ -338,4 +360,13 @@ def main():
     log(f"saved {OUT} size={os.path.getsize(OUT)}")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        try:
+            dump_texts("fatal")
+        except Exception:
+            pass
+        raise
