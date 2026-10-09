@@ -336,12 +336,16 @@ def main():
             wait_any("Active connections", "连接", timeout=5)
     log("sessions hold done")
 
+    # 显式回主界面（期间 Chrome 欢迎页可能抢前台）
     adb("shell", "input", "keyevent", "4"); time.sleep(1.5)
+    dismiss_chrome_dialogs()
+    adb("shell", "am", "start", "-n", ACT); time.sleep(2.0)
     wait_tap("Stats", "统计", timeout=10)
     log("stats screen")
     time.sleep(6.0)
 
-    adb("shell", "input", "keyevent", "4"); time.sleep(1.5)
+    dismiss_chrome_dialogs()
+    adb("shell", "am", "start", "-n", ACT); time.sleep(1.5)
     wait_tap("SPP VPN", timeout=10)
     log("disconnect tapped")
     time.sleep(6.0)
