@@ -78,9 +78,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: demo-video
-          path: |
-            demo.mp4
-            part1.mp4
-            part2.mp4
+          path: take*.mp4
           if-no-files-found: warn
           retention-days: 30
