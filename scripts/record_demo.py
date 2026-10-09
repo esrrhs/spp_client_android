@@ -247,11 +247,16 @@ def main():
     has_chrome = "package:com.android.chrome" in sh("pm list packages com.android.chrome")
     if has_chrome:
         open_url("https://www.bing.com")
-        time.sleep(7.0)
+        time.sleep(6.0)
         dismiss_chrome_dialogs()
+        time.sleep(1.0)
+        dismiss_chrome_dialogs()
+        # FRE 弹窗可能吞掉首次导航，关闭后重新打开
+        open_url("https://www.bing.com")
+        time.sleep(6.0)
         swipe_up(); time.sleep(2.0); swipe_up(); time.sleep(2.0)
         open_url("https://www.baidu.com")
-        time.sleep(6.0)
+        time.sleep(5.0)
         swipe_up(); time.sleep(2.0)
         for i, q in enumerate(("city+night", "mountain+lake", "ocean+wave")):
             open_url(f"https://www.bing.com/images/search?q={q}&form=HDRSC2")
