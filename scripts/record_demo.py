@@ -198,6 +198,7 @@ def main():
     sh("svc power stayon usb")
     sh("input keyevent 82")
     sh(f"pm grant {PKG} android.permission.POST_NOTIFICATIONS")
+    sh("logcat -c")
     sh("rm -f /sdcard/demo.mp4")
 
     # 导入配置
@@ -222,20 +223,41 @@ def main():
     # 2. 大圆钮 → 系统 VPN 授权（给审核员看清弹窗内容）
     wait_tap("SPP VPN")
     time.sleep(2.0)
-    ok = wait_text("OK", "允许", "确定", timeout=8)
+    ok = wait_text("OK", "允许", "确定", timeout=10)
     log("VPN consent dialog visible")
+    # 记住按钮坐标，停留 4s 后点同一位置（避免重新 dump 抖动丢失节点）
+    ok_x, ok_y = center(ok)
     time.sleep(4.0)
-    ok = find_node("OK", "允许", "确定")
-    if ok is not None:
-        tap_node(ok)
-    else:
-        adb("shell", "input", "tap", "830", "1500")  # 兜底
+    adb("shell", "input", "tap", str(ok_x), str(ok_y))
+    log(f"consent granted at ({ok_x},{ok_y})")
 
-    # 3. Connected
-    if wait_text("Connected", "已连接", timeout=30) is None:
+    # 3. Connected：UI 文本与 logcat 隧道日志双通道判定
+    def tunnel_up():
+        if find_node("Connected", "已连接") is not None:
+            return True
+        out = sh("logcat -d -s SppVpnService:I HevTunnel:I").lower()
+        return "tun established" in out or "hev tunnel started" in out
+
+    end = time.time() + 40
+    connected = False
+    while time.time() < end:
+        if tunnel_up():
+            connected = True
+            break
+        time.sleep(1.0)
+    if not connected:
+        log("DUMP current UI texts:")
+        for n in nodes():
+            t = n.get("text") or n.get("content-desc")
+            if t:
+                print("  UI:", t, flush=True)
+        print(sh("logcat -d -s SppVpnService:* SppProcess:* HevTunnel:* | tail -40"))
         raise RuntimeError("did not reach Connected")
-    log("connected")
+    # 确保回前台再确认状态文本
+    adb("shell", "am", "start", "-n", ACT)
     time.sleep(3.0)
+    log("connected")
+    time.sleep(2.0)
 
     # 4. 通知栏常驻 VPN
     sh("cmd statusbar expand-notifications")
