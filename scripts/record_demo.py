@@ -48,21 +48,43 @@ class Recorder:
         self.proc = subprocess.Popen(
             [ADB, "shell", "screenrecord", "--bit-rate", "12000000",
              "--time-limit", "180", f"/sdcard/{self.name}"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         time.sleep(1.0)
         log(f"recording {self.name}")
 
+    def _signal_stop(self):
+        # Ctrl-C 语义触发 screenrecord 正常封装 moov；stdin EOF 是文档记录的另一种方式
+        try:
+            if self.proc and self.proc.stdin:
+                self.proc.stdin.close()
+        except Exception:
+            pass
+        sh("killall -INT screenrecord 2>/dev/null")
+
     def stop(self):
-        # SIGINT/SIGTERM 触发 screenrecord 正常封装 mp4
-        sh("pkill -TERM screenrecord 2>/dev/null; killall screenrecord 2>/dev/null")
         if self.proc:
+            self._signal_stop()
             try:
-                self.proc.wait(timeout=15)
+                self.proc.wait(timeout=25)
             except Exception:
-                pass
-        time.sleep(1.0)
+                # 兜底再来一次
+                sh("killall -INT screenrecord 2>/dev/null")
+                try:
+                    self.proc.wait(timeout=15)
+                except Exception:
+                    pass
+        time.sleep(2.0)  # 等文件系统 flush
         adb("pull", f"/sdcard/{self.name}", self.name)
+        # moov 校验，失败则等设备 flush 后重拉
+        for _ in range(4):
+            r = subprocess.run(["ffprobe", "-v", "error", self.name],
+                               capture_output=True, text=True)
+            if r.returncode == 0:
+                break
+            log("mp4 not finalized yet, re-pull")
+            time.sleep(3.0)
+            adb("pull", f"/sdcard/{self.name}", self.name)
         log(f"saved {self.name} ({os.path.getsize(self.name)} bytes)")
 
 # ---------------- 宿主 echo ----------------
