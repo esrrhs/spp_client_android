@@ -50,7 +50,8 @@ jobs:
         run: ./gradlew assembleDebug --stacktrace
 
       - name: Build SPP server
-        run: go build -o "$RUNNER_TEMP/spp-server" ./third_party/spp
+        working-directory: third_party/spp
+        run: go build -o "$RUNNER_TEMP/spp-server" .
 
       - name: Enable KVM group perms
         run: |
