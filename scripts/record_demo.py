@@ -253,7 +253,7 @@ def main():
     # 开始录屏（≤150s）
     rec = subprocess.Popen(
         [ADB, "shell", "screenrecord", "--bit-rate", "12000000",
-         "--time-limit", "150", "/sdcard/demo.mp4"],
+         "--time-limit", "180", "/sdcard/demo.mp4"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     log("screenrecord started")
@@ -265,11 +265,25 @@ def main():
 
     # 2. 大圆钮 → 系统 VPN 授权（给审核员看清弹窗内容）
     wait_tap("SPP VPN")
-    time.sleep(2.0)
-    ok = wait_text("OK", "允许", "确定", timeout=15)
+    # 软件渲染下弹窗可能 20s+ 才出现
+    dialog_deadline = time.time() + 35
+    while time.time() < dialog_deadline:
+        dismiss_anr()
+        if find_node("Connection request", "连接请求") is not None:
+            break
+        time.sleep(1.0)
+    ok = None
+    for _ in range(10):
+        ok = find_node("OK", "允许", "确定")
+        if ok is not None:
+            break
+        time.sleep(1.0)
     log("VPN consent dialog visible")
-    # 记住按钮坐标，停留 4s 后点同一位置（避免重新 dump 抖动丢失节点）
-    ok_x, ok_y = center(ok)
+    if ok is not None:
+        ok_x, ok_y = center(ok)
+    else:
+        ok_x, ok_y = 830, 1500  # 像素 6 上 VpnDialog 右下按钮的兜底坐标
+    # 停留 4s 让审核员看清弹窗内容
     time.sleep(4.0)
     adb("shell", "input", "tap", str(ok_x), str(ok_y))
     log(f"consent granted at ({ok_x},{ok_y})")
@@ -313,20 +327,20 @@ def main():
     has_chrome = "package:com.android.chrome" in sh("pm list packages com.android.chrome")
     if has_chrome:
         open_url("https://www.bing.com")
-        time.sleep(6.0)
+        time.sleep(5.0)
         dismiss_chrome_dialogs()
         time.sleep(1.0)
         dismiss_chrome_dialogs()
         # FRE 弹窗可能吞掉首次导航，关闭后重新打开
         open_url("https://www.bing.com")
-        time.sleep(6.0)
-        swipe_up(); time.sleep(2.0); swipe_up(); time.sleep(2.0)
-        open_url("https://www.baidu.com")
         time.sleep(5.0)
+        swipe_up(); time.sleep(2.0)
+        open_url("https://www.baidu.com")
+        time.sleep(4.0)
         swipe_up(); time.sleep(2.0)
         for i, q in enumerate(("city+night", "mountain+lake", "ocean+wave")):
             open_url(f"https://www.bing.com/images/search?q={q}&form=HDRSC2")
-            time.sleep(1.5)
+            time.sleep(1.2)
     else:
         log("Chrome not present, shell traffic only")
 
