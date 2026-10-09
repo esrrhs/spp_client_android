@@ -27,6 +27,8 @@ ADB = os.environ.get("ADB", "adb")
 PKG = "com.esrrhs.spp.client"
 ACT = PKG + "/.MainActivity"
 HOST_ECHO_PORT = 19001
+# 限速长流地址（ci_record_demo.sh 注入），用于 Sessions 展示持续连接
+STREAM_URL = os.environ.get("DEMO_STREAM_URL", "")
 
 t0 = time.time()
 def log(msg):
@@ -445,13 +447,13 @@ def main():
     if has_chrome:
         open_url("https://www.bing.com")
         wait_page("Search the web", "Images", "Bing", timeout=8)
-        time.sleep(2.0); swipe_up(); time.sleep(1.0)
+        time.sleep(1.2); swipe_up(); time.sleep(0.8)
         open_url("https://www.baidu.com")
         wait_page("百度一下", "百度热搜", timeout=8)
-        time.sleep(2.0); swipe_up(); time.sleep(1.0)
+        time.sleep(1.2); swipe_up(); time.sleep(0.8)
         open_url("https://www.bing.com/images/search?q=city+night&form=HDRSC2")
         wait_page("IMAGES", "Images", "Wallpaper", timeout=10)
-        time.sleep(3.0)
+        time.sleep(2.0)
     log("MARK chrome-done")
 
     # 6) 回 App 看实时连接（Chrome 仍在后台保持连接）
@@ -471,19 +473,25 @@ def main():
         raise RuntimeError("overflow menu did not open")
     wait_tap("Sessions", "当前连接", timeout=15)
     log("MARK sessions-screen")
-    # 停留展示实时列表；期间继续打开图片页制造并发连接
-    extra_urls = (
-        "https://www.bing.com/images/search?q=mountain+lake&form=HDRSC2",
-        "https://www.bing.com/images/search?q=ocean+wave&form=HDRSC2",
-    )
-    for i in range(4):
-        time.sleep(4.0)
-        if has_chrome and i in (1, 2):
-            open_url(extra_urls[i - 1])
-            wait_page("IMAGES", "Images", "Wallpaper", timeout=10)
-            time.sleep(2.0)
-            adb("shell", "am", "start", "-n", ACT)
-            wait_any("Active connections", "连接", timeout=5)
+    time.sleep(2.0)
+    if STREAM_URL and has_chrome:
+        # 打开限速长流后立刻回 App：长连接在整个展示窗口内持续存在，
+        # 列表里实时显示 Chrome 的目标、直连/代理路径、速率与字节增长
+        open_url(STREAM_URL)
+        time.sleep(2.5)  # 让下载连接建立并开始计数
+        adb("shell", "am", "start", "-n", ACT)
+        wait_any("Active connections", "连接", timeout=6)
+        for _ in range(5):
+            time.sleep(4.0)  # ≈20s 观察字节与速率持续更新
+    else:
+        # 兜底：无长流服务时用图片搜索制造短连接（留痕窗口内可见）
+        for i in range(3):
+            time.sleep(3.0)
+            if has_chrome and i in (0, 1):
+                open_url(f"https://www.bing.com/images/search?q=forest+{i}&form=HDRSC2")
+                time.sleep(1.0)
+                adb("shell", "am", "start", "-n", ACT)
+                wait_any("Active connections", "连接", timeout=4)
     log("MARK sessions-done")
     # Chrome 任务结束，防止回退栈把它重新带到前台
     if has_chrome:
