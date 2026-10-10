@@ -8,10 +8,13 @@ adb shell input keyevent 82 || true
 
 # 冷启动后 1-2 分钟内 Google 全家桶开机同步 + 软件渲染会把 4 vCPU 占满
 # （实测 load 18、CPU PSI 86%），此时启 App 必 ANR。先等负载自然回落。
+# 注意：adb shell 会重新拼接参数且不保留本地引号，不能用 awk '{print $1}'，
+# 改为 cat /proc/loadavg 后在本地 bash 解析。
 for i in $(seq 1 30); do
-  load=$(adb shell awk '{print $1}' /proc/loadavg | tr -d '\r')
+  raw=$(adb shell cat /proc/loadavg 2>/dev/null || true)
+  load=${raw%% *}
   echo "loadavg=$load"
-  [ "${load%%.*}" -lt 6 ] && break
+  if [ -n "$load" ] && [ "${load%%.*}" -lt 6 ] 2>/dev/null; then break; fi
   sleep 3
 done
 
