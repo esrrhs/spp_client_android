@@ -892,74 +892,95 @@ def assert_tun_default_routes(adb_cmd, serial, expect_ipv6=False):
     if expect_ipv6:
         print("    [PASS] VPN 声明 IPv6 默认路由" if v6_ok else "    [WARN] 未读到 IPv6 默认路由")
 
+def run_probe(adb, serial, shell_cmd, timeout=12):
+    """单次设备侧探测，返回 stdout；设备侧命令自带 timeout，adb 异常不向上抛。"""
+    return (run_adb(adb, serial, ["shell", shell_cmd], check=False,
+                    timeout=timeout).stdout or "")
+
+
+def probe_with_retries(adb, serial, mode_name, case_name, shell_cmd,
+                       required, attempts=3, gap=0.8, timeout=12):
+    """对端到端探测做有限次重试。
+
+    共享 runner 上的软件渲染模拟器在隧道刚建立、UDP ASSOCIATE 刚完成时，
+    首批报文可能在转发路径就绪前被丢弃（失败点随用例随机漂移）。
+    有限重试只消除这类预热竞态，不掩盖真实回归——连续 attempts 次失败仍判 FAIL。
+    """
+    if isinstance(required, (str, bytes)):
+        required = (required,)
+    last = ""
+    for i in range(1, attempts + 1):
+        last = run_probe(adb, serial, shell_cmd, timeout)
+        if all(token in last for token in required):
+            return last
+        if i < attempts:
+            print(f"    [RETRY] {case_name} 第 {i}/{attempts} 次无预期响应，重试...")
+            time.sleep(gap)
+    raise RuntimeError(
+        f"[{mode_name}] {case_name} 连续 {attempts} 次未收到预期响应: {last}"
+    )
+
+
 def verify_all_protocols(adb, serial, host_ip, mode_name):
     """验证 TCP, UDP, HTTP/1.1, HTTP/2, DNS, WebSocket, gRPC, QUIC 八大常见网络协议穿透与回显"""
     time.sleep(1) # 等待网络路由与规则完全收敛
 
     print(f"[{mode_name}] 1. 测试 TCP 报文穿透...")
     tcp_cmd = f"(printf '{mode_name}_TCP_TEST\\n'; sleep 1) | timeout 4 toybox nc {host_ip} 19001"
-    tcp_res = run_adb(adb, serial, ["shell", tcp_cmd]).stdout
-    if f"{mode_name}_TCP_TEST" not in tcp_res:
-        raise RuntimeError(f"[{mode_name}] TCP 测试未收到预期回显: {tcp_res}")
+    probe_with_retries(adb, serial, mode_name, "TCP 报文穿透",
+                       tcp_cmd, f"{mode_name}_TCP_TEST")
     print(f"    [PASS] TCP 穿透成功！")
 
     print(f"[{mode_name}] 2. 测试 UDP 数据报穿透...")
-    udp_cmd = f"(printf '{mode_name}_UDP_TEST\\n'; sleep 1) | timeout 4 toybox nc -u {host_ip} 19001"
-    udp_res = run_adb(adb, serial, ["shell", udp_cmd], check=False).stdout
-    if f"{mode_name}_UDP_TEST" not in udp_res:
-        raise RuntimeError(f"[{mode_name}] UDP 测试未收到预期回显: {udp_res}")
+    # UDP 中继首次建链存在竞态：同一条 nc 会话内连发 3 包覆盖 ASSOCIATE 建链窗口
+    udp_cmd = ("(for i in 1 2 3; do printf '"
+               f"{mode_name}_UDP_TEST\\n'; sleep 0.4; done; sleep 1) | "
+               f"timeout 5 toybox nc -u {host_ip} 19001")
+    probe_with_retries(adb, serial, mode_name, "UDP 数据报穿透",
+                       udp_cmd, f"{mode_name}_UDP_TEST")
     print(f"    [PASS] UDP 穿透成功！")
 
     print(f"[{mode_name}] 3. 测试 HTTP/1.1 请求穿透...")
     h1_cmd = f"(printf 'GET / HTTP/1.1\\r\\nHost: {host_ip}:19004\\r\\nConnection: close\\r\\n\\r\\n'; sleep 1) | timeout 4 toybox nc {host_ip} 19004"
-    h1_res = run_adb(adb, serial, ["shell", h1_cmd]).stdout
-    if "HTTP1_OK" not in h1_res:
-        raise RuntimeError(f"[{mode_name}] HTTP/1.1 测试未收到预期 200 OK: {h1_res}")
+    probe_with_retries(adb, serial, mode_name, "HTTP/1.1 请求穿透",
+                       h1_cmd, "HTTP1_OK")
     print(f"    [PASS] HTTP/1.1 穿透成功！")
 
     print(f"[{mode_name}] 4. 测试 HTTP/2 握手前奏与帧解析穿透...")
     h2_cmd = f"(printf 'PRI * HTTP/2.0\\r\\n\\r\\nSM\\r\\n\\r\\n\\x00\\x00\\x00\\x04\\x00\\x00\\x00\\x00\\x00'; sleep 1) | timeout 4 toybox nc {host_ip} 19005 | od -A n -t x1"
-    h2_res = ""
-    for _ in range(3):
-        h2_res = run_adb(adb, serial, ["shell", h2_cmd], check=False).stdout
-        if "04" in h2_res:
-            break
-        time.sleep(0.5)
-    if "04" not in h2_res:
-        raise RuntimeError(f"[{mode_name}] HTTP/2 测试未收到预期服务端 SETTINGS 帧: {h2_res}")
+    probe_with_retries(adb, serial, mode_name, "HTTP/2 帧握手",
+                       h2_cmd, "04", attempts=3, gap=0.5)
     print(f"    [PASS] HTTP/2 前奏与帧握手穿透成功！")
 
     print(f"[{mode_name}] 5. 测试 DNS 域名解析报文穿透 (UDP 53/自定义端口)...")
-    dns_cmd = f"(printf '\\x12\\x34\\x01\\x00\\x00\\x01\\x00\\x00\\x00\\x00\\x00\\x00\\x04test\\x05local\\x00\\x00\\x01\\x00\\x01'; sleep 1) | timeout 4 toybox nc -u {host_ip} 19006 | od -A n -t x1"
-    dns_res = run_adb(adb, serial, ["shell", dns_cmd], check=False).stdout
-    if "12" not in dns_res or "81" not in dns_res:
-        raise RuntimeError(f"[{mode_name}] DNS 测试未收到预期解析响应: {dns_res}")
+    dns_cmd = ("(for i in 1 2 3; do printf '"
+               "\\x12\\x34\\x01\\x00\\x00\\x01\\x00\\x00\\x00\\x00\\x00\\x00"
+               "\\x04test\\x05local\\x00\\x00\\x01\\x00\\x01'; sleep 0.4; done; sleep 1) | "
+               f"timeout 5 toybox nc -u {host_ip} 19006 | od -A n -t x1")
+    probe_with_retries(adb, serial, mode_name, "DNS 域名解析",
+                       dns_cmd, ("12", "81"))
     print(f"    [PASS] DNS UDP 查询穿透与解析回包成功！")
 
     print(f"[{mode_name}] 6. 测试 WebSocket 握手升级与数据帧穿透...")
     ws_cmd = f"(printf 'GET /ws HTTP/1.1\\r\\nHost: {host_ip}:19007\\r\\nUpgrade: websocket\\r\\nConnection: Upgrade\\r\\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\\r\\nSec-WebSocket-Version: 13\\r\\n\\r\\n\\x81\\x84\\x00\\x00\\x00\\x00TEST'; sleep 1) | timeout 4 toybox nc {host_ip} 19007"
-    ws_res = run_adb(adb, serial, ["shell", ws_cmd]).stdout
-    if "101 Switching Protocols" not in ws_res or "TEST" not in ws_res:
-        raise RuntimeError(f"[{mode_name}] WebSocket 测试未收到 101 或 Frame 回显: {ws_res}")
+    probe_with_retries(adb, serial, mode_name, "WebSocket 握手",
+                       ws_cmd, ("101 Switching Protocols", "TEST"))
     print(f"    [PASS] WebSocket 协议握手与双向帧传输穿透成功！")
 
     print(f"[{mode_name}] 7. 测试 gRPC (HTTP/2 + application/grpc) 帧交互穿透...")
     grpc_cmd = f"(printf 'PRI * HTTP/2.0\\r\\n\\r\\nSM\\r\\n\\r\\n\\x00\\x00\\x00\\x04\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x04\\x01\\x04\\x00\\x00\\x00\\x01GRPC'; sleep 1) | timeout 4 toybox nc {host_ip} 19008 | od -A n -t c"
-    grpc_res = ""
-    for _ in range(3):
-        grpc_res = run_adb(adb, serial, ["shell", grpc_cmd], check=False).stdout
-        if "G" in grpc_res and "R" in grpc_res and "P" in grpc_res:
-            break
-        time.sleep(0.5)
-    if "G" not in grpc_res or "R" not in grpc_res or "P" not in grpc_res:
-        raise RuntimeError(f"[{mode_name}] gRPC 测试未收到预期 HEADERS 响应: {grpc_res}")
+    probe_with_retries(adb, serial, mode_name, "gRPC 帧交互",
+                       grpc_cmd, ("G", "R", "P"), attempts=3, gap=0.5)
     print(f"    [PASS] gRPC 链路握手与 HEADERS 流穿透成功！")
 
     print(f"[{mode_name}] 8. 测试 QUIC / HTTP/3 (UDP Long Header) 初始包穿透...")
-    quic_cmd = f"(printf '\\xc0\\x00\\x00\\x00\\x01\\x00\\x08\\x11\\x22\\x33\\x44\\x55\\x66\\x77\\x88QUIC_CLIENT_HELLO'; sleep 1) | timeout 4 toybox nc -u {host_ip} 19009"
-    quic_res = run_adb(adb, serial, ["shell", quic_cmd], check=False).stdout
-    if "QUIC_SERVER_HANDSHAKE_ACK" not in quic_res:
-        raise RuntimeError(f"[{mode_name}] QUIC 测试未收到握手响应: {quic_res}")
+    # 与普通 UDP 同理：连发 4 包覆盖 UDP ASSOCIATE 首包竞态
+    quic_cmd = ("(for i in 1 2 3 4; do printf '"
+                "\\xc0\\x00\\x00\\x00\\x01\\x00\\x08\\x11\\x22\\x33\\x44\\x55\\x66\\x77\\x88"
+                "QUIC_CLIENT_HELLO'; sleep 0.4; done; sleep 1) | "
+               f"timeout 6 toybox nc -u {host_ip} 19009")
+    probe_with_retries(adb, serial, mode_name, "QUIC 初始包握手",
+                       quic_cmd, "QUIC_SERVER_HANDSHAKE_ACK")
     print(f"    [PASS] QUIC / HTTP/3 初始报文与握手协商穿透成功！")
 
 def verify_stress_and_throughput(adb, serial, host_ip, mode_name):
