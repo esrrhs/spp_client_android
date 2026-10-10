@@ -828,18 +828,19 @@ hev_socks5_tunnel_sessions (void)
         if (!tcp->pcb)
             continue;
 
+        /* 入站 PCB：remote 是手机发起方(src)，local 是连接目标(dst) */
         char srcstr[IPADDR_STRLEN_MAX], dststr[IPADDR_STRLEN_MAX];
-        ipaddr_ntoa_r (&tcp->pcb->local_ip, srcstr, sizeof (srcstr));
-        ipaddr_ntoa_r (&tcp->pcb->remote_ip, dststr, sizeof (dststr));
+        ipaddr_ntoa_r (&tcp->pcb->remote_ip, srcstr, sizeof (srcstr));
+        ipaddr_ntoa_r (&tcp->pcb->local_ip, dststr, sizeof (dststr));
 
-        /* fake-IP 域名反查（仅 IPv4）；name 在 dns put 前完成使用 */
+        /* fake-IP 域名反查基于目标地址(local)；name 在 dns put 前完成使用 */
         const char *name = NULL;
         HevMappedDNS *dns = NULL;
-        if (IP_IS_V4_VAL (tcp->pcb->remote_ip)) {
+        if (IP_IS_V4_VAL (tcp->pcb->local_ip)) {
             dns = hev_mapped_dns_get ();
             if (dns) {
                 int rip = ntohl (ip4_addr_get_u32 (
-                    ip_2_ip4 (&tcp->pcb->remote_ip)));
+                    ip_2_ip4 (&tcp->pcb->local_ip)));
                 name = hev_mapped_dns_lookup (dns, rip);
             }
         }
@@ -849,15 +850,15 @@ hev_socks5_tunnel_sessions (void)
         if (name)
             n = snprintf (line, sizeof (line),
                           "6|%s|%u|%s|%u|%llu|%llu|%lld|%s\n",
-                          srcstr, tcp->pcb->local_port,
-                          dststr, tcp->pcb->remote_port,
+                          srcstr, tcp->pcb->remote_port,
+                          dststr, tcp->pcb->local_port,
                           tcp->stat_upload, tcp->stat_download,
                           tcp->created_ms, name);
         else
             n = snprintf (line, sizeof (line),
                           "6|%s|%u|%s|%u|%llu|%llu|%lld\n",
-                          srcstr, tcp->pcb->local_port,
-                          dststr, tcp->pcb->remote_port,
+                          srcstr, tcp->pcb->remote_port,
+                          dststr, tcp->pcb->local_port,
                           tcp->stat_upload, tcp->stat_download,
                           tcp->created_ms);
 

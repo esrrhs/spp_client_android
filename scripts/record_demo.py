@@ -589,8 +589,12 @@ def main():
     # 8) 退回主界面，一键断开
     # StatsScreen 已有 BackHandler：一次 BACK 回到内部主界面，不会退出 Activity
     adb("shell", "input", "keyevent", "4"); time.sleep(1.5)
-    adb("shell", "am", "start", "-n", ACT); time.sleep(1.2)
-    wait_tap("SPP VPN", timeout=10)
+    adb("shell", "am", "start", "-n", ACT); time.sleep(1.5)
+    # 从 Stats 返回时 profile sheet（Ping/Stats/Edit/Delete）可能仍弹着并遮挡电源，
+    # 检测到就 BACK 关闭，然后用电源中心固定坐标点击（540,1090）
+    if find_any("Ping", "Delete", "延迟", "删除") is not None:
+        adb("shell", "input", "keyevent", "4"); time.sleep(1.0)
+    adb("shell", "input", "tap", "540", "1090")
     log("MARK disconnect-tap")
     # 系统繁忙时输入事件派发可能延迟数秒：等到真正 Disconnected 再停留，
     # 确保审核能看清断开后的状态
