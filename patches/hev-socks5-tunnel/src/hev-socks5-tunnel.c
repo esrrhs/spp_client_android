@@ -835,7 +835,7 @@ hev_socks5_tunnel_sessions (void)
         /* fake-IP 域名反查（仅 IPv4）；name 在 dns put 前完成使用 */
         const char *name = NULL;
         HevMappedDNS *dns = NULL;
-        if (IP_IS_V4 (tcp->pcb->remote_ip)) {
+        if (IP_IS_V4_VAL (tcp->pcb->remote_ip)) {
             dns = hev_mapped_dns_get ();
             if (dns) {
                 int rip = ntohl (ip4_addr_get_u32 (
