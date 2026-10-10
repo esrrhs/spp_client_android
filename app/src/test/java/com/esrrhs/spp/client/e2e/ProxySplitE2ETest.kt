@@ -45,6 +45,9 @@ class ProxySplitE2ETest {
     private lateinit var lanSplit: RuleSocksServer
     /** 「域名直连」：localhost 域名直连。 */
     private lateinit var domainSplit: RuleSocksServer
+    /** 「直连回退」：广播地址被判直连但本地发送必失败，应回退上游。 */
+    private lateinit var fallbackUpstream: MockUpstreamSocks5Server
+    private lateinit var fallbackSplit: RuleSocksServer
 
     @Before
     fun setUp() {
@@ -85,6 +88,14 @@ class ProxySplitE2ETest {
             upstream = SocksUpstream("127.0.0.1", domainUpstream.port),
             directDomains = setOf("localhost"),
         ).also { it.start() }
+
+        fallbackUpstream = MockUpstreamSocks5Server("127.0.0.1").also { it.start() }
+        fallbackSplit = RuleSocksServer(
+            upstream = SocksUpstream("127.0.0.1", fallbackUpstream.port),
+            directDomains = emptySet(),
+            // 广播地址命中直连，但直接 socket 未开 SO_BROADCAST，发送必抛异常
+            directIpv4Cidrs = listOf("255.0.0.0/8"),
+        ).also { it.start() }
     }
 
     @After
@@ -93,6 +104,8 @@ class ProxySplitE2ETest {
         runCatching { foreignSplit.stop() }
         runCatching { lanSplit.stop() }
         runCatching { domainSplit.stop() }
+        runCatching { fallbackSplit.stop() }
+        runCatching { fallbackUpstream.close() }
         runCatching { cnUpstream.close() }
         runCatching { foreignUpstream.close() }
         runCatching { lanUpstream.close() }
@@ -198,6 +211,61 @@ class ProxySplitE2ETest {
         // 注意：两次调用各自建立独立 ASSOCIATE；这里验证直连路径计数为 0 由前序用例覆盖，
         // 本用例重点是同一分流器实例在两类目标间反复切换不串包。
         assertTrue(cnUpstream.udpAssociateRequests >= 1)
+    }
+
+    @Test
+    fun udp_directLocalFailure_fallsBackToUpstreamAndPenalized() {
+        val ctrl = Socket("127.0.0.1", fallbackSplit.port!!)
+        ctrl.soTimeout = 5000
+        try {
+            val inn = DataInputStream(ctrl.getInputStream())
+            val out = ctrl.getOutputStream()
+            out.write(byteArrayOf(0x05, 0x01, 0x00)); out.flush()
+            assertEquals(0x05, inn.readUnsignedByte())
+            assertEquals(0x00, inn.readUnsignedByte())
+
+            out.write(
+                Socks5Codec.buildRequest(
+                    Socks5Codec.CMD_UDP_ASSOCIATE, Socks5Codec.ATYP_IPV4.toInt(), "0.0.0.0", 0,
+                ),
+            )
+            out.flush()
+            val bound = Socks5Codec.readReply(inn)
+            assertTrue("UDP ASSOCIATE reply expected", bound != null)
+            val relayPort = bound!!.second
+
+            val clientUdp = DatagramSocket()
+            try {
+                val target = "255.255.255.255"
+                val header = Socks5Codec.buildUdpHeader(Socks5Codec.ATYP_IPV4.toInt(), target, 40001)
+
+                fun sendDatagram(marker: String) {
+                    val payload = marker.toByteArray(Charsets.UTF_8)
+                    val pkt = ByteArray(header.size + payload.size)
+                    System.arraycopy(header, 0, pkt, 0, header.size)
+                    System.arraycopy(payload, 0, pkt, header.size, payload.size)
+                    clientUdp.send(
+                        DatagramPacket(pkt, pkt.size, InetSocketAddress("127.0.0.1", relayPort)),
+                    )
+                }
+
+                // 首包：本地直发广播失败 → 惩罚目标、懒建立上游 ASSOCIATE 并转发
+                sendDatagram("UDP_DIRECT_FAIL_1")
+                Thread.sleep(700)
+                assertEquals("direct failure must open exactly one upstream ASSOCIATE",
+                    1, fallbackUpstream.udpAssociateRequests)
+
+                // 第二包：目标在惩罚窗内，跳过直连、复用同一上游 ASSOCIATE
+                sendDatagram("UDP_DIRECT_FAIL_2")
+                Thread.sleep(500)
+                assertEquals("penalized target must not open another ASSOCIATE",
+                    1, fallbackUpstream.udpAssociateRequests)
+            } finally {
+                clientUdp.close()
+            }
+        } finally {
+            ctrl.close()
+        }
     }
 
     // ---------------- helpers ----------------

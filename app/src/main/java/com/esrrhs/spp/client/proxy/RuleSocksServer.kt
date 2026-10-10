@@ -42,6 +42,8 @@ data class SocksUpstream(
  *   服务端解析（mapdns 防 DNS 泄漏链路不变）；
  * - UDP ASSOCIATE：逐报文解析 SOCKS5 目标，直连目标由本进程 DatagramSocket 直发，
  *   其余经上游 UDP 中继；上游中继按需懒建立，纯直连会话零上游连接。
+ *   直连本地失败（域名解析失败/socket 异常）时与 TCP 一样短期惩罚并立即改经上游，
+ *   不静默丢报文。
  *
  * 纯阻塞 IO + 守护线程，生命周期与 VPN 数据面一致。
  */
@@ -531,9 +533,15 @@ class RuleSocksServer(
 
                 val (endpoint, payloadOffset) = parsed
                 val payloadLen = packet.length - payloadOffset
-                if (shouldDirect(endpoint.host, endpoint.atyp)) {
+
+                // 与 TCP 对称：命中直连且不在惩罚窗内才走本地直发；
+                // 直连本地失败或此前已被惩罚时，立即改经上游，不丢报文。
+                val ruleDirect = shouldDirect(endpoint.host, endpoint.atyp)
+                val penaltyKey = udpDirectKey(endpoint.host, endpoint.port)
+                val directOk = ruleDirect &&
+                    !isDirectPenalizedKey(penaltyKey) &&
                     sendDirect(endpoint, packet.data, payloadOffset, payloadLen)
-                } else {
+                if (!directOk) {
                     sendUpstream(packet.data, packet.length)
                 }
             }
@@ -649,25 +657,42 @@ class RuleSocksServer(
             }
         }
 
-        /** 直连：域名走本地 DNS 解析（命中域名直连规则），IP 字面量直接用。 */
+        /**
+         * 直连：域名走本地 DNS 解析（命中域名直连规则），IP 字面量直接用。
+         * 返回是否已交给本地直连路径；本地解析/socket/发送失败时惩罚该目标并返回 false，
+         * 调用方随即回退上游（UDP 无连接，远端不可达无法在此感知，不惩罚）。
+         */
         private fun sendDirect(
             endpoint: Socks5Codec.UdpEndpoint,
             raw: ByteArray,
             payloadOffset: Int,
             payloadLen: Int,
-        ) {
-            if (payloadLen <= 0) return
+        ): Boolean {
+            if (payloadLen <= 0) return false
+            val key = udpDirectKey(endpoint.host, endpoint.port)
             val address: InetAddress? = when (endpoint.atyp) {
                 Socks5Codec.ATYP_DOMAIN.toInt() -> resolveHost(endpoint.host).firstOrNull()
                 else -> runCatching { InetAddress.getByName(endpoint.host) }.getOrNull()
             }
-            val socket = address?.let { obtainDirectSocket(it is Inet6Address) } ?: return
+            if (address == null) {
+                penalizeDirectKey(key)
+                Log.i(TAG, "udp direct ${endpoint.host}:${endpoint.port} unresolved, penalized, via upstream")
+                return false
+            }
+            val socket = obtainDirectSocket(address is Inet6Address)
+            if (socket == null) {
+                penalizeDirectKey(key)
+                return false
+            }
             try {
                 val payload = ByteArray(payloadLen)
                 System.arraycopy(raw, payloadOffset, payload, 0, payloadLen)
                 socket.send(DatagramPacket(payload, payloadLen, InetSocketAddress(address, endpoint.port)))
+                return true
             } catch (e: Exception) {
-                if (running.get()) Log.v(TAG, "udp direct send ${endpoint.host}: ${e.message}")
+                penalizeDirectKey(key)
+                Log.i(TAG, "udp direct ${endpoint.host}:${endpoint.port} send failed, penalized, via upstream: ${e.message}")
+                return false
             }
         }
 
@@ -749,16 +774,24 @@ class RuleSocksServer(
         Log.w(TAG, "udp $dir datagram ${length}B > $HEV_UDP_RECV_LIMIT; hev will truncate QUIC")
     }
 
-    private fun isDirectPenalized(host: String): Boolean {
-        val expire = directPenaltyCache[host] ?: return false
+    private fun isDirectPenalized(key: String): Boolean {
+        val expire = directPenaltyCache[key] ?: return false
         if (System.currentTimeMillis() < expire) return true
-        directPenaltyCache.remove(host)
+        directPenaltyCache.remove(key)
         return false
     }
 
-    private fun markDirectPenalized(host: String) {
-        directPenaltyCache[host] = System.currentTimeMillis() + DIRECT_PENALTY_MS
+    private fun markDirectPenalized(key: String) {
+        directPenaltyCache[key] = System.currentTimeMillis() + DIRECT_PENALTY_MS
     }
+
+    // ---- UDP 直连惩罚（与 TCP 共用缓存；udp: 前缀避免与 TCP 的裸 host 键冲突） ----
+
+    internal fun udpDirectKey(host: String, port: Int): String = "udp:$host:$port"
+
+    internal fun isDirectPenalizedKey(key: String): Boolean = isDirectPenalized(key)
+
+    internal fun penalizeDirectKey(key: String) = markDirectPenalized(key)
 
     /**
      * 本地解析直连目标（App 自身被排除 VPN，走物理网络的系统解析器）。
