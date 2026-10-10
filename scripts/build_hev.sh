@@ -14,11 +14,23 @@ HEV_DIR="${HEV_DIR:-$ROOT/third_party/hev-socks5-tunnel}"
 OUT_DIR="$ROOT/app/src/main/jniLibs"
 ABIS=(${HEV_ABIS:-arm64-v8a x86_64})
 
+# 固定上游版本，确保补丁覆盖的文件与预期完全一致
+PINNED_COMMIT=07bea57d20f71c9804055c2e2a0787d65a7277cb
+
 if [ ! -d "$HEV_DIR" ]; then
-    git clone --depth 1 https://github.com/heiher/hev-socks5-tunnel.git "$HEV_DIR"
+    git clone https://github.com/heiher/hev-socks5-tunnel.git "$HEV_DIR"
 fi
 cd "$HEV_DIR"
-git submodule update --init --recursive --depth 1
+git fetch origin "$PINNED_COMMIT" >/dev/null 2>&1 || true
+git checkout -q "$PINNED_COMMIT"
+git submodule update --init --recursive
+
+# 应用本地补丁（patches/hev-socks5-tunnel）：给 JNI 增加 TProxyGetSessions
+# 会话表导出（上游只注册了 4 个 JNI 方法，App 的实时连接页依赖该接口）。
+# 仅覆盖 src 根下对应的 6 个文件，misc/ 与 core/ 子模块不动。
+PATCH_SRC="$ROOT/patches/hev-socks5-tunnel/src"
+cp "$PATCH_SRC"/*.c "$PATCH_SRC"/*.h ./src/
+echo "==> applied local session-export patch"
 
 NDK="${ANDROID_NDK_HOME:-}"
 if [ -z "$NDK" ]; then
