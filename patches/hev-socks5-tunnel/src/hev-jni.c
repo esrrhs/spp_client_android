@@ -216,9 +216,22 @@ native_get_stats (JNIEnv *env, jobject thiz)
 static jstring
 native_get_sessions (JNIEnv *env, jobject thiz)
 {
-    char *sessions = hev_socks5_tunnel_sessions ();
-    jstring res = (*env)->NewStringUTF (env, sessions ? sessions : "");
-    free (sessions);
+    /* 单条记录 < 200B，1024 条 ~200KB 足够；malloc 避免大栈帧 */
+    enum { BUF_SIZE = 256 * 1024 };
+    char *buf;
+    jstring res;
+
+    if (!atomic_load_explicit (&is_running, memory_order_acquire))
+        return (*env)->NewStringUTF (env, "");
+
+    buf = malloc (BUF_SIZE);
+    if (!buf)
+        return (*env)->NewStringUTF (env, "");
+
+    hev_socks5_tunnel_get_sessions (buf, BUF_SIZE);
+    res = (*env)->NewStringUTF (env, buf);
+    free (buf);
+
     return res;
 }
 

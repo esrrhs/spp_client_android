@@ -921,6 +921,38 @@ def probe_with_retries(adb, serial, mode_name, case_name, shell_cmd,
     )
 
 
+def verify_udp_session_export(adb, serial, host_ip, mode_name):
+    """验证 UDP 会话被 native 实时导出。
+
+    App 每 1.5s 把 hev 原生会话原文打到 logcat（tag ConnRecDiag）。
+    在设备侧跑一条持续 ~6s 的 UDP 流，期间必然与多次轮询重叠；
+    在整段 logcat 文本中正则匹配 17|...|host|19001| 行
+    （logcat 会把会话原文中的换行输出成无 tag 的续行，故不可按行解析）。
+    """
+    token = f"{mode_name}_SESSION_UDP"
+    sender = ("(for i in $(seq 1 10); do printf '"
+              f"{token}\\n'; sleep 0.5; done) | "
+              f"timeout 8 toybox nc -u {host_ip} 19001")
+    # 17|srcIp|srcPort|dstIp|19001|...
+    pattern = re.compile(
+        r"17\|[^|\n]*\|\d+\|" + re.escape(host_ip) + r"\|19001\|"
+    )
+    for round_no in range(1, 4):
+        run_adb(adb, serial, ["shell", "logcat -c"], check=False)
+        run_adb(adb, serial, ["shell", sender], check=False, timeout=15)
+        log = run_adb(adb, serial,
+                      ["shell", "logcat -d -s ConnRecDiag"], check=False,
+                      timeout=15).stdout or ""
+        m = pattern.search(log)
+        if m:
+            print(f"    [PASS] UDP 会话已实时导出: {m.group(0)}")
+            return
+        time.sleep(0.5)
+    raise RuntimeError(
+        f"[{mode_name}] 未在 ConnRecDiag 日志中观察到目标 UDP 会话导出"
+    )
+
+
 def verify_all_protocols(adb, serial, host_ip, mode_name):
     """验证 TCP, UDP, HTTP/1.1, HTTP/2, DNS, WebSocket, gRPC, QUIC 八大常见网络协议穿透与回显"""
     time.sleep(1) # 等待网络路由与规则完全收敛
@@ -939,6 +971,9 @@ def verify_all_protocols(adb, serial, host_ip, mode_name):
     probe_with_retries(adb, serial, mode_name, "UDP 数据报穿透",
                        udp_cmd, f"{mode_name}_UDP_TEST")
     print(f"    [PASS] UDP 穿透成功！")
+
+    # 新隧道的 UDP 中继此刻已热，顺势验证 UDP 会话被 native 实时导出
+    verify_udp_session_export(adb, serial, host_ip, mode_name)
 
     print(f"[{mode_name}] 3. 测试 HTTP/1.1 请求穿透...")
     h1_cmd = f"(printf 'GET / HTTP/1.1\\r\\nHost: {host_ip}:19004\\r\\nConnection: close\\r\\n\\r\\n'; sleep 1) | timeout 4 toybox nc {host_ip} 19004"

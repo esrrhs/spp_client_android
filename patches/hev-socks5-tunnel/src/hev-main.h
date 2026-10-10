@@ -84,13 +84,16 @@ void hev_socks5_tunnel_stats (size_t *tx_packets, size_t *tx_bytes,
                               size_t *rx_packets, size_t *rx_bytes);
 
 /**
- * hev_socks5_tunnel_sessions:
+ * hev_socks5_tunnel_get_sessions:
+ * @out: output buffer
+ * @size: buffer size
  *
- * Retrieve a malloc-allocated text snapshot of all TCP sessions, one per
- * line: proto|srcIp|srcPort|dstIp|dstPort|upload|download|createdMs[|domain].
- * Caller must free the returned string.
+ * Dump active sessions as text lines:
+ * proto|srcIp|srcPort|dstIp|dstPort|uploadBytes|downloadBytes|createdMs
+ *
+ * Returns: written length excluding trailing NUL.
  */
-char *hev_socks5_tunnel_sessions (void);
+int hev_socks5_tunnel_get_sessions (char *out, int size);
 
 #ifdef __cplusplus
 }

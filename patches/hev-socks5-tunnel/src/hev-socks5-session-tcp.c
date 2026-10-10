@@ -9,7 +9,6 @@
 
 #include <errno.h>
 #include <string.h>
-#include <sys/time.h>
 
 #include <lwip/tcp.h>
 
@@ -74,7 +73,8 @@ tcp_splice_f (HevSocks5SessionTCP *self)
             if (self->pcb)
                 tcp_recved (self->pcb, s);
             hev_task_mutex_unlock (self->mutex);
-            self->stat_upload += s;
+            atomic_fetch_add_explicit (&self->data.upload_bytes, s,
+                                       memory_order_relaxed);
             res = 1;
         }
     } else if (res < 0) {
@@ -101,7 +101,8 @@ tcp_splice_b (HevSocks5SessionTCP *self)
                 res = -1;
         } else {
             hev_ring_buffer_write_finish (self->buffer, s);
-            self->stat_download += s;
+            atomic_fetch_add_explicit (&self->data.download_bytes, s,
+                                       memory_order_relaxed);
         }
     } else {
         res = 0;
@@ -289,10 +290,8 @@ hev_socks5_session_tcp_construct (HevSocks5SessionTCP *self,
     self->pcb = pcb;
     self->mutex = mutex;
     self->data.self = self;
-
-    struct timeval tv;
-    gettimeofday (&tv, NULL);
-    self->created_ms = (long long)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+    self->data.proto = HEV_SESSION_PROTO_TCP;
+    self->data.pcb = pcb;
 
     return 0;
 }

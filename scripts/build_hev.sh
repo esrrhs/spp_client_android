@@ -26,8 +26,9 @@ git checkout -q "$PINNED_COMMIT"
 git submodule update --init --recursive
 
 # 应用本地补丁（patches/hev-socks5-tunnel）：给 JNI 增加 TProxyGetSessions
-# 会话表导出（上游只注册了 4 个 JNI 方法，App 的实时连接页依赖该接口）。
-# 仅覆盖 src 根下对应的 6 个文件，misc/ 与 core/ 子模块不动。
+# 会话表导出（上游只注册了 4 个 JNI 方法，App 的实时连接页依赖该接口），
+# 并把观测字段收敛进 HevSocks5SessionData，TCP 与 UDP 会话统一导出。
+# 仅覆盖 src 根下对应的 7 个文件，misc/ 与 core/ 子模块不动。
 PATCH_SRC="$ROOT/patches/hev-socks5-tunnel/src"
 cp "$PATCH_SRC"/*.c "$PATCH_SRC"/*.h ./src/
 echo "==> applied local session-export patch"
