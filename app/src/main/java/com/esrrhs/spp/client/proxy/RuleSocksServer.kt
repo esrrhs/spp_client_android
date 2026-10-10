@@ -599,6 +599,24 @@ class RuleSocksServer(
             }
         }
 
+        /**
+         * 监视上游控制连接：远端关闭（EOF）或读异常即拆链重建。
+         * 不进冷却——上游重启不是建链失败，会话应立即自愈而非惩罚 5s。
+         * close()/resetUpstream 已本地关 ctrl 时，read 抛异常但守卫不触发。
+         */
+        private fun watchUpstreamControl(ctrl: Socket, ctrlIn: DataInputStream) {
+            try {
+                // 控制连接在 ASSOCIATE 后不应再有数据；个别服务器发 keepalive 时忽略，
+                // 持续读到真 EOF（远端关闭）或本地关闭导致的异常。
+                while (ctrlIn.read() >= 0) { /* keepalive 字节，忽略 */ }
+            } catch (_: Exception) {
+            }
+            if (running.get() && !ctrl.isClosed && upControl === ctrl) {
+                Log.i(TAG, "udp upstream control closed by peer, rebuilding association on demand")
+                resetUpstream()
+            }
+        }
+
         private fun ensureUpstream(): Boolean {
             upstreamRelay?.let { return true }
             synchronized(gate) {
@@ -633,6 +651,9 @@ class RuleSocksServer(
                     upstreamRelay = upstreamRelayAddress(bound.first, bound.second)
                     synchronized(relays) { relays.add(relay) }
                     pool.execute { receiveUpstreamLoop(relay, ctrl) }
+                    // 看门狗：远端关控制连接（上游重启/网络切换）即拆链，下一包懒重建。
+                    // UDP relay 本地 send 永远"成功"，控制连接 EOF 是上游静默死亡的唯一信号。
+                    pool.execute { watchUpstreamControl(ctrl, ctrlIn) }
                     Log.i(
                         TAG,
                         "udp upstream relay 127.0.0.1:${relay.localPort} -> " +
@@ -663,7 +684,14 @@ class RuleSocksServer(
                 } catch (_: java.net.SocketTimeoutException) {
                     continue
                 } catch (e: Exception) {
-                    if (running.get()) Log.w(TAG, "udp from-upstream: ${e.message}")
+                    // 非本地关闭的异常：中继已死但引用还在，sendUpstream 会一直"成功"却无回包；
+                    // 拆链让下一包懒重建（与 watchUpstreamControl 对称）。
+                    if (running.get() && !ctrl.isClosed && upRelay === relay) {
+                        Log.w(TAG, "udp upstream relay died, rebuilding: ${e.message}")
+                        resetUpstream()
+                    } else if (running.get()) {
+                        Log.v(TAG, "udp from-upstream: ${e.message}")
+                    }
                     break
                 }
                 val target = peer.get() ?: continue
@@ -743,7 +771,22 @@ class RuleSocksServer(
                 } catch (_: java.net.SocketTimeoutException) {
                     continue
                 } catch (e: Exception) {
-                    if (running.get()) Log.v(TAG, "udp direct recv: ${e.message}")
+                    // 非本地关闭的异常：清掉字段并关 socket，下一次 sendDirect 的
+                    // obtainDirectSocket 会新建（否则直发仍"成功"但回包永不再来）。
+                    if (running.get() && !control.isClosed && !socket.isClosed) {
+                        Log.w(TAG, "udp direct relay died, recreating: ${e.message}")
+                        synchronized(gate) {
+                            if (useV6) {
+                                if (directV6 === socket) directV6 = null
+                            } else {
+                                if (directV4 === socket) directV4 = null
+                            }
+                        }
+                        runCatching { socket.close() }
+                        synchronized(relays) { relays.remove(socket) }
+                    } else if (running.get()) {
+                        Log.v(TAG, "udp direct recv: ${e.message}")
+                    }
                     break
                 }
                 val target = peer.get() ?: continue
