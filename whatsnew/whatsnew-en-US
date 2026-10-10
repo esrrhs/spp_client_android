@@ -1,3 +1,5 @@
-• Exact CN smart split: overseas sites are no longer forced direct
-• Faster reconnect on network loss; auth failure auto-switches backup
-• Fixes carrier CGNAT (100.64) collision with the fake-ip pool
+• Live per-app TCP session monitor
+• Real-time network speed in VPN notification
+• Exact CN smart split for faster and more reliable routing
+• Optimized reconnect on network transitions and improved battery efficiency
+• Resolved carrier CGNAT (100.64) collision with fake-ip pool
