@@ -364,6 +364,120 @@ class ProxySplitE2ETest {
         }
     }
 
+    @Test
+    fun udp_upstreamRestart_rebuildsAssociationOnNextDatagram() {
+        // 假上游：完成握手与 UDP ASSOCIATE 后立即关闭控制连接（模拟上游重启）。
+        // UDP relay 本地 send 永远"成功"，控制连接 EOF 是唯一死亡信号；
+        // 客户端看门狗必须拆链，让下一个报文触发全新 ASSOCIATE（无冷却）。
+        val associates = AtomicInteger(0)
+        val listener = ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"))
+        val acceptor = Thread {
+            while (true) {
+                val ctrl = try { listener.accept() } catch (_: Exception) { break }
+                Thread {
+                    try {
+                        val inn = DataInputStream(ctrl.getInputStream())
+                        val out = ctrl.getOutputStream()
+                        if (inn.readUnsignedByte() != 0x05) return@Thread
+                        inn.readUnsignedByte() // nmethods
+                        inn.readUnsignedByte() // 认为客户端提供 0x00
+                        out.write(byteArrayOf(0x05, 0x00)); out.flush()
+                        // ASSOCIATE 请求：VER CMD RSV ATYP(4B) + IPv4(4B) + PORT(2B)
+                        val req = ByteArray(10)
+                        var off = 0
+                        while (off < req.size) {
+                            val n = inn.read(req, off, req.size - off)
+                            if (n < 0) return@Thread
+                            off += n
+                        }
+                        if (req[1] != Socks5Codec.CMD_UDP_ASSOCIATE) return@Thread
+                        associates.incrementAndGet()
+                        val relay = DatagramSocket(0, InetAddress.getByName("127.0.0.1"))
+                        out.write(Socks5Codec.successReply("127.0.0.1", relay.localPort))
+                        out.flush()
+                        ctrl.close() // 上游"重启"：控制连接立刻消失
+                    } catch (_: Exception) {
+                        runCatching { ctrl.close() }
+                    }
+                }.also { it.isDaemon = true }.start()
+            }
+        }.also { it.isDaemon = true; it.start() }
+
+        val split = RuleSocksServer(
+            upstream = SocksUpstream("127.0.0.1", listener.localPort),
+            directDomains = emptySet(),
+        )
+        try {
+            split.start()
+            val ctrl = Socket("127.0.0.1", split.port!!)
+            ctrl.soTimeout = 5000
+            try {
+                val inn = DataInputStream(ctrl.getInputStream())
+                val out = ctrl.getOutputStream()
+                out.write(byteArrayOf(0x05, 0x01, 0x00)); out.flush()
+                assertEquals(0x05, inn.readUnsignedByte())
+                assertEquals(0x00, inn.readUnsignedByte())
+                out.write(
+                    Socks5Codec.buildRequest(
+                        Socks5Codec.CMD_UDP_ASSOCIATE, Socks5Codec.ATYP_IPV4.toInt(), "0.0.0.0", 0,
+                    ),
+                )
+                out.flush()
+                val bound = Socks5Codec.readReply(inn)
+                assertTrue("UDP ASSOCIATE reply expected", bound != null)
+                val relayPort = bound!!.second
+
+                val clientUdp = DatagramSocket()
+                try {
+                    val header = Socks5Codec.buildUdpHeader(
+                        Socks5Codec.ATYP_IPV4.toInt(), "1.1.1.1", 9,
+                    )
+
+                    fun sendDatagram(marker: String) {
+                        val payload = marker.toByteArray(Charsets.UTF_8)
+                        val pkt = ByteArray(header.size + payload.size)
+                        System.arraycopy(header, 0, pkt, 0, header.size)
+                        System.arraycopy(payload, 0, pkt, header.size, payload.size)
+                        clientUdp.send(
+                            DatagramPacket(pkt, pkt.size, InetSocketAddress("127.0.0.1", relayPort)),
+                        )
+                    }
+
+                    fun awaitAssociates(expected: Int, timeoutMs: Long) {
+                        val deadline = System.currentTimeMillis() + timeoutMs
+                        while (associates.get() < expected && System.currentTimeMillis() < deadline) {
+                            Thread.sleep(20)
+                        }
+                    }
+
+                    // 报文 1：建 ASSOCIATE #1；假上游随即关控制连接 → 看门狗拆链
+                    sendDatagram("UDP_WATCHDOG_1")
+                    awaitAssociates(1, 3000)
+                    assertEquals(1, associates.get())
+
+                    // 报文 2：看门狗已拆链，必须全新 ASSOCIATE #2（不进 5s 冷却）
+                    Thread.sleep(400) // 给 EOF 拆链留时间
+                    sendDatagram("UDP_WATCHDOG_2")
+                    awaitAssociates(2, 3000)
+                    assertEquals(2, associates.get())
+
+                    // 报文 3：上游再次"重启"，第三次重建；连续自愈
+                    Thread.sleep(400)
+                    sendDatagram("UDP_WATCHDOG_3")
+                    awaitAssociates(3, 3000)
+                    assertEquals(3, associates.get())
+                } finally {
+                    clientUdp.close()
+                }
+            } finally {
+                ctrl.close()
+            }
+        } finally {
+            runCatching { split.stop() }
+            runCatching { listener.close() }
+        }
+    }
+
     // ---------------- helpers ----------------
 
     private fun tcpThroughProxy(
