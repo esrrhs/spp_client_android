@@ -207,9 +207,6 @@ class MockUpstreamSocks5Server(
             clientOut.flush()
             return
         }
-        // 允许向广播目标中继：回退类用例会给 mock 一个广播目标，
-        // 未开 SO_BROADCAST 时 send 抛异常并终结整个转发循环。
-        runCatching { relaySocket.broadcast = true }
         activeDatagrams.add(relaySocket)
 
         // 创建 UDP relay socket (IPv6)
@@ -276,7 +273,9 @@ class MockUpstreamSocks5Server(
                     // 解析目标地址与端口
                     val (targetAddr, payloadOffset) = parseSocksUdpHeader(data, len) ?: continue
                     val payloadLen = len - payloadOffset
-                    if (payloadLen > 0) {
+                    if (payloadLen > 0 && !targetAddr.isUnresolved) {
+                        // 无法解析的域名目标（如 .invalid 回退用例）直接丢弃，
+                        // 不让异常终结整个 ASSOCIATE 转发循环。
                         val isTargetV6 = targetAddr.address is java.net.Inet6Address
                         if (isTargetV6 && ipv6RelaySocket != null) {
                             val outgoingPacket = DatagramPacket(data, payloadOffset, payloadLen, targetAddr)

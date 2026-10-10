@@ -45,7 +45,7 @@ class ProxySplitE2ETest {
     private lateinit var lanSplit: RuleSocksServer
     /** 「域名直连」：localhost 域名直连。 */
     private lateinit var domainSplit: RuleSocksServer
-    /** 「直连回退」：广播地址被判直连但本地发送必失败，应回退上游。 */
+    /** 「直连回退」：.invalid 域名被判直连但本地解析必失败，应回退上游。 */
     private lateinit var fallbackUpstream: MockUpstreamSocks5Server
     private lateinit var fallbackSplit: RuleSocksServer
 
@@ -92,9 +92,8 @@ class ProxySplitE2ETest {
         fallbackUpstream = MockUpstreamSocks5Server("127.0.0.1").also { it.start() }
         fallbackSplit = RuleSocksServer(
             upstream = SocksUpstream("127.0.0.1", fallbackUpstream.port),
-            directDomains = emptySet(),
-            // 广播地址命中直连，但直接 socket 未开 SO_BROADCAST，发送必抛异常
-            directIpv4Cidrs = listOf("255.0.0.0/8"),
+            // RFC 6761 .invalid 永不解析：命中直连域名但本地解析必失败
+            directDomains = setOf("nonexistent-spp-test.invalid"),
         ).also { it.start() }
     }
 
@@ -236,8 +235,8 @@ class ProxySplitE2ETest {
 
             val clientUdp = DatagramSocket()
             try {
-                val target = "255.255.255.255"
-                val header = Socks5Codec.buildUdpHeader(Socks5Codec.ATYP_IPV4.toInt(), target, 40001)
+                val target = "nonexistent-spp-test.invalid"
+                val header = Socks5Codec.buildUdpHeader(Socks5Codec.ATYP_DOMAIN.toInt(), target, 40001)
 
                 fun sendDatagram(marker: String) {
                     val payload = marker.toByteArray(Charsets.UTF_8)
@@ -249,9 +248,9 @@ class ProxySplitE2ETest {
                     )
                 }
 
-                // 首包：本地直发广播失败 → 惩罚目标、懒建立上游 ASSOCIATE 并转发
+                // 首包：本地解析 .invalid 失败 → 惩罚目标、懒建立上游 ASSOCIATE 并转发
                 sendDatagram("UDP_DIRECT_FAIL_1")
-                Thread.sleep(700)
+                Thread.sleep(1500)
                 assertEquals("direct failure must open exactly one upstream ASSOCIATE",
                     1, fallbackUpstream.udpAssociateRequests)
 
