@@ -1,5 +1,6 @@
 package com.esrrhs.spp.client.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -46,6 +47,9 @@ fun StatsScreen(
 ) {
     var confirmResetAll by remember { mutableStateOf(false) }
     var confirmResetId by remember { mutableStateOf<String?>(null) }
+
+    // 系统 BACK 回到主界面，与顶栏返回一致（避免录制导航时退出 Activity）
+    BackHandler(onBack = onBack)
 
     Scaffold(
         topBar = {

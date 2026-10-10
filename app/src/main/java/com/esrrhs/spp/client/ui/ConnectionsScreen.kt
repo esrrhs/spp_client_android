@@ -1,6 +1,7 @@
 package com.esrrhs.spp.client.ui
 
 import android.graphics.drawable.Drawable
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -66,6 +67,9 @@ fun ConnectionsScreen(
     activeProfile: Profile?,
     onBack: () -> Unit,
 ) {
+    // 系统 BACK 回到主界面，与顶栏返回一致（避免录制导航时退出 Activity）
+    BackHandler(onBack = onBack)
+
     // 每秒刷新一次，让「已连接时长」走动
     var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
