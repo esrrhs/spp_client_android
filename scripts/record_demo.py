@@ -545,14 +545,24 @@ def main():
     log("MARK sessions-screen")
     time.sleep(2.0)
     if STREAM_URL and has_chrome:
-        # 打开限速长流后立刻回 App：长连接在整个展示窗口内持续存在，
-        # 列表里实时显示 Chrome 的目标、直连/代理路径、速率与字节增长
+        # 打开限速长流：octet-stream 会触发 Chrome 下载，可能弹 Keep/确认框，
+        # 录屏内留足响应时间并处理确认，否则下载不发起、列表无连接
         open_url(STREAM_URL)
-        time.sleep(2.5)  # 让下载连接建立并开始计数
+        time.sleep(6.0)
+        dump_texts("after-stream-open")
+        keep = find_any("Keep anyway", "Keep", "Download anyway",
+                        "仍然下载", "保留")
+        if keep is not None:
+            tap_node(keep)
+            time.sleep(2.0)
         adb("shell", "am", "start", "-n", ACT)
-        wait_any("Active connections", "连接", timeout=6)
-        for _ in range(5):
-            time.sleep(4.0)  # ≈20s 观察字节与速率持续更新
+        wait_any("Active connections", "连接", timeout=8)
+        for r in range(6):
+            time.sleep(4.0)  # ≈24s 观察字节与速率持续更新
+            diag = sh("logcat -d -s ConnRecDiag:I")
+            tail = [l for l in diag.splitlines() if "ConnRecDiag" in l][-2:]
+            for l in tail:
+                log("DIAG " + l.split("ConnRecDiag:", 1)[-1].strip())
     else:
         # 兜底：无长流服务时用图片搜索制造短连接（留痕窗口内可见）
         for i in range(3):
@@ -577,12 +587,22 @@ def main():
     time.sleep(4.5)
 
     # 8) 退回主界面，一键断开
-    adb("shell", "input", "keyevent", "4"); time.sleep(1.0)
-    adb("shell", "input", "keyevent", "4"); time.sleep(1.2)
+    # StatsScreen 已有 BackHandler：一次 BACK 回到内部主界面，不会退出 Activity
+    adb("shell", "input", "keyevent", "4"); time.sleep(1.5)
     adb("shell", "am", "start", "-n", ACT); time.sleep(1.2)
     wait_tap("SPP VPN", timeout=10)
     log("MARK disconnect-tap")
-    time.sleep(5.0)
+    # 系统繁忙时输入事件派发可能延迟数秒：等到真正 Disconnected 再停留，
+    # 确保审核能看清断开后的状态
+    dseen = False
+    dend = time.time() + 12
+    while time.time() < dend:
+        if find_any("Disconnected", "已断开") is not None:
+            dseen = True
+            break
+        time.sleep(0.7)
+    if dseen:
+        time.sleep(3.5)
     log("MARK end")
 
     rec.stop()

@@ -7,6 +7,7 @@ import java.io.File
 import com.esrrhs.spp.client.data.ConnectionLogRepository
 import com.esrrhs.spp.client.proxy.ProxyEventBus
 import com.esrrhs.spp.client.spp.Profile
+import com.esrrhs.spp.client.tun.HevTunnel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -73,6 +74,10 @@ object ConnectionRecorder {
                 val now = System.currentTimeMillis()
                 val interval = now - lastMs
                 val isUiObserving = _liveGroups.subscriptionCount.value > 0
+
+                // 诊断：记录 hev 原生会话原文，排查长流为何不出现在连接列表
+                android.util.Log.i("ConnRecDiag",
+                    "uiObserve=$isUiObserving sessions=" + (HevTunnel.sessions() ?: "null"))
 
                 val liveRows = if (isUiObserving) {
                     sample = ActiveConnections.snapshot(
