@@ -207,6 +207,9 @@ class MockUpstreamSocks5Server(
             clientOut.flush()
             return
         }
+        // 允许向广播目标中继：回退类用例会给 mock 一个广播目标，
+        // 未开 SO_BROADCAST 时 send 抛异常并终结整个转发循环。
+        runCatching { relaySocket.broadcast = true }
         activeDatagrams.add(relaySocket)
 
         // 创建 UDP relay socket (IPv6)

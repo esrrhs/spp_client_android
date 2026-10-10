@@ -91,6 +91,17 @@ class RuleSocksServerTest {
     }
 
     @Test
+    fun udpDirectPenalty_cacheLifecycle() {
+        val server = RuleSocksServer(SocksUpstream("127.0.0.1", 1080), emptySet())
+        val key = server.udpDirectKey("8.8.8.8", 443)
+        assertFalse(server.isDirectPenalizedKey(key))
+        server.penalizeDirectKey(key)
+        assertTrue(server.isDirectPenalizedKey(key))
+        // udp: 前缀键不得与 TCP 的裸 host 键互相串味
+        assertFalse(server.isDirectPenalizedKey("8.8.8.8"))
+    }
+
+    @Test
     fun classify_domainRules_matchDomainAndSubdomains() {
         val server = RuleSocksServer(
             upstream = SocksUpstream("127.0.0.1", 1080),
