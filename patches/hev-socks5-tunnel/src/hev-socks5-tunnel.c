@@ -12,9 +12,11 @@
 #include <signal.h>
 #include <string.h>
 #include <stdatomic.h>
-#include <sys/ioctl.h>
+#include <stdio.h>
+#include <time.h>
 #include <pthread.h>
-#include <stdlib.h>
+#include <arpa/inet.h>
+#include <sys/ioctl.h>
 
 #include <lwip/tcp.h>
 #include <lwip/udp.h>
@@ -72,9 +74,8 @@ static HevTask *task_event;
 static HevTask *task_lwip_io;
 static HevTask *task_lwip_timer;
 static HevList session_set;
-
-/* 保护 session_set 的增删改与 JNI 遍历（JNI 调用与任务线程并发） */
-static pthread_mutex_t session_mutex = PTHREAD_MUTEX_INITIALIZER;
+/* 保护 session_set 链表结构变更与 JNI 枚举互斥（JNI 调用在独立线程） */
+static pthread_mutex_t session_set_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static int
 task_io_yielder (HevTaskYieldType type, void *data)
@@ -126,38 +127,141 @@ netif_init_handler (struct netif *netif)
     return ERR_OK;
 }
 
+static int64_t
+now_wall_ms (void)
+{
+    struct timespec ts;
+    clock_gettime (CLOCK_REALTIME, &ts);
+    return (int64_t) ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
 static void
 hev_socks5_tunnel_insert_session (HevListNode *node)
 {
     HevSocks5SessionData *sd;
     int max_session_count;
 
-    pthread_mutex_lock (&session_mutex);
+    sd = container_of (node, HevSocks5SessionData, node);
+    sd->created_ms = now_wall_ms ();
+    atomic_store_explicit (&sd->upload_bytes, 0, memory_order_relaxed);
+    atomic_store_explicit (&sd->download_bytes, 0, memory_order_relaxed);
 
+    pthread_mutex_lock (&session_set_mutex);
     hev_list_add_tail (&session_set, node);
     session_count++;
 
     max_session_count = hev_config_get_misc_max_session_count ();
-    if (!max_session_count || session_count < max_session_count) {
-        pthread_mutex_unlock (&session_mutex);
-        return;
+    if (max_session_count && session_count >= max_session_count)
+        node = hev_list_first (&session_set);
+    else
+        node = NULL;
+    pthread_mutex_unlock (&session_set_mutex);
+
+    /* 最旧会话淘汰要在锁外触发（terminate 会走会话任务回收） */
+    if (node) {
+        sd = container_of (node, HevSocks5SessionData, node);
+        hev_socks5_session_terminate (sd->self);
     }
-
-    node = hev_list_first (&session_set);
-    sd = container_of (node, HevSocks5SessionData, node);
-    /* terminate 仅唤醒任务线程；真正的 delete 在该线程内重新抢锁，无死锁 */
-    hev_socks5_session_terminate (sd->self);
-
-    pthread_mutex_unlock (&session_mutex);
 }
 
 static void
 hev_socks5_tunnel_delete_session (HevListNode *node)
 {
-    pthread_mutex_lock (&session_mutex);
+    pthread_mutex_lock (&session_set_mutex);
     hev_list_del (&session_set, node);
     session_count--;
-    pthread_mutex_unlock (&session_mutex);
+    pthread_mutex_unlock (&session_set_mutex);
+}
+
+/* 把 lwIP ip_addr 写成可读地址；成功返回 0 */
+static int
+format_ip_addr (const ip_addr_t *addr, char *out, size_t len)
+{
+    if (IP_IS_V6 (addr))
+        return inet_ntop (AF_INET6, ip_2_ip6 (addr)->addr, out,
+                          (socklen_t) len) == NULL;
+    return inet_ntop (AF_INET, &ip_2_ip4 (addr)->addr, out,
+                      (socklen_t) len) == NULL;
+}
+
+int
+hev_socks5_tunnel_get_sessions (char *out, int size)
+{
+    HevListNode *node;
+    int off = 0;
+
+    if (size <= 1)
+        return 0;
+    out[0] = '\0';
+
+    HevMappedDNS *mdns = hev_mapped_dns_get ();
+
+    pthread_mutex_lock (&session_set_mutex);
+    for (node = hev_list_first (&session_set); node && off + 256 < size;
+         node = hev_list_node_next (node)) {
+        HevSocks5SessionData *sd;
+        char src[64], dst[64];
+        int sport, dport;
+        int n;
+
+        src[0] = dst[0] = '\0';
+        sd = container_of (node, HevSocks5SessionData, node);
+
+        /* lwIP 中 pcb 的 local 是 App 连接目标（远端服务器），
+         * remote 是 App 源地址；输出按 src(App) -> dst(server) */
+        /* lwIP pcb 端口为主机序，直接使用，切勿再 ntohs */
+        if (sd->proto == HEV_SESSION_PROTO_TCP && sd->pcb) {
+            struct tcp_pcb *tp = sd->pcb;
+            format_ip_addr (&tp->remote_ip, src, sizeof (src));
+            format_ip_addr (&tp->local_ip, dst, sizeof (dst));
+            sport = tp->remote_port;
+            dport = tp->local_port;
+        } else if (sd->proto == HEV_SESSION_PROTO_UDP && sd->pcb) {
+            struct udp_pcb *up = sd->pcb;
+            format_ip_addr (&up->remote_ip, src, sizeof (src));
+            format_ip_addr (&up->local_ip, dst, sizeof (dst));
+            sport = up->remote_port;
+            dport = up->local_port;
+        } else {
+            continue;
+        }
+
+        /* mapped-dns fake-IP 反查真实域名（仅 IPv4 目标） */
+        char domain[256] = "";
+        if (mdns && sd->pcb) {
+            const ip_addr_t *daddr = NULL;
+            if (sd->proto == HEV_SESSION_PROTO_TCP)
+                daddr = &((struct tcp_pcb *) sd->pcb)->local_ip;
+            else if (sd->proto == HEV_SESSION_PROTO_UDP)
+                daddr = &((struct udp_pcb *) sd->pcb)->local_ip;
+            if (daddr && IP_IS_V4_VAL (*daddr)) {
+                const char *name =
+                    hev_mapped_dns_lookup (mdns,
+                                           ntohl (ip_2_ip4 (daddr)->addr));
+                if (name) {
+                    strncpy (domain, name, sizeof (domain) - 1);
+                    domain[sizeof (domain) - 1] = '\0';
+                }
+            }
+        }
+
+        n = snprintf (out + off, size - off,
+                      "%d|%s|%d|%s|%d|%llu|%llu|%lld|%s\n",
+                      sd->proto, src, sport, dst, dport,
+                      (unsigned long long) atomic_load_explicit (
+                          &sd->upload_bytes, memory_order_relaxed),
+                      (unsigned long long) atomic_load_explicit (
+                          &sd->download_bytes, memory_order_relaxed),
+                      (long long) sd->created_ms, domain);
+        if (n > 0)
+            off += (n < size - off) ? n : (size - off);
+    }
+    pthread_mutex_unlock (&session_set_mutex);
+    hev_mapped_dns_put (mdns);
+
+    if (off > 0 && off < size)
+        out[off - 1] = '\0'; /* 去掉末尾换行 */
+    return off > 0 ? off - (off < size ? 1 : 0) : 0;
 }
 
 void
@@ -169,10 +273,8 @@ hev_socks5_tunnel_update_session (HevListNode *node)
     if (!max_session_count)
         return;
 
-    pthread_mutex_lock (&session_mutex);
     hev_list_del (&session_set, node);
     hev_list_add_tail (&session_set, node);
-    pthread_mutex_unlock (&session_mutex);
 }
 
 static void
@@ -802,87 +904,4 @@ hev_socks5_tunnel_stats (size_t *tx_packets, size_t *tx_bytes,
 
     if (rx_bytes)
         *rx_bytes = stat_rx_bytes;
-}
-
-char *
-hev_socks5_tunnel_sessions (void)
-{
-    size_t cap = 4096, len = 0;
-    char *buf = malloc (cap);
-    if (!buf)
-        return NULL;
-    buf[0] = 0;
-
-    pthread_mutex_lock (&session_mutex);
-
-    for (HevListNode *node = hev_list_first (&session_set); node;
-         node = node->next) {
-        HevSocks5SessionData *sd =
-            container_of (node, HevSocks5SessionData, node);
-
-        /* session_set 中还混有 UDP 会话，只导出 TCP 类型 */
-        if (HEV_OBJECT (sd->self)->klass != HEV_SOCKS5_SESSION_TCP_TYPE)
-            continue;
-
-        HevSocks5SessionTCP *tcp = (HevSocks5SessionTCP *)sd->self;
-        if (!tcp->pcb)
-            continue;
-
-        /* 入站 PCB：remote 是手机发起方(src)，local 是连接目标(dst) */
-        char srcstr[IPADDR_STRLEN_MAX], dststr[IPADDR_STRLEN_MAX];
-        ipaddr_ntoa_r (&tcp->pcb->remote_ip, srcstr, sizeof (srcstr));
-        ipaddr_ntoa_r (&tcp->pcb->local_ip, dststr, sizeof (dststr));
-
-        /* fake-IP 域名反查基于目标地址(local)；name 在 dns put 前完成使用 */
-        const char *name = NULL;
-        HevMappedDNS *dns = NULL;
-        if (IP_IS_V4_VAL (tcp->pcb->local_ip)) {
-            dns = hev_mapped_dns_get ();
-            if (dns) {
-                int rip = ntohl (ip4_addr_get_u32 (
-                    ip_2_ip4 (&tcp->pcb->local_ip)));
-                name = hev_mapped_dns_lookup (dns, rip);
-            }
-        }
-
-        char line[512];
-        int n;
-        if (name)
-            n = snprintf (line, sizeof (line),
-                          "6|%s|%u|%s|%u|%llu|%llu|%lld|%s\n",
-                          srcstr, tcp->pcb->remote_port,
-                          dststr, tcp->pcb->local_port,
-                          tcp->stat_upload, tcp->stat_download,
-                          tcp->created_ms, name);
-        else
-            n = snprintf (line, sizeof (line),
-                          "6|%s|%u|%s|%u|%llu|%llu|%lld\n",
-                          srcstr, tcp->pcb->remote_port,
-                          dststr, tcp->pcb->local_port,
-                          tcp->stat_upload, tcp->stat_download,
-                          tcp->created_ms);
-
-        if (dns)
-            hev_mapped_dns_put (dns);
-
-        if (n <= 0)
-            continue;
-
-        if (len + (size_t)n + 1 > cap) {
-            while (len + (size_t)n + 1 > cap)
-                cap *= 2;
-            char *nb = realloc (buf, cap);
-            if (!nb) {
-                free (buf);
-                pthread_mutex_unlock (&session_mutex);
-                return NULL;
-            }
-            buf = nb;
-        }
-        memcpy (buf + len, line, (size_t)n + 1);
-        len += (size_t)n;
-    }
-
-    pthread_mutex_unlock (&session_mutex);
-    return buf;
 }

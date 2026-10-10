@@ -22,11 +22,11 @@ void hev_socks5_tunnel_stats (size_t *tx_packets, size_t *tx_bytes,
                               size_t *rx_packets, size_t *rx_bytes);
 
 /**
- * 导出当前全部 TCP 会话文本，每行：
- * proto|srcIp|srcPort|dstIp|dstPort|upload|download|createdMs[|domain]。
- * 返回 malloc 分配的字符串（可能为空串），调用方负责 free。
+ * 导出当前会话清单为文本（每行一条）：
+ * proto|srcIp|srcPort|dstIp|dstPort|uploadBytes|downloadBytes|createdMs
+ * 由 JNI 轮询调用；返回写入长度（不含结尾 NUL）。
  */
-char *hev_socks5_tunnel_sessions (void);
+int hev_socks5_tunnel_get_sessions (char *out, int size);
 
 void hev_socks5_tunnel_update_session (HevListNode *node);
 
