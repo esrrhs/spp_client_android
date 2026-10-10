@@ -11,8 +11,11 @@ import org.junit.Test
 import java.io.DataInputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.ServerSocket
 import java.net.Socket
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 用户态分流（CN/LAN/domain split）端到端测试。
@@ -264,6 +267,100 @@ class ProxySplitE2ETest {
             }
         } finally {
             ctrl.close()
+        }
+    }
+
+    @Test
+    fun udp_deadUpstream_cooldownPreventsConnectStorm() {
+        // 计数型「死上游」：accept 后立即关连接，SOCKS5 认证必失败。
+        // start() 的预热会尝试 1 次后放弃；首个 UDP 报文再尝试 1 次即进入 5s 冷却，
+        // 之后突发的报文必须零新增连接，而不是逐包重连形成 connect 风暴。
+        val attempts = AtomicInteger(0)
+        val listener = ServerSocket(0, 128, InetAddress.getByName("127.0.0.1"))
+        val acceptor = Thread {
+            while (true) {
+                val s = try {
+                    listener.accept()
+                } catch (_: Exception) {
+                    break
+                }
+                attempts.incrementAndGet()
+                runCatching { s.close() }
+            }
+        }.also { it.isDaemon = true; it.start() }
+
+        val split = RuleSocksServer(
+            upstream = SocksUpstream("127.0.0.1", listener.localPort),
+            directDomains = emptySet(),
+        )
+        try {
+            split.start()
+            // 等待 start() 的预热尝试落账（恰好 1 次，失败即停止）
+            val deadline = System.currentTimeMillis() + 3000
+            while (attempts.get() < 1 && System.currentTimeMillis() < deadline) {
+                Thread.sleep(20)
+            }
+            val baseline = attempts.get()
+            assertTrue("prewarm must attempt once, got $baseline", baseline >= 1)
+
+            val ctrl = Socket("127.0.0.1", split.port!!)
+            ctrl.soTimeout = 5000
+            try {
+                val inn = DataInputStream(ctrl.getInputStream())
+                val out = ctrl.getOutputStream()
+                out.write(byteArrayOf(0x05, 0x01, 0x00)); out.flush()
+                assertEquals(0x05, inn.readUnsignedByte())
+                assertEquals(0x00, inn.readUnsignedByte())
+
+                out.write(
+                    Socks5Codec.buildRequest(
+                        Socks5Codec.CMD_UDP_ASSOCIATE, Socks5Codec.ATYP_IPV4.toInt(), "0.0.0.0", 0,
+                    ),
+                )
+                out.flush()
+                val bound = Socks5Codec.readReply(inn)
+                assertTrue("UDP ASSOCIATE reply expected", bound != null)
+                val relayPort = bound!!.second
+
+                val clientUdp = DatagramSocket()
+                try {
+                    val header = Socks5Codec.buildUdpHeader(
+                        Socks5Codec.ATYP_IPV4.toInt(), "1.1.1.1", 9,
+                    )
+
+                    fun sendDatagram(marker: String) {
+                        val payload = marker.toByteArray(Charsets.UTF_8)
+                        val pkt = ByteArray(header.size + payload.size)
+                        System.arraycopy(header, 0, pkt, 0, header.size)
+                        System.arraycopy(payload, 0, pkt, header.size, payload.size)
+                        clientUdp.send(
+                            DatagramPacket(pkt, pkt.size, InetSocketAddress("127.0.0.1", relayPort)),
+                        )
+                    }
+
+                    // 首包：触发一次上游建链失败 → 冷却
+                    sendDatagram("UDP_COOLDOWN_1")
+                    val afterFirst = System.currentTimeMillis() + 1000
+                    while (attempts.get() < baseline + 1 && System.currentTimeMillis() < afterFirst) {
+                        Thread.sleep(20)
+                    }
+                    assertEquals("first datagram must trigger exactly one upstream attempt",
+                        baseline + 1, attempts.get())
+
+                    // 突发 9 包：全部落在 5s 冷却窗内，零新增连接
+                    repeat(9) { sendDatagram("UDP_COOLDOWN_BURST_$it") }
+                    Thread.sleep(600)
+                    assertEquals("cooldown window must drop burst without reconnecting",
+                        baseline + 1, attempts.get())
+                } finally {
+                    clientUdp.close()
+                }
+            } finally {
+                ctrl.close()
+            }
+        } finally {
+            runCatching { split.stop() }
+            runCatching { listener.close() }
         }
     }
 

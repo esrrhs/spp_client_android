@@ -16,6 +16,7 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 /** 上游 SOCKS5。SPP 模式是本机 socks5_client；SOCKS5 模式是远端代理。 */
@@ -43,7 +44,8 @@ data class SocksUpstream(
  * - UDP ASSOCIATE：逐报文解析 SOCKS5 目标，直连目标由本进程 DatagramSocket 直发，
  *   其余经上游 UDP 中继；上游中继按需懒建立，纯直连会话零上游连接。
  *   直连本地失败（域名解析失败/socket 异常）时与 TCP 一样短期惩罚并立即改经上游，
- *   不静默丢报文。
+ *   不静默丢报文。上游 ASSOCIATE 失败则进入短暂冷却窗（防突发流量逐包建链风暴），
+ *   冷却期后自动重试；上游中继失效（发送异常）即拆链，下一包懒重建自愈。
  *
  * 纯阻塞 IO + 守护线程，生命周期与 VPN 数据面一致。
  */
@@ -78,6 +80,9 @@ class RuleSocksServer(
 
     /** 直连域名 DNS 缓存（实例级，TTL 60s；网络切换后随会话重建清空）。 */
     private val dnsCache = ConcurrentHashMap<String, DnsCacheEntry>()
+
+    /** 上游失败冷却截止时间（实例级，切网重建即清零；0 = 无冷却）。 */
+    private val upstreamCooldownUntilMs = AtomicLong(0)
 
     val port: Int? get() = server?.localPort
 
@@ -566,6 +571,10 @@ class RuleSocksServer(
 
         /** 整包（仍带 SOCKS 头）转发上游 UDP 中继；上游未建立时懒建立。 */
         private fun sendUpstream(data: ByteArray, len: Int) {
+            if (System.currentTimeMillis() < upstreamCooldownUntilMs.get()) {
+                // 上游刚失败过（冷却窗内）：快速丢弃，避免突发流量逐包触发建链风暴
+                return
+            }
             if (!ensureUpstream()) return
             val relay = upRelay ?: return
             val target = upstreamRelay ?: return
@@ -573,6 +582,20 @@ class RuleSocksServer(
                 relay.send(DatagramPacket(data.copyOf(len), len, target))
             } catch (e: Exception) {
                 if (running.get()) Log.w(TAG, "udp to-upstream: ${e.message}")
+                // 上游会话已失效：拆链（receiveUpstreamLoop 随 socket 关闭退出），下一包懒重建自愈
+                resetUpstream()
+            }
+        }
+
+        /** 拆除上游 ASSOCIATE 会话；仅在失败/失效路径调用，成功路径不复位。 */
+        private fun resetUpstream() {
+            synchronized(gate) {
+                runCatching { upControl?.close() }
+                runCatching { upRelay?.close() }
+                synchronized(relays) { upRelay?.let { relays.remove(it) } }
+                upControl = null
+                upRelay = null
+                upstreamRelay = null
             }
         }
 
@@ -623,6 +646,8 @@ class RuleSocksServer(
                     upControl = null
                     upRelay = null
                     upstreamRelay = null
+                    // 冷却窗：防突发流量逐包重试建链（TCP CONNECT 逐包排队会雪崩）
+                    upstreamCooldownUntilMs.set(System.currentTimeMillis() + UPSTREAM_COOLDOWN_MS)
                     return false
                 }
             }
@@ -829,6 +854,9 @@ class RuleSocksServer(
 
         /** 直连失败的惩罚时长（毫秒）：此时间内该目标直接走代理，消除并发或连续请求的重复回退等待。 */
         const val DIRECT_PENALTY_MS = 180_000L // 3 分钟
+
+        /** 上游 UDP ASSOCIATE 失败后的冷却时长（毫秒）：冷却期内报文直接丢弃，防逐包建链风暴。 */
+        const val UPSTREAM_COOLDOWN_MS = 5_000L
 
         /** RFC 8305 Happy Eyeballs 先发优势窗口（毫秒）。 */
         const val HAPPY_EYEBALLS_HEAD_START_MS = 250L
