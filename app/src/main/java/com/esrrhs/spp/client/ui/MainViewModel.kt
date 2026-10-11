@@ -94,19 +94,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _selfCheck = MutableStateFlow<SelfCheckState>(SelfCheckState.Idle)
     val selfCheck: StateFlow<SelfCheckState> = _selfCheck
+    private val selfCheckGate = GenerationGate()
 
     /** 已连接时对当前隧道做出口 IP / DNS 路径自检。 */
     fun runSelfCheck() {
+        if (_selfCheck.value is SelfCheckState.Running) return
         val port = ActiveSession.socksPort
         if (VpnStateHolder.state.value !is VpnState.Connected || port == null) return
         viewModelScope.launch {
             _selfCheck.value = SelfCheckState.Running
+            val token = selfCheckGate.token()
             val result = withContext(Dispatchers.IO) { TunnelCheck.run(port) }
-            _selfCheck.value = SelfCheckState.Done(result)
+            // 用户已关闭弹窗则丢弃本次结果，不复活对话框
+            if (selfCheckGate.isCurrent(token)) _selfCheck.value = SelfCheckState.Done(result)
         }
     }
 
     fun dismissSelfCheck() {
+        selfCheckGate.bump()
         _selfCheck.value = SelfCheckState.Idle
     }
 
@@ -115,23 +120,29 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** IPv4/IPv6/DNS 防泄漏专项检测（经当前隧道）。 */
     fun runLeakCheck() {
+        if (_leak.value is LeakState.Running) return
         val port = ActiveSession.socksPort
         if (VpnStateHolder.state.value !is VpnState.Connected || port == null) return
         viewModelScope.launch {
             _leak.value = LeakState.Running
+            val token = leakGate.token()
             val report = withContext(Dispatchers.IO) { LeakCheck.run(port) }
-            _leak.value = LeakState.Done(report)
+            if (leakGate.isCurrent(token)) _leak.value = LeakState.Done(report)
         }
     }
 
+    private val leakGate = GenerationGate()
+
     private val _ipQuery = MutableStateFlow<IpQueryState>(IpQueryState.Idle)
     val ipQuery: StateFlow<IpQueryState> = _ipQuery
+    private val ipQueryGate = GenerationGate()
 
     /** 查询直连出口与隧道出口 IP 归属地。 */
     fun runIpQuery() {
         if (_ipQuery.value is IpQueryState.Running) return
         viewModelScope.launch {
             _ipQuery.value = IpQueryState.Running
+            val token = ipQueryGate.token()
             val language = if (getLanguage() == "zh") "zh-CN" else "en"
             val direct = withContext(Dispatchers.IO) {
                 runCatching { com.esrrhs.spp.client.util.IpQuery.queryDirect(language) }
@@ -146,11 +157,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             } else {
                 null
             }
-            _ipQuery.value = IpQueryState.Done(direct, tunnel)
+            if (ipQueryGate.isCurrent(token)) _ipQuery.value = IpQueryState.Done(direct, tunnel)
         }
     }
 
     fun dismissIpQuery() {
+        ipQueryGate.bump()
         _ipQuery.value = IpQueryState.Idle
     }
 

@@ -59,7 +59,10 @@ fun LeakScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            OutlinedButton(onClick = onRun, enabled = connected) {
+            OutlinedButton(
+                onClick = onRun,
+                enabled = connected && state !is LeakState.Running,
+            ) {
                 Text(stringResource(R.string.leak_run))
             }
             if (!connected) {
