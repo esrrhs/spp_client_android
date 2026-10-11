@@ -97,11 +97,15 @@ class RuleSocksServer(
         bypassPrivate = bypassPrivate,
     )
 
-    /** 直连失败短期惩罚缓存（实例级：网络切换/会话停止随本对象一起丢弃）。 */
-    private val directPenaltyCache = ConcurrentHashMap<String, Long>()
+    /**
+     * 直连失败短期惩罚缓存（实例级：网络切换/会话停止随本对象一起丢弃）。
+     * 有硬上限：UDP 惩罚键含端口，唯一失败目标的基数不受控，长会话不能无界增长。
+     */
+    private val directPenaltyCache = BoundedTtlCache<Unit>(DIRECT_PENALTY_CACHE_MAX)
 
-    /** 直连域名 DNS 缓存（实例级，TTL 60s；网络切换后随会话重建清空）。 */
-    private val dnsCache = ConcurrentHashMap<String, DnsCacheEntry>()
+    /** 直连域名 DNS 缓存（实例级，TTL 60s；网络切换后随会话重建清空），LRU 有上限。 */
+    private val dnsCache =
+        BoundedTtlCache<List<InetAddress>>(DNS_CACHE_MAX, accessOrder = true)
 
     /** 上游失败冷却截止时间（实例级，切网重建即清零；0 = 无冷却）。 */
     private val upstreamCooldownUntilMs = AtomicLong(0)
@@ -1095,15 +1099,11 @@ class RuleSocksServer(
         Log.w(TAG, "udp $dir datagram ${length}B > $HEV_UDP_RECV_LIMIT; hev will truncate QUIC")
     }
 
-    private fun isDirectPenalized(key: String): Boolean {
-        val expire = directPenaltyCache[key] ?: return false
-        if (System.currentTimeMillis() < expire) return true
-        directPenaltyCache.remove(key)
-        return false
-    }
+    private fun isDirectPenalized(key: String): Boolean =
+        directPenaltyCache.get(key, System.currentTimeMillis()) != null
 
     private fun markDirectPenalized(key: String) {
-        directPenaltyCache[key] = System.currentTimeMillis() + DIRECT_PENALTY_MS
+        directPenaltyCache.put(key, Unit, System.currentTimeMillis() + DIRECT_PENALTY_MS)
     }
 
     // ---- UDP 直连惩罚（与 TCP 共用缓存；udp: 前缀避免与 TCP 的裸 host 键冲突） ----
@@ -1125,21 +1125,18 @@ class RuleSocksServer(
      */
     private fun resolveHost(host: String): List<InetAddress> {
         val now = System.currentTimeMillis()
-        dnsCache[host]?.let { cached ->
-            if (now < cached.expireMs) return cached.addrs
-        }
+        dnsCache.get(host, now)?.let { return it }
         val resolved = runWithBudget(dnsLookupPool, DNS_RESOLVE_BUDGET_MS) {
             InetAddress.getAllByName(host).toList()
         }.orEmpty()
         if (resolved.isNotEmpty()) {
             val ordered = resolved.sortedBy { if (it is Inet6Address) 1 else 0 }
-            dnsCache[host] = DnsCacheEntry(ordered, now + DNS_CACHE_TTL_MS)
+            dnsCache.put(host, ordered, now + DNS_CACHE_TTL_MS)
             return ordered
         }
-        return dnsCache[host]?.addrs.orEmpty()
+        // 解析失败时沿用上次的成功结果（无视过期，冷启动/被 LRU 淘汰后没有则为空）
+        return dnsCache.getStale(host).orEmpty()
     }
-
-    private data class DnsCacheEntry(val addrs: List<InetAddress>, val expireMs: Long)
 
     internal companion object {
         const val TAG = "RuleSocksServer"
@@ -1166,6 +1163,12 @@ class RuleSocksServer(
 
         /** 直连失败的惩罚时长（毫秒）：此时间内该目标直接走代理，消除并发或连续请求的重复回退等待。 */
         const val DIRECT_PENALTY_MS = 180_000L // 3 分钟
+
+        /** 直连惩罚缓存硬上限：UDP 惩罚键含端口，防止长会话内唯一失败目标堆积无界增长。 */
+        const val DIRECT_PENALTY_CACHE_MAX = 1024
+
+        /** 直连 DNS 缓存硬上限（LRU）：超出淘汰最久未访问的域名解析。 */
+        const val DNS_CACHE_MAX = 512
 
         /** 上游 UDP ASSOCIATE 失败后的冷却时长（毫秒）：冷却期内报文直接丢弃，防逐包建链风暴。 */
         const val UPSTREAM_COOLDOWN_MS = 5_000L
