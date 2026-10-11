@@ -13,8 +13,12 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -46,6 +50,8 @@ data class SocksUpstream(
  *   直连本地失败（域名解析失败/socket 异常）时与 TCP 一样短期惩罚并立即改经上游，
  *   不静默丢报文。上游 ASSOCIATE 失败则进入短暂冷却窗（防突发流量逐包建链风暴），
  *   冷却期后自动重试；上游中继失效（发送异常）即拆链，下一包懒重建自愈。
+ *   域名直连的本地 DNS 解析在专用有界单线程上异步执行，弱网下慢解析不会阻塞
+ *   run() 单循环而冻住其它 UDP 流量；解析队列堆积时新报文直接回退上游。
  *
  * 纯阻塞 IO + 守护线程，生命周期与 VPN 数据面一致。
  */
@@ -512,6 +518,12 @@ class RuleSocksServer(
         private var directV6: DatagramSocket? = null
         private val oversizeLogged = AtomicBoolean(false)
 
+        /**
+         * 域名直连解析的专用有界单线程执行器（懒创建：纯代理/纯 IP 会话零线程）。
+         * 1 线程串行 + 有界队列天然限流，避免慢解析堆积也避免线程爆炸。
+         */
+        private var resolveExecutor: ThreadPoolExecutor? = null
+
         /** RFC 1928：只与发起 ASSOCIATE 的客户端地址通信，首个报文锁定。 */
         private val peer = AtomicReference<InetSocketAddress>()
 
@@ -542,12 +554,37 @@ class RuleSocksServer(
                 // 与 TCP 对称：命中直连且不在惩罚窗内才走本地直发；
                 // 直连本地失败或此前已被惩罚时，立即改经上游，不丢报文。
                 val ruleDirect = shouldDirect(endpoint.host, endpoint.atyp)
-                val penaltyKey = udpDirectKey(endpoint.host, endpoint.port)
-                val directOk = ruleDirect &&
-                    !isDirectPenalizedKey(penaltyKey) &&
-                    sendDirect(endpoint, packet.data, payloadOffset, payloadLen)
-                if (!directOk) {
+                val skipDirect = !ruleDirect ||
+                    isDirectPenalizedKey(udpDirectKey(endpoint.host, endpoint.port))
+
+                if (skipDirect) {
                     sendUpstream(packet.data, packet.length)
+                } else if (endpoint.atyp == Socks5Codec.ATYP_DOMAIN.toInt()) {
+                    // 域名解析（getAllByName）在弱网下可阻塞数十秒，绝不能在 run() 单循环上做：
+                    // 一个慢域名会冻住全部 UDP 报文。拷贝报文后交给专用解析线程异步直发，
+                    // run() 不等待、继续处理其它报文；解析失败由任务内自行回退上游。
+                    val copy = packet.data.copyOf(packet.length)
+                    val executor = obtainResolveExecutor()
+                    var accepted = false
+                    if (executor != null) {
+                        try {
+                            executor.execute {
+                                if (!sendDirect(endpoint, copy, payloadOffset, payloadLen)) {
+                                    sendUpstream(copy, copy.size)
+                                }
+                            }
+                            accepted = true
+                        } catch (_: RejectedExecutionException) {
+                            accepted = false
+                        }
+                    }
+                    // 解析队列已堆积（背压）：不排队、不阻塞，直接走上游（上游本就会解析）。
+                    if (!accepted) sendUpstream(copy, copy.size)
+                } else {
+                    // IP 字面量：本地 send 立即返回，保持同步快速路径。
+                    if (!sendDirect(endpoint, packet.data, payloadOffset, payloadLen)) {
+                        sendUpstream(packet.data, packet.length)
+                    }
                 }
             }
         }
@@ -567,6 +604,28 @@ class RuleSocksServer(
             directV4 = null
             directV6 = null
             upstreamRelay = null
+            // 关闭解析执行器：正在进行的解析被中断，排队任务丢弃（ASSOCIATE 已拆除，无后续报文）。
+            resolveExecutor?.let { exec ->
+                resolveExecutor = null
+                exec.shutdownNow()
+                runCatching { exec.awaitTermination(200, TimeUnit.MILLISECONDS) }
+            }
+        }
+
+        /** 懒创建域名直连解析执行器（gate 内）；失败返回 null（调用方直接走上游）。 */
+        private fun obtainResolveExecutor(): ThreadPoolExecutor? = synchronized(gate) {
+            resolveExecutor?.let { return it }
+            if (!running.get()) return null
+            val exec = runCatching {
+                ThreadPoolExecutor(
+                    1, 1, 0L, TimeUnit.MILLISECONDS,
+                    ArrayBlockingQueue(RESOLVE_QUEUE_CAPACITY),
+                    { r -> Thread(r, "udp-direct-resolve").apply { isDaemon = true } },
+                    ThreadPoolExecutor.AbortPolicy(),
+                )
+            }.getOrNull() ?: return null
+            resolveExecutor = exec
+            exec
         }
 
         /** 整包（仍带 SOCKS 头）转发上游 UDP 中继；上游未建立时懒建立。 */
@@ -900,6 +959,9 @@ class RuleSocksServer(
 
         /** 上游 UDP ASSOCIATE 失败后的冷却时长（毫秒）：冷却期内报文直接丢弃，防逐包建链风暴。 */
         const val UPSTREAM_COOLDOWN_MS = 5_000L
+
+        /** 域名直连解析任务的排队上限：超出即回退上游，避免慢解析无限堆积。 */
+        const val RESOLVE_QUEUE_CAPACITY = 16
 
         /** RFC 8305 Happy Eyeballs 先发优势窗口（毫秒）。 */
         const val HAPPY_EYEBALLS_HEAD_START_MS = 250L

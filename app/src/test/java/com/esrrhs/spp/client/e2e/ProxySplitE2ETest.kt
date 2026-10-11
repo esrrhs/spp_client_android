@@ -478,6 +478,75 @@ class ProxySplitE2ETest {
         }
     }
 
+    @Test
+    fun udp_domainDirect_resolvesAsyncWithoutBlockingProxiedFlow() {
+        // 自包含夹具：.invalid 命中域名直连规则但本地解析必失败。
+        // 域名解析在专用线程异步进行：run() 不得等待它，紧随其后的代理报文必须照常转发。
+        val upstream = MockUpstreamSocks5Server("127.0.0.1").also { it.start() }
+        val split = RuleSocksServer(
+            upstream = SocksUpstream("127.0.0.1", upstream.port),
+            directDomains = setOf("nonexistent-spp-test.invalid"),
+        )
+        try {
+            split.start()
+            val ctrl = Socket("127.0.0.1", split.port!!)
+            ctrl.soTimeout = 5000
+            try {
+                val inn = DataInputStream(ctrl.getInputStream())
+                val out = ctrl.getOutputStream()
+                out.write(byteArrayOf(0x05, 0x01, 0x00)); out.flush()
+                assertEquals(0x05, inn.readUnsignedByte())
+                assertEquals(0x00, inn.readUnsignedByte())
+                out.write(
+                    Socks5Codec.buildRequest(
+                        Socks5Codec.CMD_UDP_ASSOCIATE, Socks5Codec.ATYP_IPV4.toInt(), "0.0.0.0", 0,
+                    ),
+                )
+                out.flush()
+                val bound = Socks5Codec.readReply(inn)
+                assertTrue("UDP ASSOCIATE reply expected", bound != null)
+                val relayPort = bound!!.second
+
+                val clientUdp = DatagramSocket()
+                try {
+                    fun send(atyp: Int, host: String, port: Int, marker: String) {
+                        val header = Socks5Codec.buildUdpHeader(atyp, host, port)
+                        val payload = marker.toByteArray(Charsets.UTF_8)
+                        val pkt = ByteArray(header.size + payload.size)
+                        System.arraycopy(header, 0, pkt, 0, header.size)
+                        System.arraycopy(payload, 0, pkt, header.size, payload.size)
+                        clientUdp.send(
+                            DatagramPacket(pkt, pkt.size, InetSocketAddress("127.0.0.1", relayPort)),
+                        )
+                    }
+
+                    // 报文 1：域名直连（解析慢/失败，在解析线程异步进行，run() 不等待）
+                    send(Socks5Codec.ATYP_DOMAIN.toInt(), "nonexistent-spp-test.invalid", 40001, "ASYNC_DOMAIN")
+                    // 报文 2：普通代理报文；即使上一条仍在解析，也必须立即转发（无队头阻塞）
+                    send(Socks5Codec.ATYP_IPV4.toInt(), "1.1.1.1", 9, "ASYNC_PROXIED")
+
+                    // 两条都应经同一懒建立的上游 ASSOCIATE 到达 mock
+                    val deadline = System.currentTimeMillis() + 4000
+                    while (upstream.udpRelayedDatagrams < 2 && System.currentTimeMillis() < deadline) {
+                        Thread.sleep(15)
+                    }
+                    assertEquals("both datagrams must reach upstream via one association",
+                        2, upstream.udpRelayedDatagrams)
+                    Thread.sleep(300)
+                    assertEquals("both flows share a single lazy upstream ASSOCIATE",
+                        1, upstream.udpAssociateRequests)
+                } finally {
+                    clientUdp.close()
+                }
+            } finally {
+                ctrl.close()
+            }
+        } finally {
+            runCatching { split.stop() }
+            runCatching { upstream.close() }
+        }
+    }
+
     // ---------------- helpers ----------------
 
     private fun tcpThroughProxy(
