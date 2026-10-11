@@ -630,23 +630,18 @@ class SppVpnService : VpnService() {
         return builder
     }
 
-    /** 分应用代理规则；已卸载的包忽略。 */
+    /** 分应用代理规则；已卸载的包忽略。自身始终在黑名单，防本进程流量回环进 TUN。 */
     private fun applyPerApp(builder: Builder, profile: Profile) {
-        when (profile.perAppMode) {
-            PerAppMode.ALL ->
-                runCatching { builder.addDisallowedApplication(packageName) }
-
-            PerAppMode.ALLOWED ->
-                profile.perAppPackages.distinct().forEach { pkg ->
-                    runCatching { builder.addAllowedApplication(pkg) }
-                }
-
-            PerAppMode.DISALLOWED -> {
-                runCatching { builder.addDisallowedApplication(packageName) }
-                profile.perAppPackages.distinct().filter { it != packageName }.forEach { pkg ->
-                    runCatching { builder.addDisallowedApplication(pkg) }
-                }
-            }
+        val routing = PerAppRoutingResolver.resolve(
+            profile.perAppMode,
+            profile.perAppPackages,
+            packageName,
+        )
+        routing.disallowedPackages.forEach { pkg ->
+            runCatching { builder.addDisallowedApplication(pkg) }
+        }
+        routing.allowedPackages.forEach { pkg ->
+            runCatching { builder.addAllowedApplication(pkg) }
         }
     }
 
