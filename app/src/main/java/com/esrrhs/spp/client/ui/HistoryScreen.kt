@@ -1,6 +1,7 @@
 package com.esrrhs.spp.client.ui
 
 import android.graphics.drawable.Drawable
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
@@ -82,6 +83,8 @@ fun HistoryScreen(
     onClear: () -> Unit,
     onDelete: (ConnectionLogEntry) -> Unit,
 ) {
+    // 系统 BACK 回到主界面，与顶栏返回一致；清空确认弹窗打开时由 Dialog 优先消费
+    BackHandler(onBack = onBack)
     var confirmClear by remember { mutableStateOf(false) }
     var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var resultFilter by remember { mutableStateOf(HistoryResultFilter.ALL) }

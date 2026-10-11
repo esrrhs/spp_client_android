@@ -131,20 +131,25 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
 
-        // 来自 Quick Settings 磁贴：VPN 尚未授权时先打开本页，授权后立即连接
-        if (intent?.getBooleanExtra(EXTRA_CONNECT, false) == true) {
-            lifecycleScope.launch {
-                val id = viewModel.awaitActiveProfileId()
-                if (id != null) {
-                    prepareConnectOrDisconnect(id)
-                } else {
-                    toast(getString(R.string.toast_add_profile_first))
+        // 仅首次创建处理启动 Intent：旋转/进程恢复导致的重建会带着同一个 Intent
+        // 再走这里——深度链接会重复导入（撞 id 后仓库会换新 UUID 产生重复配置），
+        // 磁贴 EXTRA_CONNECT 在已连接时重建甚至会误触发断开。
+        if (savedInstanceState == null) {
+            // 来自 Quick Settings 磁贴：VPN 尚未授权时先打开本页，授权后立即连接
+            if (intent?.getBooleanExtra(EXTRA_CONNECT, false) == true) {
+                lifecycleScope.launch {
+                    val id = viewModel.awaitActiveProfileId()
+                    if (id != null) {
+                        prepareConnectOrDisconnect(id)
+                    } else {
+                        toast(getString(R.string.toast_add_profile_first))
+                    }
                 }
             }
-        }
 
-        // spp:// 深度链接冷启动导入
-        handleProfileLink(intent)
+            // spp:// 深度链接冷启动导入
+            handleProfileLink(intent)
+        }
 
         setContent {
             SppClientTheme {

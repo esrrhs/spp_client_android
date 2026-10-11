@@ -1,5 +1,6 @@
 package com.esrrhs.spp.client.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -51,6 +52,8 @@ fun ProfileEditorScreen(
     onPickApps: (Set<String>) -> Unit,
     onBack: () -> Unit,
 ) {
+    // 系统 BACK 放弃编辑回主界面，与顶栏返回一致
+    BackHandler(onBack = onBack)
     var profile by remember { mutableStateOf(initial) }
 
     Scaffold(
