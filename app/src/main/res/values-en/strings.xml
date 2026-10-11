@@ -38,6 +38,8 @@
     <string name="err_host_required">Please enter the server address</string>
     <string name="err_port_range">Port must be between 1 and 65535</string>
     <string name="err_key_required">Please enter the auth key</string>
+    <string name="err_kind_unsupported">Invalid profile kind (only spp / socks5 supported); the profile may be corrupted or tampered</string>
+    <string name="err_proto_unsupported">Invalid transport protocol; supported: tcp, rudp, kcp, quic, rhttp</string>
     <string name="error_missing_native">libspp.so is missing. Run scripts/build_native.sh before packaging.</string>
     <string name="error_spp_session">Cannot establish an SPP session (connection timeout). Check the server address, key/encrypt and network:\n%1$s</string>
     <string name="error_spp_exited">The SPP client exited early:\n%1$s</string>
@@ -63,6 +65,7 @@
     <string name="toast_export_failed">Export failed: %1$s</string>
     <string name="toast_import_empty">No valid profiles found in the file</string>
     <string name="toast_imported_count">Imported %1$d profile(s)</string>
+    <string name="toast_import_partial">Imported %1$d profile(s), skipped %2$d invalid profile(s)</string>
     <string name="toast_import_failed">Import failed: %1$s</string>
 
     <string name="scan_prompt">Point the SPP profile QR code at the frame</string>
