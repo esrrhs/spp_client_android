@@ -1017,7 +1017,7 @@ class RuleSocksServer(
 
     private data class DnsCacheEntry(val addrs: List<InetAddress>, val expireMs: Long)
 
-    private companion object {
+    internal companion object {
         const val TAG = "RuleSocksServer"
         const val CONNECT_TIMEOUT_MS = 3000
         /** 单个地址的连接尝试上限，保证失败时秒级回退代理，不让用户等待。 */
