@@ -8,6 +8,37 @@ import java.net.InetSocketAddress
 
 class RuleSocksServerTest {
 
+    private fun daemonPool(): java.util.concurrent.ExecutorService =
+        java.util.concurrent.Executors.newCachedThreadPool { r ->
+            Thread(r).apply { isDaemon = true }
+        }
+
+    @Test
+    fun runWithBudget_fastWork_returnsValue() {
+        val result = RuleSocksServer.runWithBudget(daemonPool(), 1000) { "ok" }
+        assertEquals("ok", result)
+    }
+
+    @Test
+    fun runWithBudget_slowWork_timesOutAndReturnsNullFast() {
+        val start = System.currentTimeMillis()
+        val result = RuleSocksServer.runWithBudget(daemonPool(), 100) {
+            Thread.sleep(800)
+            "late"
+        }
+        val elapsed = System.currentTimeMillis() - start
+        assertEquals(null, result)
+        assertTrue("must return near the budget, took ${elapsed}ms", elapsed < 600)
+    }
+
+    @Test
+    fun runWithBudget_throwingWork_returnsNull() {
+        val result = RuleSocksServer.runWithBudget(daemonPool(), 1000) {
+            throw java.net.UnknownHostException("x")
+        }
+        assertEquals(null, result)
+    }
+
     @Test
     fun upstreamRelayAddress_loopbackUses127001() {
         val server = RuleSocksServer(SocksUpstream("127.0.0.1", 1080), emptySet())
