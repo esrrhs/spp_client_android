@@ -7,36 +7,46 @@ import org.junit.Test
 /**
  * 仅调用纯 JVM 的 encodable（zxing core 无 Android 依赖）；
  * toBitmap 涉及 android.graphics.Bitmap，不在 JVM 单测覆盖。
+ *
+ * QR v40-L 容量随编码模式变化：数字 7089、字母数字 4296、字节 2953。
+ * 真实分享文本是 spp:// + base64（含小写字母），zxing 只能走字节模式。
  */
 class QrCodesTest {
 
+    private fun base64Like(length: Int): String {
+        val alphabet = "aB3xZ9qR7mK2pS8"
+        return buildString(length) {
+            repeat(length) { append(alphabet[it % alphabet.length]) }
+        }
+    }
+
     @Test
-    fun normalSharePayload_isEncodable() {
+    fun typicalSharePayload_isEncodable() {
         // 典型 spp:// base64 配置（数百字节）
-        val payload = "spp://" + "A".repeat(500)
-        assertTrue(QrCodes.encodable(payload))
+        assertTrue(QrCodes.encodable("spp://" + base64Like(500)))
     }
 
     @Test
-    fun emptyText_isEncodable() {
-        assertTrue(QrCodes.encodable(""))
+    fun emptyText_isRejected() {
+        // zxing 不接受空内容（真实 UI 也不可达：分享文本恒带 spp:// 前缀）
+        assertFalse(QrCodes.encodable(""))
     }
 
     @Test
-    fun asciiTextBeyondQrCapacity_isNotEncodable() {
-        // QR 40-L 上限约 2953 字节，4000 个 ASCII 必超
-        assertFalse(QrCodes.encodable("A".repeat(4000)))
+    fun byteModeJustWithinCapacity_isEncodable() {
+        // 含小写字母强制字节模式，2000 < 2953
+        assertTrue(QrCodes.encodable(base64Like(2000)))
     }
 
     @Test
-    fun multibyteBeyondQrCapacity_isNotEncodable() {
-        // 每个中文字符 UTF-8 占 3 字节，1500 字 ≈ 4500 字节
-        assertFalse(QrCodes.encodable("中".repeat(1500)))
+    fun base64PayloadBeyondByteModeCapacity_isNotEncodable() {
+        // 模拟超长 key 的 base64 分享文本：3000 > 字节模式上限 2953
+        assertFalse(QrCodes.encodable("spp://" + base64Like(3000)))
     }
 
     @Test
-    fun nearButWithinCapacity_isEncodable() {
-        // 2000 字节在 40-L 容量内
-        assertTrue(QrCodes.encodable("A".repeat(2000)))
+    fun beyondAlphanumericCapacity_isNotEncodable() {
+        // 纯大写字母走 ALPHANUMERIC 模式，4500 > 其上限 4296
+        assertFalse(QrCodes.encodable("A".repeat(4500)))
     }
 }
