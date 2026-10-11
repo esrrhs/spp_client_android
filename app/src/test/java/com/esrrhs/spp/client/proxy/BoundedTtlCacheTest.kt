@@ -16,8 +16,8 @@ class BoundedTtlCacheTest {
 
         // 到期即未命中
         assertNull(cache.get("a", now = 100))
-        // 过期命中时顺手移除，不占容量
-        assertEquals(0, cache.size)
+        // 过期条目保留（getStale 兜底需要它），空间由容量淘汰回收
+        assertEquals(1, cache.size)
     }
 
     @Test
