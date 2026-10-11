@@ -75,9 +75,14 @@ object ConnectionRecorder {
                 val interval = now - lastMs
                 val isUiObserving = _liveGroups.subscriptionCount.value > 0
 
-                // 诊断：记录 hev 原生会话原文，排查长流为何不出现在连接列表
-                android.util.Log.i("ConnRecDiag",
-                    "uiObserve=$isUiObserving sessions=" + (HevTunnel.sessions() ?: "null"))
+                // 每 tick 只做一次原生会话枚举（256KB JNI 缓冲 + 会话表遍历），
+                // 诊断日志与下方采样共用同一份原文。
+                val rawSessions = HevTunnel.sessions().orEmpty()
+
+                // 诊断：记录 hev 原生会话原文，排查长流为何不出现在连接列表。
+                // logd 单条负载约 4KB，整串直打会被静默截断——按行边界分块、总量封顶。
+                LogcatChunks.chunk("uiObserve=$isUiObserving sessions=$rawSessions")
+                    .forEach { chunk -> android.util.Log.i("ConnRecDiag", chunk) }
 
                 val liveRows = if (isUiObserving) {
                     sample = ActiveConnections.snapshot(
@@ -87,6 +92,7 @@ object ConnectionRecorder {
                         nowMs = now,
                         intervalMs = interval,
                         direct = direct,
+                        rawSessions = rawSessions,
                     )
                     _liveGroups.value = sample.groups
                     sample.liveRows
@@ -96,6 +102,7 @@ object ConnectionRecorder {
                         context = appContext,
                         profile = profile,
                         direct = direct,
+                        rawSessions = rawSessions,
                     )
                 }
 

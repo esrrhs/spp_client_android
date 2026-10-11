@@ -116,8 +116,13 @@ object ActiveConnections {
          * 无规则（纯全局代理）时传 [DirectClassifier.EMPTY]。
          */
         direct: DirectClassifier = DirectClassifier.EMPTY,
+        /**
+         * 调用方在本轮已取过的 hev 原生会话原文（含诊断日志等复用场景）：
+         * 透传可避免每 tick 重复一次 256KB JNI 缓冲填充与原生会话表枚举。
+         */
+        rawSessions: String? = null,
     ): ConnectionSample {
-        val sessions = parseSessions(HevTunnel.sessions().orEmpty())
+        val sessions = parseSessions(rawSessions ?: HevTunnel.sessions().orEmpty())
 
         val cm = context.getSystemService(ConnectivityManager::class.java)
         val pm = context.packageManager
@@ -278,10 +283,12 @@ object ActiveConnections {
         context: Context,
         profile: Profile?,
         direct: DirectClassifier = DirectClassifier.EMPTY,
+        /** 同 [snapshot]：复用调用方已取的原生会话原文，避免重复 JNI 枚举。 */
+        rawSessions: String? = null,
     ): List<HistoryRow> {
         val cm = context.getSystemService(ConnectivityManager::class.java)
         val allowedPackages = profile?.perAppPackages?.toSet().orEmpty()
-        return parseSessions(HevTunnel.sessions().orEmpty()).mapNotNull { s ->
+        return parseSessions(rawSessions ?: HevTunnel.sessions().orEmpty()).mapNotNull { s ->
             val uid = ownerUid(cm, s)
             val info = resolveAppInfo(context, uid)
             val pkg = info.packageName
