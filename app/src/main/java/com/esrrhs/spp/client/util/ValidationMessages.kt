@@ -16,6 +16,7 @@ object ValidationMessages {
             ValidationError.KEY_REQUIRED -> R.string.err_key_required
             ValidationError.KIND_UNSUPPORTED -> R.string.err_kind_unsupported
             ValidationError.PROTO_UNSUPPORTED -> R.string.err_proto_unsupported
+            ValidationError.CREDENTIALS_TOO_LONG -> R.string.err_credentials_too_long
         },
     )
 }

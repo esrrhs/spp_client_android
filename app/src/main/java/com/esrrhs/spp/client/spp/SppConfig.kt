@@ -39,7 +39,16 @@ data class SppConfig(
         serverPort !in 1..65535 -> ValidationError.PORT_RANGE
         // SOCKS5 无 SPP 传输协议/Key；proto 白名单只约束 SPP 模式（编辑器下拉之外
         // 的取值只能来自扫码/文件导入，不应原样拼给 spp 子进程）
-        isSocks5 -> null
+        isSocks5 ->
+            // RFC 1929 用户名/密码长度字段只有 1 字节，按 UTF-8 计各上限 255；
+            // Socks5Codec 对超长凭证直接握手失败，提前到校验给出明确错误
+            if (username.toByteArray(Charsets.UTF_8).size > MAX_SOCKS5_CREDENTIAL_BYTES ||
+                password.toByteArray(Charsets.UTF_8).size > MAX_SOCKS5_CREDENTIAL_BYTES
+            ) {
+                ValidationError.CREDENTIALS_TOO_LONG
+            } else {
+                null
+            }
         key.isBlank() -> ValidationError.KEY_REQUIRED
         proto !in PROTOS -> ValidationError.PROTO_UNSUPPORTED
         else -> null
@@ -55,5 +64,8 @@ data class SppConfig(
          * tcp rudp ricmp kcp quic rhttp。ricmp 需要 root，不提供。
          */
         val PROTOS = listOf("tcp", "rudp", "kcp", "quic", "rhttp")
+
+        /** RFC 1929 用户名/密码各最多 255 字节（长度字段 1 字节）。 */
+        const val MAX_SOCKS5_CREDENTIAL_BYTES = 255
     }
 }
