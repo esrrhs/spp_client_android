@@ -40,6 +40,25 @@ class RuleSocksServerTest {
     }
 
     @Test
+    fun enableMobileKeepAlive_setsFlagAndKeepsSocketUsable() {
+        // JVM 上 android.system.Os 反射失败被吞，SO_KEEPALIVE 仍应生效且连接不受影响。
+        java.net.ServerSocket(0).use { server ->
+            val client = java.net.Socket()
+            client.connect(java.net.InetSocketAddress("127.0.0.1", server.localPort), 2000)
+            val peer = server.accept()
+            try {
+                client.enableMobileKeepAlive()
+                assertTrue("SO_KEEPALIVE must be enabled", client.keepAlive)
+                client.getOutputStream().write(42)
+                assertEquals(42, peer.getInputStream().read())
+            } finally {
+                client.close()
+                peer.close()
+            }
+        }
+    }
+
+    @Test
     fun upstreamRelayAddress_loopbackUses127001() {
         val server = RuleSocksServer(SocksUpstream("127.0.0.1", 1080), emptySet())
         val addr = server.upstreamRelayAddress("0.0.0.0", 50000)

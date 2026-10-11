@@ -57,6 +57,7 @@ data class SocksUpstream(
  *   防止一个慢 host 占满解析队列连累其它域名直连。
  *
  * 纯阻塞 IO + 守护线程，生命周期与 VPN 数据面一致。
+ * 所有上游/直连 TCP 连接启用激进 keepalive（30s 起探），防移动 NAT 静默回收造成假死。
  */
 class RuleSocksServer(
     private val upstream: SocksUpstream,
@@ -254,6 +255,9 @@ class RuleSocksServer(
             if (!Socks5Codec.authenticateClient(upIn, upOut, upstream.username, upstream.password)) {
                 throw java.io.IOException("upstream auth rejected")
             }
+            // 上游连接（TCP 中继 / 预热池 / UDP ASSOCIATE 控制连接）启用激进 keepalive：
+            // 防止移动 NAT 静默回收导致长连接假死（UDP 看门狗依赖 ctrl 读失败才能感知）。
+            socket.enableMobileKeepAlive()
             return socket
         } catch (e: Exception) {
             runCatching { socket.close() }
@@ -404,6 +408,7 @@ class RuleSocksServer(
             s.sendBufferSize = TCP_SOCKET_BUFFER
             s.receiveBufferSize = TCP_SOCKET_BUFFER
             s.connect(InetSocketAddress(addr, port), ADDR_CONNECT_TIMEOUT_MS.toInt())
+            s.enableMobileKeepAlive()
             return s
         }
 
@@ -429,6 +434,7 @@ class RuleSocksServer(
                     s.receiveBufferSize = TCP_SOCKET_BUFFER
                     val timeout = (deadline - System.currentTimeMillis()).coerceIn(100, ADDR_CONNECT_TIMEOUT_MS)
                     s.connect(InetSocketAddress(addr, port), timeout.toInt())
+                    s.enableMobileKeepAlive()
                     completionQueue.offer(Result.success(s))
                 } catch (e: Exception) {
                     runCatching { s.close() }
@@ -1079,5 +1085,44 @@ class RuleSocksServer(
 
         fun isLoopback(host: String): Boolean =
             host == "127.0.0.1" || host == "localhost" || host == "::1"
+    }
+}
+
+// ---- 移动网络 TCP keepalive ----
+// 系统默认 SO_KEEPALIVE 探测要空闲 2 小时才开始，远大于移动 NAT 的 2~5 分钟空闲回收：
+// 长连接（TCP 中继、UDP ASSOCIATE 控制连接）会在 NAT 静默回收后变成死连接且收不到 FIN，
+// UDP 看门狗会永久阻塞在 ctrl read 上、relay 永不自愈。用激进参数（30s 起探）保持映射、
+// 最快约 60s 判死，代价只是长连接期间每 30s 一个几十字节探测包（网络体验优先，可接受）。
+
+private const val IPPROTO_TCP = 6
+private const val TCP_KEEPIDLE_LINUX = 4
+private const val TCP_KEEPINTVL_LINUX = 5
+private const val TCP_KEEPCNT_LINUX = 6
+
+private const val KEEPALIVE_IDLE_SEC = 30
+private const val KEEPALIVE_INTERVAL_SEC = 10
+private const val KEEPALIVE_COUNT = 3
+
+/**
+ * 对已连接 socket 启用移动友好的 TCP keepalive。必须在 connect 成功后调用（需要有效 fd）。
+ * 标准 SO_KEEPALIVE 全平台生效；Linux 探测参数经反射调用 android.system.Os 设置
+ * （minSdk 26 无法直接引用 API 31+ 的 jdk.net.ExtendedSocketOptions）。
+ * 非 Android 平台（JVM 单测）反射失败静默忽略，只保留 SO_KEEPALIVE，绝不影响连接。
+ */
+internal fun Socket.enableMobileKeepAlive() {
+    runCatching {
+        keepAlive = true
+        val osClass = Class.forName("android.system.Os")
+        val getImpl = Socket::class.java.getDeclaredMethod("getImpl").apply { isAccessible = true }
+        val impl = getImpl.invoke(this)
+        val getFd = impl.javaClass.getDeclaredMethod("getFileDescriptor").apply { isAccessible = true }
+        val fd = getFd.invoke(impl) as java.io.FileDescriptor
+        val setsockoptInt = osClass.getMethod(
+            "setsockoptInt",
+            java.io.FileDescriptor::class.java, Integer.TYPE, Integer.TYPE, Integer.TYPE,
+        )
+        setsockoptInt.invoke(null, fd, IPPROTO_TCP, TCP_KEEPIDLE_LINUX, KEEPALIVE_IDLE_SEC)
+        setsockoptInt.invoke(null, fd, IPPROTO_TCP, TCP_KEEPINTVL_LINUX, KEEPALIVE_INTERVAL_SEC)
+        setsockoptInt.invoke(null, fd, IPPROTO_TCP, TCP_KEEPCNT_LINUX, KEEPALIVE_COUNT)
     }
 }
