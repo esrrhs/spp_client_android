@@ -178,6 +178,7 @@
     <!-- 二维码分享 -->
     <string name="qr_title">分享配置 · %1$s</string>
     <string name="qr_hint">用其它设备扫码添加，或点右侧发送文本</string>
+    <string name="qr_too_large">配置内容过长，超出二维码容量，请改用文本发送</string>
     <string name="qr_share_chooser">分享配置</string>
     <string name="qr_content_description">QR code</string>
 
