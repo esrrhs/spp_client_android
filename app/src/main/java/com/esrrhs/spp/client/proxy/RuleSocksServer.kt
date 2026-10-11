@@ -52,6 +52,9 @@ data class SocksUpstream(
  *   冷却期后自动重试；上游中继失效（发送异常）即拆链，下一包懒重建自愈。
  *   域名直连的本地 DNS 解析在专用有界单线程上异步执行，弱网下慢解析不会阻塞
  *   run() 单循环而冻住其它 UDP 流量；解析队列堆积时新报文直接回退上游。
+ *   系统解析无原生超时，统一以 2.5s 预算兜底（TCP 快速回退代理、UDP 惩罚并回退）；
+ *   同一 host 在解析期间只有一个 owner 任务，突发报文合并待发、解析后排空，
+ *   防止一个慢 host 占满解析队列连累其它域名直连。
  *
  * 纯阻塞 IO + 守护线程，生命周期与 VPN 数据面一致。
  */
@@ -72,6 +75,14 @@ class RuleSocksServer(
     private val prewarmPool = ConcurrentLinkedQueue<Socket>()
     private val pool = Executors.newCachedThreadPool { r ->
         Thread(r, "rule-socks").apply { isDaemon = true }
+    }
+
+    /**
+     * 承载阻塞式系统 DNS 查询的线程池：查询本身无法设置超时（getaddrinfo 不响应中断），
+     * 用独立线程 + Future 预算来限制等待；弱网下超时的查询线程会作为 daemon 残留到自行返回。
+     */
+    private val dnsLookupPool = Executors.newCachedThreadPool { r ->
+        Thread(r, "dns-lookup").apply { isDaemon = true }
     }
 
     private val classifier = DirectClassifier(
@@ -117,6 +128,7 @@ class RuleSocksServer(
         }
         directPenaltyCache.clear()
         dnsCache.clear()
+        dnsLookupPool.shutdownNow()
         pool.shutdownNow()
     }
 
@@ -524,6 +536,13 @@ class RuleSocksServer(
          */
         private var resolveExecutor: ThreadPoolExecutor? = null
 
+        /**
+         * 正在解析中的 host → 合并等待的原始报文队列（首个报文为 owner，自行提交解析任务）。
+         * owner 完成后先摘除本标记再排空队列，避免新到达报文滞留。
+         */
+        private val inflightHosts =
+            ConcurrentHashMap<String, ConcurrentLinkedQueue<ByteArray>>()
+
         /** RFC 1928：只与发起 ASSOCIATE 的客户端地址通信，首个报文锁定。 */
         private val peer = AtomicReference<InetSocketAddress>()
 
@@ -560,26 +579,18 @@ class RuleSocksServer(
                 if (skipDirect) {
                     sendUpstream(packet.data, packet.length)
                 } else if (endpoint.atyp == Socks5Codec.ATYP_DOMAIN.toInt()) {
-                    // 域名解析（getAllByName）在弱网下可阻塞数十秒，绝不能在 run() 单循环上做：
-                    // 一个慢域名会冻住全部 UDP 报文。拷贝报文后交给专用解析线程异步直发，
-                    // run() 不等待、继续处理其它报文；解析失败由任务内自行回退上游。
+                    // 域名解析在弱网下可能慢：不做在 run() 单循环上（见 round6），
+                    // 且同一 host 在解析期间只允许一个 owner 任务——突发的其余报文合并入队，
+                    // 解析完成后统一派发，避免一个慢 host 占满有界解析队列、连累其它域名。
                     val copy = packet.data.copyOf(packet.length)
-                    val executor = obtainResolveExecutor()
-                    var accepted = false
-                    if (executor != null) {
-                        try {
-                            executor.execute {
-                                if (!sendDirect(endpoint, copy, payloadOffset, payloadLen)) {
-                                    sendUpstream(copy, copy.size)
-                                }
-                            }
-                            accepted = true
-                        } catch (_: RejectedExecutionException) {
-                            accepted = false
-                        }
+                    val pending = inflightHosts.putIfAbsent(endpoint.host, ConcurrentLinkedQueue())
+                    if (pending == null) {
+                        dispatchResolveOwner(endpoint.host, copy)
+                    } else if (pending.size < PENDING_PER_HOST) {
+                        pending.add(copy)
+                    } else {
+                        sendUpstream(copy, copy.size) // 单 host 待发堆积超限，溢出走上游
                     }
-                    // 解析队列已堆积（背压）：不排队、不阻塞，直接走上游（上游本就会解析）。
-                    if (!accepted) sendUpstream(copy, copy.size)
                 } else {
                     // IP 字面量：本地 send 立即返回，保持同步快速路径。
                     if (!sendDirect(endpoint, packet.data, payloadOffset, payloadLen)) {
@@ -590,6 +601,7 @@ class RuleSocksServer(
         }
 
         fun close() {
+            inflightHosts.clear() // ASSOCIATE 拆除：合并等待的报文随之放弃
             runCatching { upControl?.close() }
             runCatching { upRelay?.close() }
             runCatching { directV4?.close() }
@@ -626,6 +638,58 @@ class RuleSocksServer(
             }.getOrNull() ?: return null
             resolveExecutor = exec
             exec
+        }
+
+        /**
+         * 提交 host 的 owner 解析任务：任务内解析+直发首包（失败回退上游），
+         * 随后先摘除 inflight 标记、再排空合并队列逐条走相同决策。
+         * 提交被拒（解析队列满）或执行器不可用时放弃 owner 身份，首包直接走上游。
+         */
+        private fun dispatchResolveOwner(host: String, ownerCopy: ByteArray) {
+            val executor = obtainResolveExecutor()
+            var accepted = false
+            if (executor != null) {
+                try {
+                    executor.execute {
+                        try {
+                            val parsed = Socks5Codec.parseUdpPacket(ownerCopy, ownerCopy.size)
+                            if (parsed != null) {
+                                val (ep, off) = parsed
+                                if (!sendDirect(ep, ownerCopy, off, ownerCopy.size - off)) {
+                                    sendUpstream(ownerCopy, ownerCopy.size)
+                                }
+                            }
+                        } finally {
+                            val queue = inflightHosts.remove(host)
+                            queue?.let { drainPending(it) }
+                        }
+                    }
+                    accepted = true
+                } catch (_: RejectedExecutionException) {
+                    accepted = false
+                }
+            }
+            if (!accepted) {
+                // 拒绝窗口内可能已有报文合并进旧队列：摘标记并全部回退上游，不丢包。
+                inflightHosts.remove(host)?.let { q ->
+                    while (true) {
+                        val raw = q.poll() ?: break
+                        sendUpstream(raw, raw.size)
+                    }
+                }
+                sendUpstream(ownerCopy, ownerCopy.size)
+            }
+        }
+
+        private fun drainPending(queue: ConcurrentLinkedQueue<ByteArray>) {
+            while (true) {
+                val raw = queue.poll() ?: return
+                val parsed = Socks5Codec.parseUdpPacket(raw, raw.size) ?: continue
+                val (ep, off) = parsed
+                if (!sendDirect(ep, raw, off, raw.size - off)) {
+                    sendUpstream(raw, raw.size)
+                }
+            }
         }
 
         /** 整包（仍带 SOCKS 头）转发上游 UDP 中继；上游未建立时懒建立。 */
@@ -930,13 +994,19 @@ class RuleSocksServer(
      * 本地解析直连目标（App 自身被排除 VPN，走物理网络的系统解析器）。
      * 结果缓存 [DNS_CACHE_TTL_MS]；失败时在 TTL 内沿用上次的成功结果。
      * IPv4 排在前面（Happy Eyeballs 由调用方再做竞速）。
+     *
+     * 系统解析没有原生超时：弱网/无响应 DNS 下 getaddrinfo 可能阻塞数十秒，
+     * 这里用 [DNS_RESOLVE_BUDGET_MS] 预算兜底——超时按失败处理（TCP 快速回退
+     * 代理、UDP 惩罚目标并回退），不让任何一条流程被解析无限期拖住。
      */
     private fun resolveHost(host: String): List<InetAddress> {
         val now = System.currentTimeMillis()
         dnsCache[host]?.let { cached ->
             if (now < cached.expireMs) return cached.addrs
         }
-        val resolved = runCatching { InetAddress.getAllByName(host).toList() }.getOrNull().orEmpty()
+        val resolved = runWithBudget(dnsLookupPool, DNS_RESOLVE_BUDGET_MS) {
+            InetAddress.getAllByName(host).toList()
+        }.orEmpty()
         if (resolved.isNotEmpty()) {
             val ordered = resolved.sortedBy { if (it is Inet6Address) 1 else 0 }
             dnsCache[host] = DnsCacheEntry(ordered, now + DNS_CACHE_TTL_MS)
@@ -975,6 +1045,37 @@ class RuleSocksServer(
         const val PREWARM_POOL_SIZE = 4
         /** 本地 DNS 缓存有效时长（毫秒）。 */
         const val DNS_CACHE_TTL_MS = 60_000L
+
+        /** 单次系统 DNS 查询的等待预算（毫秒）：超时按解析失败处理，快速回退代理。 */
+        const val DNS_RESOLVE_BUDGET_MS = 2_500L
+
+        /** UDP 在途解析合并时，单个 host 缓存待发报文的上限，超出直接走上游。 */
+        const val PENDING_PER_HOST = 32
+
+        /**
+         * 在 [executor] 上执行 [work]，最多等待 [timeoutMs]；成功返回结果，
+         * 超时取消任务并返回 null（不响应中断的阻塞调用其线程会残留），
+         * work 抛异常或等待被中断也返回 null。internal 以便单测锁定预算行为。
+         */
+        internal fun <T> runWithBudget(
+            executor: java.util.concurrent.ExecutorService,
+            timeoutMs: Long,
+            work: () -> T,
+        ): T? {
+            val future = executor.submit(work)
+            return try {
+                future.get(timeoutMs, TimeUnit.MILLISECONDS)
+            } catch (_: java.util.concurrent.TimeoutException) {
+                future.cancel(true)
+                null
+            } catch (_: java.util.concurrent.ExecutionException) {
+                null
+            } catch (_: InterruptedException) {
+                future.cancel(true)
+                Thread.currentThread().interrupt()
+                null
+            }
+        }
 
         fun isLoopback(host: String): Boolean =
             host == "127.0.0.1" || host == "localhost" || host == "::1"
