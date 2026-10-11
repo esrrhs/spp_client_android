@@ -1,5 +1,6 @@
 package com.esrrhs.spp.client.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -40,6 +41,8 @@ private enum class LogSource(val title: String, val fileName: String) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LogsScreen(onBack: () -> Unit) {
+    // 系统 BACK 回到主界面，与顶栏返回一致
+    BackHandler(onBack = onBack)
     var source by remember { mutableStateOf(LogSource.SPP) }
     var content by remember { mutableStateOf("") }
     val context = LocalContext.current

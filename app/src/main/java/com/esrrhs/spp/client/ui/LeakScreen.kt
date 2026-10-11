@@ -2,6 +2,7 @@ package com.esrrhs.spp.client.ui
 
 import android.content.Intent
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -35,6 +36,8 @@ fun LeakScreen(
     onRun: () -> Unit,
     onBack: () -> Unit,
 ) {
+    // 系统 BACK 回到主界面，与顶栏返回一致
+    BackHandler(onBack = onBack)
     val context = LocalContext.current
     Scaffold(
         topBar = {

@@ -1,5 +1,6 @@
 package com.esrrhs.spp.client.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -41,6 +42,8 @@ fun AppPickerScreen(
     onConfirm: (Set<String>) -> Unit,
     onBack: () -> Unit,
 ) {
+    // 系统 BACK 返回编辑器（不带走当前勾选，与顶栏返回一致）
+    BackHandler(onBack = onBack)
     val context = LocalContext.current
     var allApps by remember { mutableStateOf<List<InstalledApp>>(emptyList()) }
     var query by remember { mutableStateOf("") }

@@ -12,6 +12,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -53,6 +54,8 @@ fun SettingsScreen(
     onChange: (AppSettings) -> Unit,
     onBack: () -> Unit,
 ) {
+    // 系统 BACK 回到主界面，与顶栏返回一致
+    BackHandler(onBack = onBack)
     Scaffold(
         topBar = {
             TopAppBar(
