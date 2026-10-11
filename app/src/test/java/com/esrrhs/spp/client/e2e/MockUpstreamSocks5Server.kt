@@ -39,8 +39,11 @@ class MockUpstreamSocks5Server(
     // 分流测试断言用：真正到达上游的 CONNECT / UDP ASSOCIATE 次数
     private val connectCount = java.util.concurrent.atomic.AtomicInteger(0)
     private val udpAssociateCount = java.util.concurrent.atomic.AtomicInteger(0)
+    private val udpRelayedCount = java.util.concurrent.atomic.AtomicInteger(0)
     val tcpConnectCount: Int get() = connectCount.get()
     val udpAssociateRequests: Int get() = udpAssociateCount.get()
+    /** 经代理转发到本上游的已封装 UDP 报文数（含未能解析目标、被丢弃的）。 */
+    val udpRelayedDatagrams: Int get() = udpRelayedCount.get()
 
     val port: Int get() = serverSocket?.localPort ?: 0
 
@@ -272,6 +275,7 @@ class MockUpstreamSocks5Server(
                     clientPeer.set(senderAddr)
                     // 解析目标地址与端口
                     val (targetAddr, payloadOffset) = parseSocksUdpHeader(data, len) ?: continue
+                    udpRelayedCount.incrementAndGet() // 已收到一条代理转发报文
                     val payloadLen = len - payloadOffset
                     if (payloadLen > 0 && !targetAddr.isUnresolved) {
                         // 无法解析的域名目标（如 .invalid 回退用例）直接丢弃，
