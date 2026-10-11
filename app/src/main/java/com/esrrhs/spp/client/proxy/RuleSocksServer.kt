@@ -55,6 +55,10 @@ data class SocksUpstream(
  *   系统解析无原生超时，统一以 2.5s 预算兜底（TCP 快速回退代理、UDP 惩罚并回退）；
  *   同一 host 在解析期间只有一个 owner 任务，突发报文合并待发、解析后排空，
  *   防止一个慢 host 占满解析队列连累其它域名直连。
+ *   代理报文只入有界队列，由每会话单写线程负责懒建立 ASSOCIATE 与发送——
+ *   建链含 TCP connect 与 SOCKS 握手读（各有秒级预算，静默对端不再无限挂起），
+ *   绝不同步占用 run() 派发循环，上游卡住期间直连 UDP 照常收发；队列背压按 UDP
+ *   语义丢尾包，握手失败冷却后由写线程自动重试。
  *
  * 纯阻塞 IO + 守护线程，生命周期与 VPN 数据面一致。
  * 所有上游/直连 TCP 连接启用激进 keepalive（30s 起探），防移动 NAT 静默回收造成假死。
@@ -242,7 +246,11 @@ class RuleSocksServer(
         awaitPipe(client, target)
     }
 
-    /** 连上上游并完成认证；失败抛异常，调用方负责后续 CONNECT / UDP ASSOCIATE。 */
+    /**
+     * 连上上游并完成认证；失败抛异常，调用方负责后续 CONNECT / UDP ASSOCIATE。
+     * 返回的 socket 带有 [UPSTREAM_HANDSHAKE_TIMEOUT_MS] 的读超时（覆盖紧接的
+     * CONNECT/ASSOCIATE 应答读）；作为长连接中继/看门狗使用前调用方必须复位 soTimeout=0。
+     */
     private fun openUpstream(): Socket {
         val socket = Socket()
         try {
@@ -250,6 +258,9 @@ class RuleSocksServer(
             socket.sendBufferSize = TCP_SOCKET_BUFFER
             socket.receiveBufferSize = TCP_SOCKET_BUFFER
             socket.connect(InetSocketAddress(upstream.host, upstream.port), CONNECT_TIMEOUT_MS)
+            // connect 成功不代表对端会完成 SOCKS 协商：静默对端（accept 后无任何响应）
+            // 下默认 read 会无限阻塞。给整个握手阶段的读加预算，按失败快速走重试/冷却。
+            socket.soTimeout = UPSTREAM_HANDSHAKE_TIMEOUT_MS.toInt()
             val upOut = socket.getOutputStream()
             val upIn = DataInputStream(socket.getInputStream())
             if (!Socks5Codec.authenticateClient(upIn, upOut, upstream.username, upstream.password)) {
@@ -311,6 +322,7 @@ class RuleSocksServer(
             if (Socks5Codec.readReply(upIn) == null) {
                 throw java.io.IOException("upstream CONNECT rejected/timeout")
             }
+            socket.soTimeout = 0 // 进入长连接中继：copyDirection 的读必须无限阻塞
             return socket
         } catch (e: Exception) {
             runCatching { socket.close() }
@@ -324,6 +336,7 @@ class RuleSocksServer(
                 runCatching { socket.close() }
                 throw java.io.IOException("upstream CONNECT rejected/timeout")
             }
+            socket.soTimeout = 0 // 同上：长连接中继阶段取消握手读预算
             return socket
         }
     }
@@ -549,6 +562,15 @@ class RuleSocksServer(
         private val inflightHosts =
             ConcurrentHashMap<String, ConcurrentLinkedQueue<ByteArray>>()
 
+        /**
+         * 待发上游的已封装报文有界队列：run()/解析线程只入队，
+         * 由唯一的 [upstreamWriter] 懒建立 ASSOCIATE 并串行发送，
+         * 建链与握手绝不阻塞 run() 派发循环（弱网/静默上游期间直连 UDP 不受影响）。
+         */
+        private val upstreamQueue = ArrayBlockingQueue<ByteArray>(UPSTREAM_QUEUE_CAPACITY)
+        private var upstreamWriter: Thread? = null
+        private val upstreamQueueFullLogged = AtomicBoolean(false)
+
         /** RFC 1928：只与发起 ASSOCIATE 的客户端地址通信，首个报文锁定。 */
         private val peer = AtomicReference<InetSocketAddress>()
 
@@ -583,7 +605,7 @@ class RuleSocksServer(
                     isDirectPenalizedKey(udpDirectKey(endpoint.host, endpoint.port))
 
                 if (skipDirect) {
-                    sendUpstream(packet.data, packet.length)
+                    enqueueUpstream(packet.data, packet.length)
                 } else if (endpoint.atyp == Socks5Codec.ATYP_DOMAIN.toInt()) {
                     // 域名解析在弱网下可能慢：不做在 run() 单循环上（见 round6），
                     // 且同一 host 在解析期间只允许一个 owner 任务——突发的其余报文合并入队，
@@ -595,12 +617,12 @@ class RuleSocksServer(
                     } else if (pending.size < PENDING_PER_HOST) {
                         pending.add(copy)
                     } else {
-                        sendUpstream(copy, copy.size) // 单 host 待发堆积超限，溢出走上游
+                        enqueueUpstream(copy, copy.size) // 单 host 待发堆积超限，溢出走上游
                     }
                 } else {
                     // IP 字面量：本地 send 立即返回，保持同步快速路径。
                     if (!sendDirect(endpoint, packet.data, payloadOffset, payloadLen)) {
-                        sendUpstream(packet.data, packet.length)
+                        enqueueUpstream(packet.data, packet.length)
                     }
                 }
             }
@@ -608,20 +630,25 @@ class RuleSocksServer(
 
         fun close() {
             inflightHosts.clear() // ASSOCIATE 拆除：合并等待的报文随之放弃
-            runCatching { upControl?.close() }
-            runCatching { upRelay?.close() }
-            runCatching { directV4?.close() }
-            runCatching { directV6?.close() }
-            synchronized(relays) {
-                upRelay?.let { relays.remove(it) }
-                directV4?.let { relays.remove(it) }
-                directV6?.let { relays.remove(it) }
+            upstreamQueue.clear() // 待发上游报文同样放弃
+            synchronized(gate) {
+                // 唤醒可能在 poll 等待的写线程；阻塞在经典 IO connect 中的写线程
+                // 不响应中断，但 ensureUpstream 发布前会在本锁内复查关闭状态而自灭。
+                upstreamWriter?.interrupt()
             }
-            upControl = null
-            upRelay = null
-            directV4 = null
-            directV6 = null
-            upstreamRelay = null
+            // 上游与直连 socket 的关闭/摘除都在 gate 内，和 ensureUpstream 的发布互斥：
+            // 建链在 gate 外进行，本处不会被网络超时拖住，晚完成的握手也无法再发布泄漏。
+            resetUpstream()
+            synchronized(gate) {
+                runCatching { directV4?.close() }
+                runCatching { directV6?.close() }
+                synchronized(relays) {
+                    directV4?.let { relays.remove(it) }
+                    directV6?.let { relays.remove(it) }
+                }
+                directV4 = null
+                directV6 = null
+            }
             // 关闭解析执行器：正在进行的解析被中断，排队任务丢弃（ASSOCIATE 已拆除，无后续报文）。
             resolveExecutor?.let { exec ->
                 resolveExecutor = null
@@ -662,7 +689,7 @@ class RuleSocksServer(
                             if (parsed != null) {
                                 val (ep, off) = parsed
                                 if (!sendDirect(ep, ownerCopy, off, ownerCopy.size - off)) {
-                                    sendUpstream(ownerCopy, ownerCopy.size)
+                                    enqueueUpstream(ownerCopy, ownerCopy.size)
                                 }
                             }
                         } finally {
@@ -680,10 +707,10 @@ class RuleSocksServer(
                 inflightHosts.remove(host)?.let { q ->
                     while (true) {
                         val raw = q.poll() ?: break
-                        sendUpstream(raw, raw.size)
+                        enqueueUpstream(raw, raw.size)
                     }
                 }
-                sendUpstream(ownerCopy, ownerCopy.size)
+                enqueueUpstream(ownerCopy, ownerCopy.size)
             }
         }
 
@@ -693,26 +720,63 @@ class RuleSocksServer(
                 val parsed = Socks5Codec.parseUdpPacket(raw, raw.size) ?: continue
                 val (ep, off) = parsed
                 if (!sendDirect(ep, raw, off, raw.size - off)) {
-                    sendUpstream(raw, raw.size)
+                    enqueueUpstream(raw, raw.size)
                 }
             }
         }
 
-        /** 整包（仍带 SOCKS 头）转发上游 UDP 中继；上游未建立时懒建立。 */
-        private fun sendUpstream(data: ByteArray, len: Int) {
-            if (System.currentTimeMillis() < upstreamCooldownUntilMs.get()) {
-                // 上游刚失败过（冷却窗内）：快速丢弃，避免突发流量逐包触发建链风暴
-                return
+        /**
+         * 整包（仍带 SOCKS 头）入队，交由 [upstreamWriter] 懒建立上游中继后发送。
+         * 绝不阻塞调用线程：run() 派发循环与解析 owner 线程都可能调用，
+         * 而建链（TCP connect 3s）+ SOCKS 握手读（各 3s 预算）在弱网下秒级耗时，
+         * 同步等待会冻住同 ASSOCIATE 内的直连 UDP。队列满（建链长期卡住的背压）
+         * 按 UDP 语义丢尾包，只打一次日志。
+         */
+        private fun enqueueUpstream(data: ByteArray, len: Int) {
+            if (!running.get() || control.isClosed) return
+            synchronized(gate) {
+                if (upstreamWriter == null) {
+                    if (!running.get() || control.isClosed) return
+                    upstreamWriter = Thread({ upstreamWriteLoop() }, "udp-upstream-writer")
+                        .apply { isDaemon = true }
+                        .also { it.start() }
+                }
             }
-            if (!ensureUpstream()) return
-            val relay = upRelay ?: return
-            val target = upstreamRelay ?: return
-            try {
-                relay.send(DatagramPacket(data.copyOf(len), len, target))
-            } catch (e: Exception) {
-                if (running.get()) Log.w(TAG, "udp to-upstream: ${e.message}")
-                // 上游会话已失效：拆链（receiveUpstreamLoop 随 socket 关闭退出），下一包懒重建自愈
-                resetUpstream()
+            if (!upstreamQueue.offer(data.copyOf(len)) &&
+                upstreamQueueFullLogged.compareAndSet(false, true)
+            ) {
+                Log.w(TAG, "udp upstream queue full ($UPSTREAM_QUEUE_CAPACITY), dropping datagram")
+            }
+        }
+
+        /**
+         * 上游写线程唯一循环：串行消费队列、懒建立 ASSOCIATE、发送。
+         * 冷却窗内的报文取出即弃（快速排空，不触发建链）；建链失败由 ensureUpstream
+         * 设置冷却；发送异常拆链，下一个出队报文懒重建。空队列周期 poll 以便及时退出。
+         */
+        private fun upstreamWriteLoop() {
+            while (running.get() && !control.isClosed) {
+                val data = try {
+                    upstreamQueue.poll(UPSTREAM_WRITER_POLL_MS, TimeUnit.MILLISECONDS)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return
+                }
+                if (data == null) continue
+                if (System.currentTimeMillis() < upstreamCooldownUntilMs.get()) {
+                    // 上游刚失败过（冷却窗内）：快速丢弃，避免突发流量逐包触发建链风暴
+                    continue
+                }
+                if (!ensureUpstream()) continue
+                val relay = upRelay ?: continue
+                val target = upstreamRelay ?: continue
+                try {
+                    relay.send(DatagramPacket(data, data.size, target))
+                } catch (e: Exception) {
+                    if (running.get()) Log.w(TAG, "udp to-upstream: ${e.message}")
+                    // 上游会话已失效：拆链（receiveUpstreamLoop 随 socket 关闭退出），下一包懒重建自愈
+                    resetUpstream()
+                }
             }
         }
 
@@ -748,58 +812,87 @@ class RuleSocksServer(
 
         private fun ensureUpstream(): Boolean {
             upstreamRelay?.let { return true }
-            synchronized(gate) {
-                upstreamRelay?.let { return true }
-                var ctrl: Socket? = null
-                var relay: DatagramSocket? = null
-                try {
-                    ctrl = openUpstream()
-                    // 远端 SOCKS5 的 BND 不在回环上时不能绑 127.0.0.1（公网回包会被内核丢弃）
-                    relay = if (isLoopback(upstream.host)) {
-                        DatagramSocket(0, InetAddress.getByName("127.0.0.1"))
-                    } else {
-                        DatagramSocket()
-                    }
-                    relay.receiveBufferSize = UDP_SOCKET_BUFFER
-                    val ctrlOut = ctrl.getOutputStream()
-                    val ctrlIn = DataInputStream(ctrl.getInputStream())
-                    ctrlOut.write(
-                        Socks5Codec.buildRequest(
-                            Socks5Codec.CMD_UDP_ASSOCIATE,
-                            Socks5Codec.ATYP_IPV4.toInt(),
-                            "0.0.0.0",
-                            0,
-                        ),
-                    )
-                    ctrlOut.flush()
-                    val bound = Socks5Codec.readReply(ctrlIn)
-                        ?: throw java.io.IOException("upstream UDP ASSOCIATE rejected")
+            synchronized(gate) { upstreamRelay?.let { return true } }
 
-                    upControl = ctrl
-                    upRelay = relay
-                    upstreamRelay = upstreamRelayAddress(bound.first, bound.second)
-                    synchronized(relays) { relays.add(relay) }
-                    pool.execute { receiveUpstreamLoop(relay, ctrl) }
-                    // 看门狗：远端关控制连接（上游重启/网络切换）即拆链，下一包懒重建。
-                    // UDP relay 本地 send 永远"成功"，控制连接 EOF 是上游静默死亡的唯一信号。
-                    pool.execute { watchUpstreamControl(ctrl, ctrlIn) }
-                    Log.i(
-                        TAG,
-                        "udp upstream relay 127.0.0.1:${relay.localPort} -> " +
-                            "${upstreamRelay?.hostString}:${upstreamRelay?.port}",
-                    )
-                    return true
-                } catch (e: Exception) {
-                    Log.w(TAG, "udp upstream associate failed: ${e.message}")
-                    runCatching { ctrl?.close() }
-                    runCatching { relay?.close() }
-                    upControl = null
-                    upRelay = null
-                    upstreamRelay = null
-                    // 冷却窗：防突发流量逐包重试建链（TCP CONNECT 逐包排队会雪崩）
-                    upstreamCooldownUntilMs.set(System.currentTimeMillis() + UPSTREAM_COOLDOWN_MS)
-                    return false
+            // 阻塞建链与 SOCKS 握手在 gate 外进行（秒级超时）：close()/resetUpstream()
+            // 不必等待网络，写线程卡死也不影响 gate 的其它使用者。
+            var ctrl: Socket? = null
+            var relay: DatagramSocket? = null
+            var ctrlIn: DataInputStream? = null
+            try {
+                ctrl = openUpstream()
+                // 远端 SOCKS5 的 BND 不在回环上时不能绑 127.0.0.1（公网回包会被内核丢弃）
+                relay = if (isLoopback(upstream.host)) {
+                    DatagramSocket(0, InetAddress.getByName("127.0.0.1"))
+                } else {
+                    DatagramSocket()
                 }
+                relay.receiveBufferSize = UDP_SOCKET_BUFFER
+                val ctrlOut = ctrl.getOutputStream()
+                ctrlIn = DataInputStream(ctrl.getInputStream())
+                ctrlOut.write(
+                    Socks5Codec.buildRequest(
+                        Socks5Codec.CMD_UDP_ASSOCIATE,
+                        Socks5Codec.ATYP_IPV4.toInt(),
+                        "0.0.0.0",
+                        0,
+                    ),
+                )
+                ctrlOut.flush()
+                val bound = Socks5Codec.readReply(ctrlIn)
+                    ?: throw java.io.IOException("upstream UDP ASSOCIATE rejected")
+                val address = upstreamRelayAddress(bound.first, bound.second)
+
+                // 发布在 gate 内做并复查：握手中途可能已被 close()/resetUpstream() 拆除，
+                // 晚完成的握手只能关掉自己这份局部 socket，绝不覆盖已发布/已清空的状态。
+                val ready = synchronized(gate) {
+                    when {
+                        upstreamRelay != null -> false // 理论上的并发建链：让已发布者生效
+                        !running.get() || control.isClosed ->
+                            throw java.io.IOException("associate closed during handshake")
+                        else -> {
+                            ctrl.soTimeout = 0 // 看门狗 read 无限阻塞（EOF/异常才是死亡信号）
+                            upControl = ctrl
+                            upRelay = relay
+                            upstreamRelay = address
+                            synchronized(relays) { relays.add(relay) }
+                            true
+                        }
+                    }
+                }
+                if (!ready) {
+                    runCatching { ctrl.close() }
+                    runCatching { relay.close() }
+                    return true
+                }
+                val c = ctrl!!
+                val r = relay!!
+                val ci = ctrlIn!!
+                pool.execute { receiveUpstreamLoop(r, c) }
+                // 看门狗：远端关控制连接（上游重启/网络切换）即拆链，下一包懒重建。
+                // UDP relay 本地 send 永远"成功"，控制连接 EOF 是上游静默死亡的唯一信号。
+                pool.execute { watchUpstreamControl(c, ci) }
+                Log.i(
+                    TAG,
+                    "udp upstream relay 127.0.0.1:${r.localPort} -> " +
+                        "${address.hostString}:${address.port}",
+                )
+                return true
+            } catch (e: Exception) {
+                Log.w(TAG, "udp upstream associate failed: ${e.message}")
+                runCatching { ctrl?.close() }
+                runCatching { relay?.close() }
+                synchronized(gate) {
+                    // 本路径从未发布成功；仅当字段恰好指向自己（防御性）时清空，不碰别人的状态
+                    if (upControl === ctrl) {
+                        upControl = null
+                        upRelay = null
+                        upstreamRelay = null
+                    }
+                }
+                // 冷却窗：防突发流量逐包重试建链（TCP CONNECT 逐包排队会雪崩）
+                upstreamCooldownUntilMs.set(System.currentTimeMillis() + UPSTREAM_COOLDOWN_MS)
+                return false
             }
         }
 
@@ -817,8 +910,8 @@ class RuleSocksServer(
                     // 绝不能拆链（否则一个关端口的目标会连累整个 ASSOCIATE 重建）。
                     continue
                 } catch (e: Exception) {
-                    // 非本地关闭的异常：中继已死但引用还在，sendUpstream 会一直"成功"却无回包；
-                    // 拆链让下一包懒重建（与 watchUpstreamControl 对称）。
+                    // 非本地关闭的异常：中继已死但引用还在，写线程会一直 send "成功"却无回包；
+                    // 拆链让下一报文懒重建（与 watchUpstreamControl 对称）。
                     if (running.get() && !ctrl.isClosed && upRelay === relay) {
                         Log.w(TAG, "udp upstream relay died, rebuilding: ${e.message}")
                         resetUpstream()
@@ -1041,6 +1134,18 @@ class RuleSocksServer(
 
         /** 上游 UDP ASSOCIATE 失败后的冷却时长（毫秒）：冷却期内报文直接丢弃，防逐包建链风暴。 */
         const val UPSTREAM_COOLDOWN_MS = 5_000L
+
+        /**
+         * 上游 SOCKS 握手阶段单次读预算（毫秒）：TCP connect 成功后对端可能静默
+         * （accept 后不回协商/应答），默认 read 无限阻塞，按超时即失败快速走重试/冷却。
+         */
+        const val UPSTREAM_HANDSHAKE_TIMEOUT_MS = 3_000L
+
+        /** 每 ASSOCIATE 待发上游报文队列上限：建链长期卡住时背压丢尾包，不拖垮派发循环。 */
+        const val UPSTREAM_QUEUE_CAPACITY = 64
+
+        /** 上游写线程空队列 poll 间隔（毫秒）：仅用于及时感知 ASSOCIATE 拆除/停止。 */
+        const val UPSTREAM_WRITER_POLL_MS = 500L
 
         /** 域名直连解析任务的排队上限：超出即回退上游，避免慢解析无限堆积。 */
         const val RESOLVE_QUEUE_CAPACITY = 16
