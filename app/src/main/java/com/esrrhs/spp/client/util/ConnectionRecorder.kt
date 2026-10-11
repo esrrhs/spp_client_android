@@ -1,7 +1,6 @@
 package com.esrrhs.spp.client.util
 
 import android.content.Context
-import android.os.PowerManager
 import com.esrrhs.spp.client.data.ConnectionLogEntry
 import java.io.File
 import com.esrrhs.spp.client.data.ConnectionLogRepository
@@ -22,11 +21,12 @@ import kotlinx.coroutines.withContext
 /**
  * 全局连接采集器：VPN 已连接期间由 SppVpnService 驱动。
  *
- * 功耗自适应策略：
- * - 页面在前台查看「当前连接」时：高频 1.5s 刷新并计算完整分组、差分速率；
- * - 亮屏但界面在后台：降频至 5s，仅采样轻量会话行供历史记录，跳过 UI 分组与速率计算；
- * - 灭屏待机：降频至 15s，最大程度减少 CPU 唤醒以利于系统进入 Doze/深睡；
- * - 磁盘日志截断由 4s 一次放宽至 5 分钟一次，消除频繁闪存 I/O。
+ * 采样策略（固定 1.5s 高频）：
+ * - 始终以 1.5s 间隔枚举会话并维护历史生命周期，保证切回「当前连接」页时
+ *   列表与速率即时可用、短连接（1~2s）也能被采到——曾尝试过后台 5s/灭屏 15s
+ *   的自适应降频，因损失实时性已在 b167223 回退；
+ * - 无 UI 观察时仍采样轻量会话行供历史记录，但跳过 groups 排序与速率差分；
+ * - 磁盘日志截断每 5 分钟一次，避免频繁闪存 I/O。
  */
 object ConnectionRecorder {
 
@@ -59,7 +59,6 @@ object ConnectionRecorder {
     ) {
         if (job?.isActive == true) return
         val appContext = context.applicationContext
-        val powerManager = appContext.getSystemService(Context.POWER_SERVICE) as? PowerManager
         sample = ActiveConnections.empty()
         state = ConnectionLogMerge.State()
         pending = ArrayList()
