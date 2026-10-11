@@ -69,11 +69,15 @@ class MainActivity : ComponentActivity() {
         val contents = result.contents
         if (contents.isNullOrBlank()) return@registerForActivityResult
         val profile = ProfileShare.decode(contents)
-        if (profile == null) {
-            toast(getString(R.string.toast_invalid_qr))
-        } else {
-            viewModel.importScanned(profile)
-            toast(getString(R.string.toast_imported, profile.name))
+        val error = profile?.validate()
+        when {
+            profile == null -> toast(getString(R.string.toast_invalid_qr))
+            error != null ->
+                toast(com.esrrhs.spp.client.util.ValidationMessages.text(this, error))
+            else -> {
+                viewModel.importScanned(profile)
+                toast(getString(R.string.toast_imported, profile.name))
+            }
         }
     }
 
@@ -102,8 +106,21 @@ class MainActivity : ComponentActivity() {
                 if (list.isEmpty()) {
                     toast(getString(R.string.toast_import_empty))
                 } else {
-                    lifecycleScope.launch { viewModel.importProfiles(list) }
-                    toast(getString(R.string.toast_imported_count, list.size))
+                    lifecycleScope.launch {
+                        // 仓库层会丢弃损坏/篡改条目；按实际导入数给出反馈
+                        val imported = viewModel.importProfiles(list)
+                        toast(
+                            when {
+                                imported == 0 -> getString(R.string.toast_import_empty)
+                                imported == list.size ->
+                                    getString(R.string.toast_imported_count, imported)
+                                else -> getString(
+                                    R.string.toast_import_partial,
+                                    imported, list.size - imported,
+                                )
+                            },
+                        )
+                    }
                 }
             } catch (e: Exception) {
                 toast(getString(R.string.toast_import_failed, e.message ?: ""))
@@ -333,11 +350,15 @@ class MainActivity : ComponentActivity() {
         if (intent?.action != Intent.ACTION_VIEW) return
         val text = intent.dataString ?: return
         val profile = ProfileShare.decode(text)
-        if (profile == null) {
-            toast(getString(R.string.toast_bad_link))
-        } else {
-            viewModel.importScanned(profile)
-            toast(getString(R.string.toast_imported, profile.name))
+        val error = profile?.validate()
+        when {
+            profile == null -> toast(getString(R.string.toast_bad_link))
+            error != null ->
+                toast(com.esrrhs.spp.client.util.ValidationMessages.text(this, error))
+            else -> {
+                viewModel.importScanned(profile)
+                toast(getString(R.string.toast_imported, profile.name))
+            }
         }
     }
 

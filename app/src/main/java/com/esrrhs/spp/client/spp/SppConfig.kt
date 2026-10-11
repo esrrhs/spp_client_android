@@ -34,9 +34,14 @@ data class SppConfig(
 
     /** 返回首个校验错误码；null 表示合法。 */
     fun validate(): ValidationError? = when {
+        kind !in KINDS -> ValidationError.KIND_UNSUPPORTED
         serverHost.isBlank() -> ValidationError.HOST_REQUIRED
         serverPort !in 1..65535 -> ValidationError.PORT_RANGE
-        !isSocks5 && key.isBlank() -> ValidationError.KEY_REQUIRED
+        // SOCKS5 无 SPP 传输协议/Key；proto 白名单只约束 SPP 模式（编辑器下拉之外
+        // 的取值只能来自扫码/文件导入，不应原样拼给 spp 子进程）
+        isSocks5 -> null
+        key.isBlank() -> ValidationError.KEY_REQUIRED
+        proto !in PROTOS -> ValidationError.PROTO_UNSUPPORTED
         else -> null
     }
 

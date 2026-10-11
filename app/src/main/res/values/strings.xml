@@ -38,6 +38,8 @@
     <string name="err_host_required">请填写服务器地址</string>
     <string name="err_port_range">端口需在 1~65535 之间</string>
     <string name="err_key_required">请填写认证 Key</string>
+    <string name="err_kind_unsupported">配置类型无效（仅支持 spp / socks5），配置可能已损坏或被篡改</string>
+    <string name="err_proto_unsupported">传输协议无效，仅支持：tcp、rudp、kcp、quic、rhttp</string>
     <string name="error_missing_native">缺少 libspp.so，请先运行 scripts/build_native.sh 再打包</string>
     <string name="error_spp_session">无法建立 SPP 会话（连接超时），请检查 server 地址、key/encrypt 与网络：\n%1$s</string>
     <string name="error_spp_exited">SPP 客户端进程提前退出：\n%1$s</string>
@@ -63,6 +65,7 @@
     <string name="toast_export_failed">导出失败：%1$s</string>
     <string name="toast_import_empty">文件中没有有效配置</string>
     <string name="toast_imported_count">已导入 %1$d 个配置</string>
+    <string name="toast_import_partial">已导入 %1$d 个配置，忽略 %2$d 个无效配置</string>
     <string name="toast_import_failed">导入失败：%1$s</string>
 
     <string name="scan_prompt">将配置二维码对准取景框</string>

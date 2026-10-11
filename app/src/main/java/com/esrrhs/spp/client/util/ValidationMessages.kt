@@ -14,6 +14,8 @@ object ValidationMessages {
             ValidationError.HOST_REQUIRED -> R.string.err_host_required
             ValidationError.PORT_RANGE -> R.string.err_port_range
             ValidationError.KEY_REQUIRED -> R.string.err_key_required
+            ValidationError.KIND_UNSUPPORTED -> R.string.err_kind_unsupported
+            ValidationError.PROTO_UNSUPPORTED -> R.string.err_proto_unsupported
         },
     )
 }

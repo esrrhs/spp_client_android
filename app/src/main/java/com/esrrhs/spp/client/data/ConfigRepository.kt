@@ -93,13 +93,19 @@ class ConfigRepository(context: Context) {
         }
     }
 
-    /** 批量导入配置（与现有配置合并；id 冲突时为导入项分配新 id）。 */
-    suspend fun importProfiles(incoming: List<Profile>) {
-        if (incoming.isEmpty()) return
+    /**
+     * 批量导入配置（与现有配置合并；id 冲突时为导入项分配新 id）。
+     * 导入内容来自扫码/剪贴板/文件等外部输入：先丢弃校验不通过的条目
+     *（伪造/损坏的 kind、proto 等），返回实际导入条数，调用方据此提示用户。
+     */
+    suspend fun importProfiles(incoming: List<Profile>): Int {
+        if (incoming.isEmpty()) return 0
+        val valid = incoming.filter { it.validate() == null }
+        if (valid.isEmpty()) return 0
         dataStore.edit { prefs ->
             val list = decodeList(prefs[Keys.PROFILES_JSON]).toMutableList()
             val existingIds = list.map { it.id }.toMutableSet()
-            for (profile in incoming) {
+            for (profile in valid) {
                 val resolved = if (existingIds.add(profile.id)) {
                     profile
                 } else {
@@ -115,6 +121,7 @@ class ConfigRepository(context: Context) {
                 prefs[Keys.ACTIVE_ID] = list.firstOrNull()?.id ?: ""
             }
         }
+        return valid.size
     }
 
     /** 给指定配置累加本次会话的字节数。 */
