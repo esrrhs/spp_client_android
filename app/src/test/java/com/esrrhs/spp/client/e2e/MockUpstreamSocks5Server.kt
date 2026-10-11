@@ -262,6 +262,8 @@ class MockUpstreamSocks5Server(
                     relaySocket.receive(packet)
                 } catch (_: java.net.SocketTimeoutException) {
                     continue
+                } catch (_: java.net.PortUnreachableException) {
+                    continue // 中继到关端口目标引发的 ICMP，非致命，保持中继循环存活
                 } catch (_: Exception) {
                     break
                 }

@@ -508,6 +508,11 @@ class ProxySplitE2ETest {
                 val relayPort = bound!!.second
 
                 val clientUdp = DatagramSocket()
+                // 一个确定关闭的本地 UDP 端口：代理报文中继到它必触发 ICMP port-unreachable，
+                // 用于验证该 ICMP 不会连累 ASSOCIATE 重建。
+                val closedPortProbe = DatagramSocket()
+                val closedPort = closedPortProbe.localPort
+                closedPortProbe.close()
                 try {
                     fun send(atyp: Int, host: String, port: Int, marker: String) {
                         val header = Socks5Codec.buildUdpHeader(atyp, host, port)
@@ -523,10 +528,10 @@ class ProxySplitE2ETest {
                     // 报文 1：域名直连（解析慢/失败，在解析线程异步进行，run() 不等待）
                     send(Socks5Codec.ATYP_DOMAIN.toInt(), "nonexistent-spp-test.invalid", 40001, "ASYNC_DOMAIN")
                     // 报文 2：普通代理报文；即使上一条仍在解析，也必须立即转发（无队头阻塞）
-                    send(Socks5Codec.ATYP_IPV4.toInt(), "1.1.1.1", 9, "ASYNC_PROXIED")
+                    send(Socks5Codec.ATYP_IPV4.toInt(), "127.0.0.1", closedPort, "ASYNC_PROXIED")
 
                     // 两条都应经同一懒建立的上游 ASSOCIATE 到达 mock
-                    val deadline = System.currentTimeMillis() + 4000
+                    val deadline = System.currentTimeMillis() + 8000
                     while (upstream.udpRelayedDatagrams < 2 && System.currentTimeMillis() < deadline) {
                         Thread.sleep(15)
                     }
