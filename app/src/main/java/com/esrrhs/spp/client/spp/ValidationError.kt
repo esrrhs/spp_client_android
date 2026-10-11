@@ -11,4 +11,6 @@ enum class ValidationError {
     KIND_UNSUPPORTED,
     /** SPP 传输协议不在 spp 支持列表内，原样传给子进程只会得到模糊的建链失败。 */
     PROTO_UNSUPPORTED,
+    /** SOCKS5 用户名/密码超过 RFC 1929 的 255 字节上限（按 UTF-8 计）。 */
+    CREDENTIALS_TOO_LONG,
 }

@@ -40,6 +40,7 @@
     <string name="err_key_required">请填写认证 Key</string>
     <string name="err_kind_unsupported">配置类型无效（仅支持 spp / socks5），配置可能已损坏或被篡改</string>
     <string name="err_proto_unsupported">传输协议无效，仅支持：tcp、rudp、kcp、quic、rhttp</string>
+    <string name="err_credentials_too_long">SOCKS5 用户名或密码过长（按 UTF-8 计各最多 255 字节）</string>
     <string name="error_missing_native">缺少 libspp.so，请先运行 scripts/build_native.sh 再打包</string>
     <string name="error_spp_session">无法建立 SPP 会话（连接超时），请检查 server 地址、key/encrypt 与网络：\n%1$s</string>
     <string name="error_spp_exited">SPP 客户端进程提前退出：\n%1$s</string>

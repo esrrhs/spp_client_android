@@ -40,6 +40,7 @@
     <string name="err_key_required">Please enter the auth key</string>
     <string name="err_kind_unsupported">Invalid profile kind (only spp / socks5 supported); the profile may be corrupted or tampered</string>
     <string name="err_proto_unsupported">Invalid transport protocol; supported: tcp, rudp, kcp, quic, rhttp</string>
+    <string name="err_credentials_too_long">SOCKS5 username or password is too long (max 255 bytes each in UTF-8)</string>
     <string name="error_missing_native">libspp.so is missing. Run scripts/build_native.sh before packaging.</string>
     <string name="error_spp_session">Cannot establish an SPP session (connection timeout). Check the server address, key/encrypt and network:\n%1$s</string>
     <string name="error_spp_exited">The SPP client exited early:\n%1$s</string>

@@ -75,4 +75,58 @@ class SppConfigValidationTest {
         val both = SppConfig(serverHost = "", kind = "nope")
         assertEquals(ValidationError.KIND_UNSUPPORTED, both.validate())
     }
+
+    @Test
+    fun socks5CredentialsAtByteLimitAreValid() {
+        // RFC 1929：用户名/密码各最多 255 字节
+        val socks5 = SppConfig(
+            serverHost = "example.com",
+            serverPort = 1080,
+            kind = SppConfig.KIND_SOCKS5,
+            username = "a".repeat(255),
+            password = "b".repeat(255),
+        )
+        assertNull(socks5.validate())
+    }
+
+    @Test
+    fun socks5CredentialsOverByteLimitRejected() {
+        val longPassword = SppConfig(
+            serverHost = "example.com",
+            serverPort = 1080,
+            kind = SppConfig.KIND_SOCKS5,
+            password = "b".repeat(256),
+        )
+        assertEquals(ValidationError.CREDENTIALS_TOO_LONG, longPassword.validate())
+
+        val longUsername = SppConfig(
+            serverHost = "example.com",
+            serverPort = 1080,
+            kind = SppConfig.KIND_SOCKS5,
+            username = "u".repeat(256),
+        )
+        assertEquals(ValidationError.CREDENTIALS_TOO_LONG, longUsername.validate())
+    }
+
+    @Test
+    fun socks5CredentialLimitCountsUtf8BytesNotChars() {
+        // 每个中文字符 UTF-8 占 3 字节：85 字 = 255 合法，86 字 = 258 超限
+        val atLimit = SppConfig(
+            serverHost = "example.com",
+            serverPort = 1080,
+            kind = SppConfig.KIND_SOCKS5,
+            password = "中".repeat(85),
+        )
+        assertNull(atLimit.validate())
+
+        val overLimit = atLimit.copy(password = "中".repeat(86))
+        assertEquals(ValidationError.CREDENTIALS_TOO_LONG, overLimit.validate())
+    }
+
+    @Test
+    fun credentialLengthIgnoredForSppKind() {
+        // username/password 字段只对 SOCKS5 模式有意义，SPP 模式不检查其长度
+        val sppLong = spp().copy(username = "u".repeat(300), password = "p".repeat(300))
+        assertNull(sppLong.validate())
+    }
 }
