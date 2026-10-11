@@ -15,6 +15,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -31,7 +32,9 @@ fun QrShareDialog(
 ) {
     val context = LocalContext.current
     val payload = ProfileShare.encode(profile)
-    val bitmap = QrCodes.toBitmap(payload)
+    // 位图生成较重（800x800 逐像素），按 payload 缓存只算一次；
+    // 内容超出二维码容量时返回 null，降级为文案提示，绝不让 WriterException 崩在 composition 里
+    val bitmap = remember(payload) { QrCodes.toBitmap(payload) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -41,11 +44,18 @@ fun QrShareDialog(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Image(
-                    bitmap = bitmap.asImageBitmap(),
-                    contentDescription = stringResource(R.string.qr_content_description),
-                    modifier = Modifier.size(260.dp),
-                )
+                if (bitmap != null) {
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = stringResource(R.string.qr_content_description),
+                        modifier = Modifier.size(260.dp),
+                    )
+                } else {
+                    Text(
+                        text = stringResource(R.string.qr_too_large),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
                 Text(
                     text = stringResource(R.string.qr_hint),
                     style = MaterialTheme.typography.bodySmall,

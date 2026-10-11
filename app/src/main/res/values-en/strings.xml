@@ -178,6 +178,7 @@
     <!-- QR share -->
     <string name="qr_title">Share profile · %1$s</string>
     <string name="qr_hint">Scan with another device to add it, or send the text on the right</string>
+    <string name="qr_too_large">Profile content is too long for a QR code. Please send it as text instead.</string>
     <string name="qr_share_chooser">Share profile</string>
     <string name="qr_content_description">QR code</string>
 
