@@ -742,6 +742,10 @@ class RuleSocksServer(
                     relay.receive(packet)
                 } catch (_: java.net.SocketTimeoutException) {
                     continue
+                } catch (_: java.net.PortUnreachableException) {
+                    // ICMP port-unreachable：只针对刚刚中继的那个目标，socket 对其它流仍然可用，
+                    // 绝不能拆链（否则一个关端口的目标会连累整个 ASSOCIATE 重建）。
+                    continue
                 } catch (e: Exception) {
                     // 非本地关闭的异常：中继已死但引用还在，sendUpstream 会一直"成功"却无回包；
                     // 拆链让下一包懒重建（与 watchUpstreamControl 对称）。
@@ -829,6 +833,8 @@ class RuleSocksServer(
                     socket.receive(packet)
                 } catch (_: java.net.SocketTimeoutException) {
                     continue
+                } catch (_: java.net.PortUnreachableException) {
+                    continue // 某直发目标的 ICMP port-unreachable，非致命，socket 仍可用于其它流
                 } catch (e: Exception) {
                     // 非本地关闭的异常：清掉字段并关 socket，下一次 sendDirect 的
                     // obtainDirectSocket 会新建（否则直发仍"成功"但回包永不再来）。
