@@ -15,6 +15,7 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -474,6 +475,133 @@ class ProxySplitE2ETest {
             }
         } finally {
             runCatching { split.stop() }
+            runCatching { listener.close() }
+        }
+    }
+
+    @Test
+    fun udp_silentUpstream_handshakeOffLoopDoesNotBlockDirectAndSelfHeals() {
+        // 静默上游：TCP accept 后绝不写任何字节（NAT 黑洞/僵死 SPP：connect 成功但
+        // SOCKS 协商永不返回）。旧实现 ensureUpstream 在 run() 派发循环上同步建链，
+        // 协商读无超时无限阻塞——同 ASSOCIATE 的直连 UDP 全部冻死且永不重试。
+        // 修复后：
+        //  1) 建链/握手只在专用写线程进行：其卡住期间直连报文照常秒回（无队头阻塞）；
+        //  2) 握手读有 3s 预算，超时进 5s 冷却，窗后下一报文自动重建 ASSOCIATE（自愈）。
+        val attempts = AtomicInteger(0)
+        val held = ConcurrentHashMap.newKeySet<Socket>()
+        val listener = ServerSocket(0, 128, InetAddress.getByName("127.0.0.1"))
+        val acceptor = Thread {
+            while (true) {
+                val s = try {
+                    listener.accept()
+                } catch (_: Exception) {
+                    break
+                }
+                attempts.incrementAndGet()
+                held.add(s) // 保持连接打开但绝不写：客户端协商读必然超时
+            }
+        }.also { it.isDaemon = true; it.start() }
+
+        val split = RuleSocksServer(
+            upstream = SocksUpstream("127.0.0.1", listener.localPort),
+            directDomains = emptySet(),
+            directIpv4Cidrs = listOf("127.0.0.0/8"),
+        )
+        try {
+            split.start()
+            // start() 的预热也会连上静默上游（3s 读超时后放弃，不再补充）
+            val warmDeadline = System.currentTimeMillis() + 3000
+            while (attempts.get() < 1 && System.currentTimeMillis() < warmDeadline) {
+                Thread.sleep(20)
+            }
+            val baseline = attempts.get()
+            assertTrue("prewarm must connect once, got $baseline", baseline >= 1)
+
+            val ctrl = Socket("127.0.0.1", split.port!!)
+            ctrl.soTimeout = 5000
+            try {
+                val inn = DataInputStream(ctrl.getInputStream())
+                val out = ctrl.getOutputStream()
+                out.write(byteArrayOf(0x05, 0x01, 0x00)); out.flush()
+                assertEquals(0x05, inn.readUnsignedByte())
+                assertEquals(0x00, inn.readUnsignedByte())
+                out.write(
+                    Socks5Codec.buildRequest(
+                        Socks5Codec.CMD_UDP_ASSOCIATE, Socks5Codec.ATYP_IPV4.toInt(), "0.0.0.0", 0,
+                    ),
+                )
+                out.flush()
+                val bound = Socks5Codec.readReply(inn)
+                assertTrue("UDP ASSOCIATE reply expected", bound != null)
+                val relayPort = bound!!.second
+
+                val clientUdp = DatagramSocket()
+                try {
+                    clientUdp.soTimeout = 4000
+                    fun send(atyp: Int, host: String, port: Int, marker: String) {
+                        val header = Socks5Codec.buildUdpHeader(atyp, host, port)
+                        val payload = marker.toByteArray(Charsets.UTF_8)
+                        val pkt = ByteArray(header.size + payload.size)
+                        System.arraycopy(header, 0, pkt, 0, header.size)
+                        System.arraycopy(payload, 0, pkt, header.size, payload.size)
+                        clientUdp.send(
+                            DatagramPacket(pkt, pkt.size, InetSocketAddress("127.0.0.1", relayPort)),
+                        )
+                    }
+                    fun recvReply(): String {
+                        val recvBuf = ByteArray(65535)
+                        val recv = DatagramPacket(recvBuf, recvBuf.size)
+                        clientUdp.receive(recv)
+                        val (_, off) = Socks5Codec.parseUdpPacket(recv.data, recv.length)
+                            ?: error("malformed UDP reply header")
+                        return String(recv.data, off, recv.length - off, Charsets.UTF_8)
+                    }
+
+                    // 代理报文 #1：写线程发起第 1 次 ASSOCIATE 建链并卡在协商读上
+                    send(Socks5Codec.ATYP_IPV4.toInt(), "1.1.1.1", 9, "SILENT_PROXY_1")
+                    val attemptDeadline = System.currentTimeMillis() + 3000
+                    while (attempts.get() < baseline + 1 && System.currentTimeMillis() < attemptDeadline) {
+                        Thread.sleep(20)
+                    }
+                    assertEquals("writer must open one upstream attempt",
+                        baseline + 1, attempts.get())
+
+                    // 关键断言：写线程正卡在握手上，同一 ASSOCIATE 内随后的直连报文
+                    // 必须立即收到回包，不得等待上游握手（旧实现这里会超时收不到任何回包）
+                    val directStart = System.currentTimeMillis()
+                    send(Socks5Codec.ATYP_IPV4.toInt(), "127.0.0.1", udpV4.port, "SILENT_DIRECT")
+                    val reply = recvReply()
+                    val directElapsed = System.currentTimeMillis() - directStart
+                    assertEquals("SILENT_DIRECT", reply)
+                    assertTrue(
+                        "direct datagram must not wait for upstream handshake, took ${directElapsed}ms",
+                        directElapsed < 2500,
+                    )
+
+                    // 自愈：等握手预算(3s)+冷却(5s)过去后再发一包，必须发起第 2 次建链。
+                    // 旧实现派发循环永久阻塞在第一次协商读上，attempts 永远不会再增长。
+                    val retryAt = System.currentTimeMillis() +
+                        RuleSocksServer.UPSTREAM_HANDSHAKE_TIMEOUT_MS +
+                        RuleSocksServer.UPSTREAM_COOLDOWN_MS + 1500
+                    while (System.currentTimeMillis() < retryAt) Thread.sleep(50)
+                    send(Socks5Codec.ATYP_IPV4.toInt(), "1.1.1.1", 9, "SILENT_PROXY_2")
+                    val secondDeadline = System.currentTimeMillis() + 3000
+                    while (attempts.get() < baseline + 2 && System.currentTimeMillis() < secondDeadline) {
+                        Thread.sleep(20)
+                    }
+                    assertTrue(
+                        "writer must retry after handshake budget + cooldown, attempts=${attempts.get()}",
+                        attempts.get() >= baseline + 2,
+                    )
+                } finally {
+                    clientUdp.close()
+                }
+            } finally {
+                ctrl.close()
+            }
+        } finally {
+            runCatching { split.stop() }
+            held.forEach { runCatching { it.close() } }
             runCatching { listener.close() }
         }
     }
