@@ -142,8 +142,17 @@ class RuleSocksServer(
             val client = try {
                 server.accept()
             } catch (e: Exception) {
-                if (running.get()) Log.w(TAG, "accept failed: ${e.message}")
-                return
+                // stop() 关闭监听套接字是预期退出；running 期间的异常（EMFILE fd 耗尽、
+                // 瞬时内核错误等）绝不能杀死监听——否则整个代理要等到 VPN 重建才能恢复。
+                if (!running.get()) return
+                Log.w(TAG, "accept failed, retry after ${ACCEPT_RETRY_BACKOFF_MS}ms: ${e.message}")
+                try {
+                    Thread.sleep(ACCEPT_RETRY_BACKOFF_MS)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return
+                }
+                continue
             }
             synchronized(children) { children.add(client) }
             pool.execute { handleClient(client) }
@@ -153,6 +162,10 @@ class RuleSocksServer(
     private fun handleClient(client: Socket) {
         try {
             client.tcpNoDelay = true
+            // 监听 127.0.0.1 但设备上任何 app 都能连入：连上后不发/发一半 SOCKS 握手
+            // 就静默挂住的连接，会永久占一个转发线程和 fd（线程池无界，可被慢慢耗尽）。
+            // 给整个握手阶段加读预算，超时即按坏连接关闭；进入数据转发前由各 handler 复位。
+            client.soTimeout = CLIENT_HANDSHAKE_TIMEOUT_MS.toInt()
             val input = DataInputStream(client.getInputStream())
             val out = client.getOutputStream()
             if (!Socks5Codec.acceptMethod(input, out)) return
@@ -241,8 +254,17 @@ class RuleSocksServer(
             directFailReason?.let { "direct failed -> proxy ($it)" },
             started,
         )
-        out.write(Socks5Codec.successReply("0.0.0.0", 0))
-        out.flush()
+        try {
+            out.write(Socks5Codec.successReply("0.0.0.0", 0))
+            out.flush()
+        } catch (e: Exception) {
+            // 客户端可能在我们建连期间已经 RST 走人：target 已连接成功，
+            // 不关掉就是永久 fd 泄漏（handleClient 的 finally 只关 client）。
+            Log.v(TAG, "client gone before CONNECT reply, closing target: ${e.message}")
+            runCatching { target.close() }
+            return
+        }
+        client.soTimeout = 0 // 进入双向转发：copyDirection 的读必须无限阻塞
         awaitPipe(client, target)
     }
 
@@ -510,6 +532,9 @@ class RuleSocksServer(
     // ============================== UDP ==============================
 
     private fun handleUdpAssociate(out: OutputStream, control: Socket) {
+        // 控制连接进入 ASSOCIATE 长生命周期（splitter 不读它，只靠 isClosed/EOF 感知死亡）：
+        // 取消握手读预算，避免后续任何复用读取被 10s 超时误杀。
+        control.soTimeout = 0
         // 面向 hev 的中继（hev 把报文发到这里）；上游/直连中继在 UdpSplitter 内按需建立
         val clientRelay = DatagramSocket(0, InetAddress.getByName("127.0.0.1"))
         val splitter = UdpSplitter(clientRelay, control)
@@ -1119,6 +1144,16 @@ class RuleSocksServer(
     internal companion object {
         const val TAG = "RuleSocksServer"
         const val CONNECT_TIMEOUT_MS = 3000
+
+        /**
+         * 客户端 SOCKS5 握手阶段（方法协商 + CONNECT/ASSOCIATE 请求）读预算（毫秒）。
+         * 本地 app 连入后静默不发数据时，最多占一个线程/fd 这么久即被关闭，
+         * 防止无界 cached 线程池被慢速连接耗尽；正常 hev 握手在毫秒级完成。
+         */
+        const val CLIENT_HANDSHAKE_TIMEOUT_MS = 10_000L
+
+        /** accept() 瞬时失败（如 EMFILE）后重试前的退避（毫秒），避免 busy loop。 */
+        const val ACCEPT_RETRY_BACKOFF_MS = 200L
         /** 单个地址的连接尝试上限，保证失败时秒级回退代理，不让用户等待。 */
         const val ADDR_CONNECT_TIMEOUT_MS = 1500L
         const val TIMEOUT_MS = 1000

@@ -154,6 +154,30 @@ class ProxySplitE2ETest {
     }
 
     @Test
+    fun tcp_silentClient_handshakeReadBudgetClosesConnection() {
+        // 本地 app 连入 SOCKS 端口后完全不发握手字节：旧实现服务端线程永久阻塞在
+        // readUnsignedByte()，连接与线程永不释放（无界 cached pool 可被慢慢耗尽）。
+        // 修复后握手读有 10s 预算，超时即关闭连接；正常 hev 握手毫秒级完成不受影响。
+        val socket = Socket()
+        socket.tcpNoDelay = true
+        socket.connect(InetSocketAddress("127.0.0.1", cnSplit.port!!), 2000)
+        try {
+            socket.soTimeout = 16_000
+            val start = System.currentTimeMillis()
+            val firstByte = socket.getInputStream().read()
+            val elapsed = System.currentTimeMillis() - start
+            assertEquals("server must half/close a silent client (EOF)", -1, firstByte)
+            val budget = RuleSocksServer.CLIENT_HANDSHAKE_TIMEOUT_MS
+            assertTrue(
+                "must be closed by the ~${budget}ms handshake budget, took ${elapsed}ms",
+                elapsed in budget - 3_000..budget + 5_000,
+            )
+        } finally {
+            socket.close()
+        }
+    }
+
+    @Test
     fun tcp_matchingDomain_resolvesAndGoesDirect() {
         val before = domainUpstream.tcpConnectCount
         val reply = tcpThroughProxy(domainSplit.port!!, "localhost", tcpV4.port, "DOMAIN_DIRECT", ipv6 = false)
