@@ -24,9 +24,11 @@ import com.esrrhs.spp.client.spp.SppAuthException
 import com.esrrhs.spp.client.spp.SppException
 import com.esrrhs.spp.client.spp.SppProcess
 import com.esrrhs.spp.client.spp.ValidationError
+import com.esrrhs.spp.client.tun.HevConfig
 import com.esrrhs.spp.client.tun.HevTunnel
 import com.esrrhs.spp.client.util.CnRouteList
 import com.esrrhs.spp.client.util.Formatters
+import com.esrrhs.spp.client.util.SocksProbe
 import com.esrrhs.spp.client.util.TrafficMeter
 import kotlinx.serialization.json.Json
 import kotlinx.coroutines.CancellationException
@@ -83,6 +85,9 @@ class SppVpnService : VpnService() {
 
     private var reconnectJob: Job? = null
     private var notifRateJob: Job? = null
+    private var latencyJob: Job? = null
+    /** 最近一次隧道实测延迟（ms），-1 = 尚未测出/测量失败。仅通知读取。 */
+    private val lastLatencyMs = java.util.concurrent.atomic.AtomicInteger(-1)
     private val rateMeter = TrafficMeter()
     private var currentProfileName: String? = null
 
@@ -365,6 +370,7 @@ class SppVpnService : VpnService() {
 
         updateNotification(getString(R.string.notif_connected, profile.name))
         startRateNotificationUpdating(profile.name)
+        startLatencyUpdating()
         VpnStateHolder.set(VpnState.Connected)
 
         // 全局连接采集（当前连接页 + 单连接历史），与界面是否打开无关
@@ -608,23 +614,13 @@ class SppVpnService : VpnService() {
     }
 
     private fun buildTun(profile: Profile): Builder {
+        val plan = TunPlan.of(profile.config.enableIpv6)
         val builder = Builder()
-            .setSession(TunConfig.SESSION)
-            .setMtu(TunConfig.MTU)
-            .addAddress(TunConfig.TUN_ADDRESS, TunConfig.TUN_PREFIX)
-            .addDnsServer(TunConfig.DNS_ADDRESS)
-            .addDnsServer(TunConfig.FALLBACK_DNS)
-
-        if (profile.config.enableIpv6) {
-            builder.addAddress(TunConfig.TUN_ADDRESS_V6, TunConfig.TUN_PREFIX_V6)
-        }
-
-        // 路由恒定为全抓（IPv4 一条、IPv6 一条）：
-        //  - 物理上不可能再触发 VpnService 路由表 Binder parcel / Android 15
-        //    NetworkMonitor 的 TransactionTooLargeException；
-        //  - CN 直连、绕过局域网全部下沉到 RuleSocksServer 用户态精确判定。
-        builder.addRoute("0.0.0.0", 0)
-        if (profile.config.enableIpv6) builder.addRoute("::", 0)
+            .setSession(plan.session)
+            .setMtu(plan.mtu)
+        plan.addresses.forEach { builder.addAddress(it.address, it.prefixLength) }
+        plan.dnsServers.forEach { builder.addDnsServer(it) }
+        plan.routes.forEach { builder.addRoute(it.address, it.prefixLength) }
 
         applyPerApp(builder, profile)
         return builder
@@ -646,26 +642,11 @@ class SppVpnService : VpnService() {
     }
 
     private fun writeHevConfig(socksPort: Int, enableIpv6: Boolean): File {
-        val yaml = buildString {
-            appendLine("tunnel:")
-            appendLine("  name: tun0")
-            appendLine("  mtu: ${TunConfig.MTU}")
-            appendLine("  ipv4: ${TunConfig.TUN_ADDRESS}")
-            if (enableIpv6) appendLine("  ipv6: '${TunConfig.TUN_ADDRESS_V6}'")
-            appendLine("socks5:")
-            appendLine("  address: 127.0.0.1")
-            appendLine("  port: $socksPort")
-            appendLine("  udp: 'udp'")
-            appendLine("mapdns:")
-            appendLine("  address: ${TunConfig.DNS_ADDRESS}")
-            appendLine("  port: 53")
-            appendLine("  network: ${TunConfig.MAPDNS_NETWORK}")
-            appendLine("  netmask: ${TunConfig.MAPDNS_NETMASK}")
-            appendLine("  cache-size: 10000")
-            appendLine("misc:")
-            appendLine("  log-level: info")
-            appendLine("  log-file: ${File(filesDir, "hev.log").absolutePath}")
-        }
+        val yaml = HevConfig.render(
+            socksPort = socksPort,
+            enableIpv6 = enableIpv6,
+            logFilePath = File(filesDir, "hev.log").absolutePath,
+        )
         return File(filesDir, "hev.yml").apply { writeText(yaml) }
     }
 
@@ -728,13 +709,48 @@ class SppVpnService : VpnService() {
                 val rates = rateMeter.update(tx, rx, now)
                 val txStr = Formatters.formatRate(rates.txBytesPerSec)
                 val rxStr = Formatters.formatRate(rates.rxBytesPerSec)
-                val text = getString(
-                    R.string.notif_connected_with_rate,
-                    currentProfileName.orEmpty(),
-                    txStr,
-                    rxStr,
-                )
+                val ping = lastLatencyMs.get()
+                val text = if (ping >= 0) {
+                    getString(
+                        R.string.notif_connected_with_rate_ping,
+                        currentProfileName.orEmpty(),
+                        txStr,
+                        rxStr,
+                        getString(R.string.ping_ms, ping),
+                    )
+                } else {
+                    getString(
+                        R.string.notif_connected_with_rate,
+                        currentProfileName.orEmpty(),
+                        txStr,
+                        rxStr,
+                    )
+                }
                 updateNotification(text)
+            }
+        }
+    }
+
+    /**
+     * 周期性实测隧道延迟并显示在通知里。
+     *
+     * 走 `SocksProbe` 的真实端到端测量（SOCKS 建连 + TLS 握手 + HTTP），不是 ping；
+     * 每次耗费一次短连接，因此间隔取分钟级，且只在 Connected 期间进行。
+     * 测量失败保持上一次结果消失（-1），通知回退为不带延迟的文本。
+     */
+    private fun startLatencyUpdating() {
+        latencyJob?.cancel()
+        lastLatencyMs.set(-1)
+        latencyJob = scope.launch(Dispatchers.IO) {
+            delay(LATENCY_FIRST_DELAY_MS)
+            while (true) {
+                if (VpnStateHolder.state.value !is VpnState.Connected) break
+                val port = ActiveSession.socksPort
+                if (port != null) {
+                    val ms = SocksProbe.measure(port, samples = 1, timeoutMs = LATENCY_TIMEOUT_MS)
+                    lastLatencyMs.set(ms)
+                }
+                delay(LATENCY_INTERVAL_MS)
             }
         }
     }
@@ -742,6 +758,9 @@ class SppVpnService : VpnService() {
     private fun stopRateNotificationUpdating() {
         notifRateJob?.cancel()
         notifRateJob = null
+        latencyJob?.cancel()
+        latencyJob = null
+        lastLatencyMs.set(-1)
         currentProfileName = null
         rateMeter.reset()
     }
@@ -839,6 +858,11 @@ class SppVpnService : VpnService() {
         /** 每个配置连续失败多少次后轮换到下一个候选。 */
         private const val FAILOVER_CYCLE = 2
         private const val RATE_NOTIF_INTERVAL_MS = 1000L
+        /** 延迟实测间隔：每次都是真实 TLS 握手 + HTTP，分钟级足够，别做成秒级。 */
+        private const val LATENCY_INTERVAL_MS = 60_000L
+        /** 首次测量延后一点：刚建链时数据面还在预热，测出来偏高没意义。 */
+        private const val LATENCY_FIRST_DELAY_MS = 5_000L
+        private const val LATENCY_TIMEOUT_MS = 8000
 
         /** 手动连接时等待 spp SOCKS 端口上线的超时（服务器不可达时的报错上限）。 */
         private const val SPP_STARTUP_TIMEOUT_MS = 15_000L

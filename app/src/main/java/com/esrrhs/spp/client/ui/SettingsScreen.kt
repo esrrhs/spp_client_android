@@ -34,6 +34,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,12 +42,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.findViewTreeLifecycleOwner
 import com.esrrhs.spp.client.R
 import com.esrrhs.spp.client.data.AppSettings
 import com.esrrhs.spp.client.util.WifiNames
+import com.esrrhs.spp.client.vpn.AlwaysOnVpn
 
 @Composable
 fun SettingsScreen(
@@ -280,6 +286,24 @@ private fun addCurrentWifi(
 @Composable
 private fun AlwaysOnCard() {
     val context = LocalContext.current
+    // 从系统设置返回后要重读（用户可能刚开/关），用 ON_RESUME 触发刷新而不是只算一次
+    var enabled by remember { mutableStateOf<Boolean?>(null) }
+    val view = androidx.compose.ui.platform.LocalView.current
+    DisposableEffect(view) {
+        val read = {
+            enabled = AlwaysOnVpn.isEnabledFor(
+                AlwaysOnVpn.configuredApp(context.contentResolver),
+                context.packageName,
+            )
+        }
+        read()
+        val owner = view.findViewTreeLifecycleOwner()
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) read()
+        }
+        owner?.lifecycle?.addObserver(observer)
+        onDispose { owner?.lifecycle?.removeObserver(observer) }
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -290,6 +314,16 @@ private fun AlwaysOnCard() {
             text = stringResource(R.string.alwayson_title),
             style = MaterialTheme.typography.bodyLarge,
         )
+        enabled?.let { on ->
+            Text(
+                text = stringResource(
+                    if (on) R.string.alwayson_state_on else R.string.alwayson_state_off,
+                ),
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (on) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         Text(
             text = stringResource(R.string.alwayson_steps),
             style = MaterialTheme.typography.bodySmall,
