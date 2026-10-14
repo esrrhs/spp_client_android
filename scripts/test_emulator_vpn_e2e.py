@@ -887,6 +887,14 @@ def connected_transports(adb, serial):
         for name, patterns in TRANSPORT_PATTERNS.items():
             if any(p in block for p in patterns):
                 found.add(name)
+    if not found:
+        # 解析不出任何传输时留证据：否则无法区分"镜像只有单通道"和"解析器读不懂 dumpsys"。
+        head = text[:600].replace("\n", " | ")
+        print(
+            f"    [DEBUG] dumpsys connectivity 未解析出传输: len={len(text)} "
+            f"agents={text.count('NETWORKAGENTINFO{')} "
+            f"wifi={text.count('WIFI')} cellular={text.count('CELLULAR')} head={head}"
+        )
     return found
 
 
