@@ -177,7 +177,10 @@ hev-socks5-tunnel
   显示 SPP Server 出口 IP（宿主机公网 IP）。
 - [x] `adb shell dumpsys connectivity` 可见 VPN network（`ni{VPN CONNECTED}`）。
 - [x] 错误 key：App 6s 内进入 Error 态，回放 spp 日志 `processLoginRsp fail tcp auth proof error`。
-- [ ] 故意断 server（MVP 报错停止路径已由错误 key 覆盖；运行中掉线由 spp 看门狗处理，待真机/补测）。
+- [x] 故意断 server：代理侧「运行中上游掉线」已由 E2E 覆盖（`ProxyE2ETest.testSocks5Mode_upstreamDropMidSession_tearsDownAndRecovers`
+  与 spp 模式同名用例：会话中途掐断上游中继连接 → 客户端必须收到 EOF/异常而非挂死，
+  且掉线后新建会话能自愈重建，含"预热连接失效后重建"路径）。
+  仍待真机补测：spp 子进程被系统回收时的看门狗（Error 态 → 重连）与网络制式切换。
 
 > **Bug 修复（验收中发现，2026-09-30）：**
 > 1. hev 对**外部传入**的 tun fd 在 `tunnel_fini` 不关闭（`!tun_fd_local` 直接 return），
@@ -204,7 +207,9 @@ hev-socks5-tunnel
 ### Phase 6 — 体验与硬化（约 1 天）
 
 - [x] 状态机与按钮防抖（重复点击）：`lifecycleMutex` 串行化 connect/teardown；busy 态按钮禁用；重复 start 命令直接忽略。
-- [x] 通知显示 Connected / 延迟（可选 ping）：通知随状态更新为「已连接 · server」；ping 未做（可选）。
+- [x] 通知显示 Connected / 速率 / 延迟：1s 刷新上下行速率，60s 做一次真实端到端实测
+  （SOCKS 建连 + TLS 握手 + HTTP，非 ICMP ping）并附在通知文本后；测不出时回退为
+  「已连接 · 配置名 ↑ ↓」不带延迟。主界面与故障切换用的 `pingMs` 本就已落地。
 - [x] 崩溃恢复：Service 被杀后不自动重连（MVP 行为，`START_NOT_STICKY`）；`onDestroy` 同步兜底清理。
 - [x] ProGuard / R8 规则（native 方法 keep）：keep `hev.htproxy.TProxyService`（JNI FindClass 硬编码类名），release mapping 已验证类名保留。
 - [x] Release 签名：`keystore.properties`（storeFile/storePassword/keyAlias/keyPassword）注入 signingConfig，密钥不入库；缺失时产出未签名 APK。
@@ -306,6 +311,12 @@ Week 2:  Phase4 tun2socks 全流量 → Phase5 DNS 验证 → Phase6 硬化发�
   验收中修复两个真实 Bug（见 Phase 4 说明：hev 外部 fd 不关闭、ANSI 正则隐藏字符）。
 - 构建脚本：`scripts/build_native.sh`（spp 交叉编译 + hev ndk-build）。
 - README 已同步实际架构（防环路机制、mapdns DNS、构建步骤）。
+- 系统代理劫持防线（两层）：`Socket()` 逐点绕过（util/DirectSockets.kt，服务出站与本机
+  端口探测全部走 `Socket(Proxy.NO_PROXY)`）+ 进程级兜底 `DirectProxySelector`（回环一律
+  NO_PROXY，其余沿用原默认，在 `SppApp.onCreate` 安装）。已确认 JDK 的无参 `Socket()`
+  确实会查默认 ProxySelector（实测被劫持为 SOCKS 死端口即 `Connection refused`），
+  未受影响的写法（ServerSocket / DatagramSocket / 显式 `openConnection(proxy)`）已在
+  KDoc 注明，避免误改。
 
 **模拟器验收方法：**
 

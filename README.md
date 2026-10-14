@@ -17,9 +17,16 @@ The goal is simple: **tap one button on your phone to turn on the VPN, and all d
 | DNS over proxy | System DNS points to a virtual address; queries are resolved by the server via SOCKS5/UDP ASSOCIATE to prevent DNS leaks |
 | SPP Server integration | Runs a local `socks5_client` that connects to the remote server through an SPP tunnel |
 | Smart split | Bypass private/LAN ranges, or route China (CN) IPs directly (chnroute) while proxying everything else |
+| Domain rules | Match direct/proxy decisions on domain suffixes, with a bundled list for common CN services |
+| Per-app routing | Allow-list or deny-list mode per installed app (the app itself is always excluded) |
+| Profiles & sharing | Multiple server profiles, import/export via QR code or `spp://` links |
+| Traffic & history | Live up/down rate and totals, per-connection history, and native logs for troubleshooting |
+| Self-check | Built-in connectivity, DNS-leak and tunnel checks, plus real end-to-end latency measurement |
+| Trusted Wi-Fi | Pause the data plane on chosen SSIDs and resume automatically when leaving |
+| Start on boot | Optionally reconnect automatically after reboot (system always-on VPN is configured in system settings) |
 | Loop prevention | `addDisallowedApplication(own package name)` excludes the app from the VPN, so SPP outbound traffic bypasses the TUN |
 
-**Out of scope (first release):** split-routing rules, subscriptions, a traffic-statistics dashboard, deep Always-on VPN integration, and RICMP (unavailable without root).
+**Out of scope:** subscriptions, managing the system always-on VPN switch on the user's behalf (Android does not allow apps to enable it; the app only reads its state and links to system settings), and RICMP (unavailable without root).
 
 ---
 
