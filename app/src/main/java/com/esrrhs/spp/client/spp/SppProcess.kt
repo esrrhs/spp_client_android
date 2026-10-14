@@ -4,10 +4,10 @@ import android.content.Context
 import com.esrrhs.spp.client.R
 import java.io.File
 import java.net.InetAddress
-import java.net.InetSocketAddress
 import java.net.ServerSocket
-import java.net.Socket
+import com.esrrhs.spp.client.util.LOOPBACK_V4
 import com.esrrhs.spp.client.util.LogSanitizer
+import com.esrrhs.spp.client.util.isLoopbackListening
 import java.util.concurrent.TimeUnit
 
 open class SppException(message: String) : Exception(message)
@@ -147,13 +147,11 @@ class SppProcess(context: Context) {
             val proc = process ?: return false
             if (!proc.isAlive) return false
             try {
-                Socket().use {
-                    // 显式用 IPv4 回环：Android 的 getLoopbackAddress() 返回 ::1，
-                    // 而 spp 的 -fromaddr 绑定的是 127.0.0.1
-                    it.connect(InetSocketAddress(InetAddress.getByName("127.0.0.1"), port), 250)
+                // 探测本机端口：绕过系统 ProxySelector + 固定 IPv4 回环，细节见 isLoopbackListening
+                if (isLoopbackListening(port, 250)) {
+                    android.util.Log.i(TAG, "socks port $port is listening")
+                    return true
                 }
-                android.util.Log.i(TAG, "socks port $port is listening")
-                return true
             } catch (e: Exception) {
                 if (firstError == null) {
                     firstError = e
@@ -168,7 +166,7 @@ class SppProcess(context: Context) {
 
     // 与 -fromaddr 的绑定域保持一致，用 IPv4 回环探测空闲端口
     private fun findFreeLoopbackPort(): Int =
-        ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { it.localPort }
+        ServerSocket(0, 1, InetAddress.getByName(LOOPBACK_V4)).use { it.localPort }
 
     /** 追加到 spp.log；由 ConnectionRecorder 定期截断，避免长时间运行占满存储。 */
     private fun appendToLogFile(line: String) {

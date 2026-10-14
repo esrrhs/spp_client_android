@@ -45,6 +45,16 @@ class MockUpstreamSocks5Server(
     /** 经代理转发到本上游的已封装 UDP 报文数（含未能解析目标、被丢弃的）。 */
     val udpRelayedDatagrams: Int get() = udpRelayedCount.get()
 
+    /**
+     * 模拟「运行中上游掉线」：掐断当前所有活跃中继连接（入站客户端连接 + 到目标的连接），
+     * 但服务本身继续 accept——用于验证被代理端能感知断链、且后续新会话可自愈重建。
+     */
+    fun dropActiveTcpConnections() {
+        val victims = activeSockets.toList()
+        activeSockets.clear()
+        victims.forEach { runCatching { it.close() } }
+    }
+
     val port: Int get() = serverSocket?.localPort ?: 0
 
     fun start() {

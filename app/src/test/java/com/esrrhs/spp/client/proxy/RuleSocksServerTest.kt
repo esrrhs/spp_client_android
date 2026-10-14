@@ -58,6 +58,38 @@ class RuleSocksServerTest {
         }
     }
 
+    /**
+     * 并发连接围栏：线程池无界、每条会话占两个 fd，必须有硬上限。
+     * 达到上限时新连接要在**握手之前**就断掉——放它们进握手等于占用线程和 10s 读预算，
+     * 反而更容易把已建立会话一起拖死。
+     */
+    @Test
+    fun clientLimit_exceeded_newConnectionIsRejectedBeforeHandshake() {
+        val server = RuleSocksServer(SocksUpstream("127.0.0.1", 1080), emptySet(), maxClients = 1)
+        server.start()
+        try {
+            val port = server.port!!
+            // 第一条连接占住唯一名额：不发握手，握手读预算内不会被回收
+            val first = java.net.Socket()
+            first.connect(InetSocketAddress("127.0.0.1", port), 2000)
+            try {
+                val second = java.net.Socket()
+                second.soTimeout = 3000
+                second.connect(InetSocketAddress("127.0.0.1", port), 2000)
+                assertEquals(
+                    "connection beyond the cap must be closed before SOCKS negotiation",
+                    -1,
+                    second.getInputStream().read(),
+                )
+                second.close()
+            } finally {
+                first.close()
+            }
+        } finally {
+            server.stop()
+        }
+    }
+
     @Test
     fun upstreamRelayAddress_loopbackUses127001() {
         val server = RuleSocksServer(SocksUpstream("127.0.0.1", 1080), emptySet())
