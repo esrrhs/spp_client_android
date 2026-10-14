@@ -323,6 +323,15 @@ Week 2:  Phase4 tun2socks 全流量 → Phase5 DNS 验证 → Phase6 硬化发�
 宿主机跑 `./spp -type server -proto tcp -listen :8888 -key <k> -encrypt <e>`，
 App 配置 server=`10.0.2.2:8888`（模拟器到宿主机 loopback 的专用地址）。
 
+**切网用例的两种形态（CI 脚本已区分）：**
+
+- **交接（真实切网）**：Wi-Fi ↔ 蜂窝，切换全程至少有一个物理网络在，`NetworkWatchdog`
+  应走 `SWITCH`（`physical network changed`）并原地重建隧道；
+- **断网重连（飞行模式）**：网络整体消失再恢复，走 `CLEAR`（`physical network lost`）。
+  脚本先探测设备是否有 Wi-Fi+蜂窝双通道，有则跑交接并断言"未出现 lost"，
+  没有（或条件不成立）则降级为飞行模式并打 WARN——避免把"镜像没有蜂窝"误判成回归。
+  需要把交接当硬门槛时设 `E2E_STRICT_HANDOVER=1`。
+
 **下一步：**
 
 1. 真机验收：README 验收标准逐项打勾（VPN 授权、出口 IP、DNS、断开恢复、错误提示）。
