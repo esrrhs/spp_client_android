@@ -7,6 +7,7 @@
     <string name="notif_connecting">正在连接…</string>
     <string name="notif_connected">已连接 · %1$s</string>
     <string name="notif_connected_with_rate">已连接 · %1$s  ↑ %2$s  ↓ %3$s</string>
+    <string name="notif_connected_with_rate_ping">已连接 · %1$s  ↑ %2$s  ↓ %3$s  · %4$s</string>
     <string name="notif_disconnecting">正在断开…</string>
     <string name="notif_reconnecting">连接已断开，正在重连…</string>
     <string name="notif_failover">正在切换到备用配置…</string>
@@ -136,6 +137,8 @@
     <string name="toast_wifi_added">已添加：%1$s</string>
     <string name="trusted_chip_remove">✕ %1$s</string>
     <string name="alwayson_title">系统常驻 VPN（Always-on）</string>
+    <string name="alwayson_state_on">当前状态：已开启（系统会在重启后自动拉起本 VPN）</string>
+    <string name="alwayson_state_off">当前状态：未开启</string>
     <string name="alwayson_steps">Android 不允许 App 自行开启常驻 VPN，需要手动设置：\n1. 点下方按钮打开系统 VPN 设置；\n2. 找到「SPP Client」，点旁边的齿轮/设置图标；\n3. 开启「始终开启的 VPN」；\n4. 如需全程防泄漏，再开启「阻止未使用 VPN 的连接」。\n\n也可以在通知栏 Quick Settings 的编辑页把「SPP VPN」磁贴拖到常用位置，一键启停。</string>
     <string name="action_open_vpn_settings">打开系统 VPN 设置</string>
     <string name="toast_vpn_settings_unavailable">无法打开系统设置，请手动进入 VPN 设置</string>

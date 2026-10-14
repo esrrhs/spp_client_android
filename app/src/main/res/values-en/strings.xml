@@ -7,6 +7,7 @@
     <string name="notif_connecting">Connecting…</string>
     <string name="notif_connected">Connected · %1$s</string>
     <string name="notif_connected_with_rate">Connected · %1$s  ↑ %2$s  ↓ %3$s</string>
+    <string name="notif_connected_with_rate_ping">Connected · %1$s  ↑ %2$s  ↓ %3$s  · %4$s</string>
     <string name="notif_disconnecting">Disconnecting…</string>
     <string name="notif_reconnecting">Connection lost, reconnecting…</string>
     <string name="notif_failover">Switching to backup profile…</string>
@@ -136,6 +137,8 @@
     <string name="toast_wifi_added">Added: %1$s</string>
     <string name="trusted_chip_remove">✕ %1$s</string>
     <string name="alwayson_title">System always-on VPN</string>
+    <string name="alwayson_state_on">Status: enabled (the system restarts this VPN after reboot)</string>
+    <string name="alwayson_state_off">Status: not enabled</string>
     <string name="alwayson_steps">Android does not allow apps to enable always-on VPN themselves. Set it up manually:\n1. Tap the button below to open system VPN settings;\n2. Find \"SPP Client\" and tap the gear icon next to it;\n3. Enable \"Always-on VPN\";\n4. For full leak protection, also enable \"Block connections without VPN\".\n\nYou can also drag the \"SPP VPN\" Quick Settings tile to your preferred position for one-tap control.</string>
     <string name="action_open_vpn_settings">Open system VPN settings</string>
     <string name="toast_vpn_settings_unavailable">Cannot open system settings. Please open VPN settings manually.</string>
