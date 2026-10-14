@@ -4,8 +4,6 @@ import android.util.Log
 import com.esrrhs.spp.client.proxy.Socks5Codec
 import java.io.DataInputStream
 import java.io.OutputStream
-import java.net.InetSocketAddress
-import java.net.Socket
 import javax.net.ssl.SSLSocketFactory
 
 /**
@@ -93,7 +91,7 @@ object SocksProbe {
         samples: Int = 2,
         timeoutMs: Int = 8000,
         targets: List<Target> = DEFAULT_TARGETS,
-    ): Int = measureAt("127.0.0.1", socksPort, "", "", samples, timeoutMs, targets)
+    ): Int = measureAt(LOOPBACK_V4, socksPort, "", "", samples, timeoutMs, targets)
 
     /** 直接测一台 SOCKS5（可带用户名密码），不经过本机 spp。 */
     fun measureRemote(
@@ -134,12 +132,10 @@ object SocksProbe {
         target: Target,
         timeoutMs: Int,
     ): Int = runCatching {
-        Socket().use { socket ->
-            socket.tcpNoDelay = true
-            socket.soTimeout = timeoutMs
+        // 连 SOCKS 端口必须绕过系统 ProxySelector：否则系统级 SOCKS 代理会劫持这次
+        // 探测（IPv4 被代转发、IPv6 直接 EOF）。细节见 newDirectSocket。
+        connectDirect(socksHost, socksPort, timeoutMs).use { socket ->
             val start = System.nanoTime()
-            socket.connect(InetSocketAddress(socksHost, socksPort), timeoutMs)
-
             val out: OutputStream = socket.getOutputStream()
             val input = DataInputStream(socket.getInputStream())
 
@@ -188,10 +184,8 @@ object SocksProbe {
         targetPort: Int = DEFAULT_TARGET_PORT,
         timeoutMs: Int = 5000,
     ): Boolean = runCatching {
-        Socket().use { socket ->
-            socket.tcpNoDelay = true
-            socket.soTimeout = timeoutMs
-            socket.connect(InetSocketAddress("127.0.0.1", socksPort), timeoutMs)
+        // 同上：本机 SOCKS 端口探测也必须绕过系统 ProxySelector
+        connectDirect(LOOPBACK_V4, socksPort, timeoutMs).use { socket ->
             socksConnect(
                 DataInputStream(socket.getInputStream()),
                 socket.getOutputStream(),

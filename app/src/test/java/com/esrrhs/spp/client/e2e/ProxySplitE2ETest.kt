@@ -3,18 +3,24 @@ package com.esrrhs.spp.client.e2e
 import com.esrrhs.spp.client.proxy.RuleSocksServer
 import com.esrrhs.spp.client.proxy.Socks5Codec
 import com.esrrhs.spp.client.proxy.SocksUpstream
+import com.esrrhs.spp.client.proxy.UdpTuning
+import com.esrrhs.spp.client.util.newDirectSocket
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import java.io.DataInputStream
+import java.io.IOException
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.Proxy
+import java.net.ProxySelector
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -154,13 +160,43 @@ class ProxySplitE2ETest {
     }
 
     @Test
+    fun tcp_directConnect_bypassesDefaultProxySelector() {
+        // 回归：java.net.Socket() 会查询默认 ProxySelector（macOS/Windows 上即系统
+        // 代理设置）。开发机或用户系统配了系统级 SOCKS 代理（如 Clash 127.0.0.1:7890）
+        // 时，RuleSocksServer 自己的出站连接会被劫持进该代理：IPv4 目标被代转发
+        // （看似成功），IPv6 目标被拒发后连接直接 EOF、无任何异常。这里装一个指向
+        // 死端口的恶意 selector，锁定代理服务器的出站连接必须真正直连。
+        val deadPort = ServerSocket(0).use { it.localPort }
+        val original = ProxySelector.getDefault()
+        ProxySelector.setDefault(object : ProxySelector() {
+            override fun select(uri: URI): List<Proxy> =
+                listOf(Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", deadPort)))
+
+            override fun connectFailed(uri: URI?, sa: java.net.SocketAddress?, ioe: IOException?) = Unit
+        })
+        try {
+            val before = lanUpstream.tcpConnectCount
+            assertEquals(
+                "direct v6 connect must not be hijacked by the default proxy selector",
+                "LAN6",
+                tcpThroughProxy(lanSplit.port!!, "::1", tcpV6.port, "LAN6", ipv6 = true),
+            )
+            assertEquals(
+                "upstream must see neither loopback connection",
+                before,
+                lanUpstream.tcpConnectCount,
+            )
+        } finally {
+            ProxySelector.setDefault(original)
+        }
+    }
+
+    @Test
     fun tcp_silentClient_handshakeReadBudgetClosesConnection() {
         // 本地 app 连入 SOCKS 端口后完全不发握手字节：旧实现服务端线程永久阻塞在
         // readUnsignedByte()，连接与线程永不释放（无界 cached pool 可被慢慢耗尽）。
         // 修复后握手读有 10s 预算，超时即关闭连接；正常 hev 握手毫秒级完成不受影响。
-        val socket = Socket()
-        socket.tcpNoDelay = true
-        socket.connect(InetSocketAddress("127.0.0.1", cnSplit.port!!), 2000)
+        val socket = clientSocket(cnSplit.port!!)
         try {
             socket.soTimeout = 16_000
             val start = System.currentTimeMillis()
@@ -242,7 +278,7 @@ class ProxySplitE2ETest {
 
     @Test
     fun udp_directLocalFailure_fallsBackToUpstreamAndPenalized() {
-        val ctrl = Socket("127.0.0.1", fallbackSplit.port!!)
+        val ctrl = clientSocket(fallbackSplit.port!!)
         ctrl.soTimeout = 5000
         try {
             val inn = DataInputStream(ctrl.getInputStream())
@@ -328,7 +364,7 @@ class ProxySplitE2ETest {
             val baseline = attempts.get()
             assertTrue("prewarm must attempt once, got $baseline", baseline >= 1)
 
-            val ctrl = Socket("127.0.0.1", split.port!!)
+            val ctrl = clientSocket(split.port!!)
             ctrl.soTimeout = 5000
             try {
                 val inn = DataInputStream(ctrl.getInputStream())
@@ -434,7 +470,7 @@ class ProxySplitE2ETest {
         )
         try {
             split.start()
-            val ctrl = Socket("127.0.0.1", split.port!!)
+            val ctrl = clientSocket(split.port!!)
             ctrl.soTimeout = 5000
             try {
                 val inn = DataInputStream(ctrl.getInputStream())
@@ -541,7 +577,7 @@ class ProxySplitE2ETest {
             val baseline = attempts.get()
             assertTrue("prewarm must connect once, got $baseline", baseline >= 1)
 
-            val ctrl = Socket("127.0.0.1", split.port!!)
+            val ctrl = clientSocket(split.port!!)
             ctrl.soTimeout = 5000
             try {
                 val inn = DataInputStream(ctrl.getInputStream())
@@ -606,7 +642,7 @@ class ProxySplitE2ETest {
                     // 旧实现派发循环永久阻塞在第一次协商读上，attempts 永远不会再增长。
                     val retryAt = System.currentTimeMillis() +
                         RuleSocksServer.UPSTREAM_HANDSHAKE_TIMEOUT_MS +
-                        RuleSocksServer.UPSTREAM_COOLDOWN_MS + 1500
+                        UdpTuning.UPSTREAM_COOLDOWN_MS + 1500
                     while (System.currentTimeMillis() < retryAt) Thread.sleep(50)
                     send(Socks5Codec.ATYP_IPV4.toInt(), "1.1.1.1", 9, "SILENT_PROXY_2")
                     val secondDeadline = System.currentTimeMillis() + 3000
@@ -641,7 +677,7 @@ class ProxySplitE2ETest {
         )
         try {
             split.start()
-            val ctrl = Socket("127.0.0.1", split.port!!)
+            val ctrl = clientSocket(split.port!!)
             ctrl.soTimeout = 5000
             try {
                 val inn = DataInputStream(ctrl.getInputStream())
@@ -706,6 +742,16 @@ class ProxySplitE2ETest {
 
     // ---------------- helpers ----------------
 
+    /**
+     * 测试客户端 socket：同样必须绕过系统 ProxySelector（动机同
+     * [newDirectSocket]），否则系统级 SOCKS 代理会代转发这次到本机代理端口的
+     * 连接，分流断言测的就不是 RuleSocksServer 的真实行为了。
+     */
+    private fun clientSocket(port: Int): Socket = newDirectSocket().apply {
+        tcpNoDelay = true
+        connect(InetSocketAddress("127.0.0.1", port), 2000)
+    }
+
     private fun tcpThroughProxy(
         proxyPort: Int,
         host: String,
@@ -713,8 +759,7 @@ class ProxySplitE2ETest {
         msg: String,
         ipv6: Boolean,
     ): String {
-        Socket("127.0.0.1", proxyPort).use { socket ->
-            socket.tcpNoDelay = true
+        clientSocket(proxyPort).use { socket ->
             socket.soTimeout = 5000
             val inn = DataInputStream(socket.getInputStream())
             val out = socket.getOutputStream()
@@ -747,7 +792,7 @@ class ProxySplitE2ETest {
         msg: String,
         ipv6: Boolean,
     ): String {
-        val ctrl = Socket("127.0.0.1", proxyPort)
+        val ctrl = clientSocket(proxyPort)
         ctrl.soTimeout = 5000
         try {
             val inn = DataInputStream(ctrl.getInputStream())

@@ -6,10 +6,12 @@ import com.esrrhs.spp.client.proxy.SocksUpstream
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import java.io.DataInputStream
+import java.io.OutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -247,6 +249,120 @@ class ProxyE2ETest {
     }
 
     // ==========================================
+    // 异常与恢复：运行中上游掉线（IMPLEMENTATION_PLAN Phase 4 遗留验收项）
+    // ==========================================
+
+    @Test
+    fun testSocks5Mode_upstreamDropMidSession_tearsDownAndRecovers() {
+        val proxyPort = ruleSocksServerSocks5Mode.port!!
+        val (socket, input, out) = openTcpSession(proxyPort, "127.0.0.1", tcpTargetV4.port)
+        try {
+            // 1) 掉线前：正常收发
+            val before = "BEFORE_DROP".toByteArray(Charsets.UTF_8)
+            out.write(before)
+            out.flush()
+            assertEquals("BEFORE_DROP", readExactly(input, before.size))
+
+            // 2) 运行中上游掉线：掐断所有活跃中继连接，上游服务本身继续 accept
+            upstreamSocks5.dropActiveTcpConnections()
+
+            // 3) 客户端必须很快感知断链（EOF 或异常），不能永久挂住；
+            //    socket.soTimeout=5s 兜底，若真的挂住会抛 SocketTimeoutException
+            val outcome = runCatching { input.read() }
+            val err = outcome.exceptionOrNull()
+            assertFalse(
+                "relay must not hang after upstream drop",
+                err is java.net.SocketTimeoutException,
+            )
+            assertTrue(
+                "relay must surface the drop as EOF(-1) or an error, got ${outcome.getOrNull()}",
+                outcome.getOrNull() == -1 || err != null,
+            )
+        } finally {
+            runCatching { socket.close() }
+        }
+
+        // 4) 自愈：掉线之后新建的会话必须照样走通（含预热连接失效后重建的路径）
+        verifyTcpEcho(proxyPort, "127.0.0.1", tcpTargetV4.port, "AFTER_DROP")
+    }
+
+    /**
+     * 回归：UDP ASSOCIATE 的控制连接被**对端**（hev / 本地 socks 客户端）关闭时，
+     * 关联必须被回收。旧实现只在本端 `control.isClosed` 为 true 时才退出派发循环，
+     * 而 control 全程无人读——对端 FIN 后本端 isClosed 仍是 false，这个关联会带着
+     * 一个线程和 4 个 socket（clientRelay / direct v4+v6 / upRelay）永久挂着，
+     * 每次 VPN 重建累积一份。现在由 udp-control-watchdog 读 EOF 后主动收摊。
+     */
+    @Test
+    fun udp_clientClosesControl_associationIsReaped() {
+        val proxyPort = ruleSocksServerSocks5Mode.port!!
+        val before = ruleSocksServerSocks5Mode.activeAssociations.get()
+
+        val ctrl = Socket("127.0.0.1", proxyPort).apply { tcpNoDelay = true; soTimeout = 5000 }
+        val `in` = DataInputStream(ctrl.getInputStream())
+        val out = ctrl.getOutputStream()
+        out.write(byteArrayOf(0x05, 0x01, 0x00))
+        out.flush()
+        assertEquals(0x05, `in`.readUnsignedByte())
+        assertEquals(0x00, `in`.readUnsignedByte())
+        out.write(byteArrayOf(0x05, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00))
+        out.flush()
+        assertTrue("UDP ASSOCIATE must succeed", Socks5Codec.readReply(`in`) != null)
+
+        val deadline = System.currentTimeMillis() + 3000
+        while (System.currentTimeMillis() < deadline &&
+            ruleSocksServerSocks5Mode.activeAssociations.get() == before
+        ) {
+            Thread.sleep(20)
+        }
+        assertEquals("association must be registered", before + 1, ruleSocksServerSocks5Mode.activeAssociations.get())
+
+        // 对端（hev 角色）关掉控制连接
+        ctrl.close()
+
+        val reaped = System.currentTimeMillis() + 5000
+        while (System.currentTimeMillis() < reaped &&
+            ruleSocksServerSocks5Mode.activeAssociations.get() > before
+        ) {
+            Thread.sleep(50)
+        }
+        assertEquals(
+            "association must be reaped after the peer closes its control connection",
+            before,
+            ruleSocksServerSocks5Mode.activeAssociations.get(),
+        )
+    }
+
+    @Test
+    fun testSppMode_upstreamDropMidSession_tearsDownAndRecovers() {
+        val proxyPort = ruleSocksServerSppMode.port!!
+        val (socket, input, out) = openTcpSession(proxyPort, "127.0.0.1", tcpTargetV4.port)
+        try {
+            val before = "SPP_BEFORE_DROP".toByteArray(Charsets.UTF_8)
+            out.write(before)
+            out.flush()
+            assertEquals("SPP_BEFORE_DROP", readExactly(input, before.size))
+
+            upstreamSppMock.dropActiveTcpConnections()
+
+            val outcome = runCatching { input.read() }
+            val err = outcome.exceptionOrNull()
+            assertFalse(
+                "relay must not hang after upstream drop (spp mode)",
+                err is java.net.SocketTimeoutException,
+            )
+            assertTrue(
+                "relay must surface the drop (spp mode), got ${outcome.getOrNull()}",
+                outcome.getOrNull() == -1 || err != null,
+            )
+        } finally {
+            runCatching { socket.close() }
+        }
+
+        verifyTcpEcho(proxyPort, "127.0.0.1", tcpTargetV4.port, "SPP_AFTER_DROP")
+    }
+
+    // ==========================================
     // 非功能性测试：高并发压力与速度时延验证
     // ==========================================
 
@@ -302,6 +418,39 @@ class ProxyE2ETest {
     // ==========================================
     // 辅助验证逻辑
     // ==========================================
+
+    /**
+     * 建立一条经代理到目标的 TCP 会话（握手 + CONNECT 完成），**保持连接打开**，
+     * 供需要在会话中途制造异常（上游掉线等）的用例使用。
+     */
+    private fun openTcpSession(
+        proxyPort: Int,
+        targetHost: String,
+        targetPort: Int,
+    ): Triple<Socket, DataInputStream, OutputStream> {
+        val socket = Socket("127.0.0.1", proxyPort)
+        socket.tcpNoDelay = true
+        socket.soTimeout = 5000
+        val `in` = DataInputStream(socket.getInputStream())
+        val out = socket.getOutputStream()
+
+        out.write(byteArrayOf(0x05, 0x01, 0x00))
+        out.flush()
+        assertEquals(0x05, `in`.readUnsignedByte())
+        assertEquals(0x00, `in`.readUnsignedByte())
+
+        val atyp = if (targetHost.contains(":")) Socks5Codec.ATYP_IPV6 else Socks5Codec.ATYP_IPV4
+        out.write(Socks5Codec.buildRequest(Socks5Codec.CMD_CONNECT, atyp.toInt(), targetHost, targetPort))
+        out.flush()
+        assertTrue("CONNECT through proxy must succeed", Socks5Codec.readReply(`in`) != null)
+        return Triple(socket, `in`, out)
+    }
+
+    private fun readExactly(input: DataInputStream, size: Int): String {
+        val buf = ByteArray(size)
+        input.readFully(buf)
+        return String(buf, Charsets.UTF_8)
+    }
 
     private fun verifyTcpEcho(proxyPort: Int, targetHost: String, targetPort: Int, msg: String) {
         val payload = msg.toByteArray(Charsets.UTF_8)
