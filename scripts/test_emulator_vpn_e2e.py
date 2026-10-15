@@ -887,14 +887,39 @@ def connected_transports(adb, serial):
         for name, patterns in TRANSPORT_PATTERNS.items():
             if any(p in block for p in patterns):
                 found.add(name)
+    # 接口名兜底：无论 dumpsys 解析成败都探测一次。只有两条证据都在，
+    # 才能区分"镜像只有单通道"和"解析器读不懂 dumpsys"。
+    ifaces = transports_from_interfaces(adb, serial)
     if not found:
-        # 解析不出任何传输时留证据：否则无法区分"镜像只有单通道"和"解析器读不懂 dumpsys"。
         head = text[:600].replace("\n", " | ")
         print(
             f"    [DEBUG] dumpsys connectivity 未解析出传输: len={len(text)} "
             f"agents={text.count('NETWORKAGENTINFO{')} "
             f"wifi={text.count('WIFI')} cellular={text.count('CELLULAR')} head={head}"
         )
+        found |= ifaces
+    return found
+
+
+# 蜂窝/ Wi-Fi 在 sysfs 里的常见接口名前缀（模拟器 netsim、qemu 与各厂商 modem 均覆盖）。
+CELLULAR_IFACE_PREFIXES = ("rmnet", "radio", "ccmni", "wwan", "ccinet", "v4-rmnet")
+WIFI_IFACE_PREFIXES = ("wlan", "wifi", "swlan")
+
+
+def transports_from_interfaces(adb, serial):
+    """dumpsys 不可信时的兜底探测：按网络接口名判断有没有 Wi-Fi / 蜂窝。
+
+    接口存在 ≠ 网络已连接，但这里只是决定"要不要试交接"——真跑了以后仍由
+    SWITCH/CLEAR 断言把关，误报会走降级分支而不会误判为通过。
+    """
+    res = run_adb(adb, serial, ["shell", "ls /sys/class/net"], check=False, timeout=20)
+    names = (res.stdout or "").split()
+    found = set()
+    if any(n.startswith(CELLULAR_IFACE_PREFIXES) for n in names):
+        found.add("CELLULAR")
+    if any(n.startswith(WIFI_IFACE_PREFIXES) for n in names):
+        found.add("WIFI")
+    print(f"    [DEBUG] 接口兜底探测: ifaces={names} -> {sorted(found)}")
     return found
 
 
