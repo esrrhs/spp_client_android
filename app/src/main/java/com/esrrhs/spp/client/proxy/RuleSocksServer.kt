@@ -49,8 +49,10 @@ data class SocksUpstream(
  * - UDP ASSOCIATE：逐报文解析 SOCKS5 目标，直连目标由本进程 DatagramSocket 直发，
  *   其余经上游 UDP 中继；上游中继按需懒建立，纯直连会话零上游连接。
  *   直连本地失败（域名解析失败/socket 异常）时与 TCP 一样短期惩罚并立即改经上游，
- *   不静默丢报文。上游 ASSOCIATE 失败则进入短暂冷却窗（防突发流量逐包建链风暴），
- *   冷却期后自动重试；上游中继失效（发送异常）即拆链，下一包懒重建自愈。
+ *   不静默丢报文。上游 ASSOCIATE 失败由该会话自己指数退避重试（全局只保留建链
+ *   错开，避免 N 个会话同时重连），退避期间报文**延迟重试**而非丢弃——否则一个
+ *   会话失败会连带静默丢掉其它会话新建 QUIC 流的握手包，表现为视频点开播不了。
+ *   上游中继失效（发送异常）即拆链，下一包懒重建自愈。
  *   域名直连的本地 DNS 解析在专用有界单线程上异步执行，弱网下慢解析不会阻塞
  *   run() 单循环而冻住其它 UDP 流量；解析队列堆积时新报文直接回退上游。
  *   系统解析无原生超时，统一以 2.5s 预算兜底（TCP 快速回退代理、UDP 惩罚并回退）；
@@ -59,7 +61,7 @@ data class SocksUpstream(
  *   代理报文只入有界队列，由每会话单写线程负责懒建立 ASSOCIATE 与发送——
  *   建链含 TCP connect 与 SOCKS 握手读（各有秒级预算，静默对端不再无限挂起），
  *   绝不同步占用 run() 派发循环，上游卡住期间直连 UDP 照常收发；队列背压按 UDP
- *   语义丢尾包，握手失败冷却后由写线程自动重试。
+ *   语义丢尾包，握手失败后退避重试（不再因冷却而作废整批报文）。
  *
  * 纯阻塞 IO + 守护线程，生命周期与 VPN 数据面一致。
  * 所有上游/直连 TCP 连接启用激进 keepalive（30s 起探），防移动 NAT 静默回收造成假死。
@@ -130,8 +132,16 @@ class RuleSocksServer(
     private val dnsCache =
         BoundedTtlCache<List<InetAddress>>(DNS_CACHE_MAX, accessOrder = true)
 
-    /** 上游失败冷却截止时间（实例级，切网重建即清零；0 = 无冷却）。 */
-    private val upstreamCooldownUntilMs = AtomicLong(0)
+    /**
+     * 上游建链的最早时刻（实例级：网络切换/会话停止随本对象一起丢弃）。
+     *
+     * 只用于把多个 UDP 会话的 connect 错开，**不是**丢弃窗口：上游不可用时会让
+     * 报文延迟重试而不会作废。此前这里是"冷却窗内所有会话取出即弃"，一个会话
+     * 失败一次就能让随后数秒新建的 QUIC 流（点开视频起播）握手包全丢。
+     */
+    private val upstreamNextConnectAtMs = AtomicLong(0)
+    /** 保护 [upstreamNextConnectAtMs] 预约的监视器。 */
+    private val upstreamConnectGate = Any()
 
     val port: Int? get() = server?.localPort
 
@@ -630,7 +640,8 @@ class RuleSocksServer(
         running = running,
         relays = relays,
         pool = pool,
-        cooldownUntilMs = upstreamCooldownUntilMs,
+        nextConnectAtMs = upstreamNextConnectAtMs,
+        connectGate = upstreamConnectGate,
         shouldDirect = { host, atyp -> shouldDirect(host, atyp) },
         isDirectPenalizedKey = ::isDirectPenalizedKey,
         penalizeDirectKey = ::penalizeDirectKey,
