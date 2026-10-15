@@ -329,8 +329,17 @@ App 配置 server=`10.0.2.2:8888`（模拟器到宿主机 loopback 的专用地�
   应走 `SWITCH`（`physical network changed`）并原地重建隧道；
 - **断网重连（飞行模式）**：网络整体消失再恢复，走 `CLEAR`（`physical network lost`）。
   脚本先探测设备是否有 Wi-Fi+蜂窝双通道，有则跑交接并断言"未出现 lost"，
-  没有（或条件不成立）则降级为飞行模式并打 WARN——避免把"镜像没有蜂窝"误判成回归。
-  需要把交接当硬门槛时设 `E2E_STRICT_HANDOVER=1`。
+  没有兜底通道（关掉 Wi-Fi 后网络整体消失）则交给飞行模式用例——避免把"镜像没有
+  蜂窝"误判成回归。需要把交接当硬门槛时设 `E2E_STRICT_HANDOVER=1`。
+
+  **能否交接不看 dumpsys 上报的传输类型，而看行为**：同一个 NetworkAgentInfo 块
+  里能同时扫到 WIFI 和 CELLULAR（块内带着 NetworkRequest 的 capabilities），据此
+  判"有双通道"会把单通道镜像误判成可交接，随后关 Wi-Fi 必然断网、白跑一趟。所以
+  直接关 Wi-Fi，看 `NetworkWatchdog` 报 SWITCH 还是 CLEAR 来定性。`dumpsys` 与
+  `/sys/class/net` 的解析降级为纯诊断输出（打印但不判定）。
+
+  交接探测会 flap 一次 Wi-Fi；探测失败（网络真断过）时必须先等它回到基线再跑飞行
+  模式用例，否则"开飞行模式"时网络本来就不在，等不到 `physical network lost`。
 
 **下一步：**
 
