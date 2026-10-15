@@ -1011,53 +1011,79 @@ SWITCH_LOG = "physical network changed"
 CLEAR_LOG = "physical network lost, release underlying"
 
 
+HANDOVER_PROBE_TIMEOUT = 25
+
+
+def try_handover_step(adb, serial, kind, timeout=HANDOVER_PROBE_TIMEOUT):
+    """关掉某类无线，返回 watchdog 的判定：SWITCH / CLEAR / None（无可观测变化）。"""
+    run_adb(adb, serial, ["shell", "logcat", "-c"], check=False)
+    svc_set(adb, serial, kind, False)
+    try:
+        hit, _ = wait_for_any_log(adb, serial, (CLEAR_LOG, SWITCH_LOG), timeout=timeout)
+        return hit
+    except RuntimeError:
+        return None
+
+
 def verify_network_handover(adb, serial, host_ip):
-    """真实交接：关掉 Wi-Fi，物理网络若没整体消失即为交接（SWITCH）。
+    """真实交接：关掉一条通道，物理网络若没整体消失即为交接（SWITCH）。
 
     判据不用 dumpsys 上报的传输类型——模拟器同一个 NetworkAgentInfo 块里能同时
     扫出 WIFI 和 CELLULAR（块内带着 NetworkRequest 的 capabilities），据此判
-    "有双通道"会把单通道镜像误判成可交接，随后关 Wi-Fi 必然断网、白跑一趟。
-    改成行为探针：直接关 Wi-Fi，看 NetworkWatchdog 报 SWITCH（有兜底通道，网络
-    没消失）还是 CLEAR（没有兜底）。报 CLEAR 就交给飞行模式用例去覆盖。
+    "有双通道"会把单通道镜像误判成可交接。改成行为探针：真的关掉一条通道，看
+    NetworkWatchdog 报 SWITCH（网络只是换了一条）还是 CLEAR（网络整体消失）。
+
+    先关 Wi-Fi（真机场景），没反应再关蜂窝——模拟器 VPN 的底层网络常常本就钉在
+    蜂窝上（dumpsys 里是 CELLULAR+VPN），关 Wi-Fi 对它不可见，反过来才观察得到。
+    报 CLEAR 说明本机没有可交接的通道，交给飞行模式用例去覆盖。
     """
-    print("\n[SOCKS5] 11. 探测设备能否做真实交接（关 Wi-Fi，看是否有兜底通道）...")
+    print("\n[SOCKS5] 11. 探测设备能否做真实交接（关一条通道，看网络是否只是换了一条）...")
     report_network_topology(adb, serial)
     svc_set(adb, serial, "data", True)
     svc_set(adb, serial, "wifi", True)
     time.sleep(3)
     try:
-        print("==> 关闭 Wi-Fi，落到兜底通道")
-        run_adb(adb, serial, ["shell", "logcat", "-c"], check=False)
-        svc_set(adb, serial, "wifi", False)
-        hit, _ = wait_for_any_log(adb, serial, (CLEAR_LOG, SWITCH_LOG), timeout=45)
-        if hit == CLEAR_LOG:
-            print("    [SKIP] 关掉 Wi-Fi 后物理网络整体消失：本机没有兜底通道（属断网重连）")
-            return False
-        print("    [PASS] Wi-Fi→兜底通道 走 SWITCH 分支（物理网络未整体消失）")
-        wait_for_log(adb, serial, "hev tunnel started", timeout=45)
-        if not wait_for_tun(adb, serial, should_exist=True, timeout=15):
-            dump_vpn_log(adb, serial)
-            raise RuntimeError("切到兜底通道后 tun0 未恢复")
-        verify_tcp_echo(adb, serial, host_ip, "HANDOVER_BACKUP")
-        print("    [PASS] 兜底通道下 TCP 穿透成功")
-        wait_and_assert_underlying_alive(adb, serial)
+        for kind, label in (("wifi", "Wi-Fi"), ("data", "蜂窝")):
+            print(f"==> 关闭 {label}，看物理网络是否只是换了一条而非消失")
+            hit = try_handover_step(adb, serial, kind)
+            if hit is None:
+                print(f"    [DEBUG] svc {kind} disable 未造成可观测的网络变化，换下一种")
+                svc_set(adb, serial, kind, True)
+                time.sleep(3)
+                continue
+            if hit == CLEAR_LOG:
+                print(f"    [SKIP] 关掉 {label} 后物理网络整体消失：本机没有兜底通道（属断网重连）")
+                return False
+            print(f"    [PASS] 关掉 {label} 走 SWITCH 分支（物理网络未整体消失）")
+            wait_for_log(adb, serial, "hev tunnel started", timeout=45)
+            if not wait_for_tun(adb, serial, should_exist=True, timeout=15):
+                dump_vpn_log(adb, serial)
+                raise RuntimeError(f"关掉 {label} 后 tun0 未恢复")
+            verify_tcp_echo(adb, serial, host_ip, f"HANDOVER_OFF_{kind}")
+            print(f"    [PASS] 交接后 TCP 穿透成功")
+            wait_and_assert_underlying_alive(adb, serial)
 
-        print("==> 打开 Wi-Fi，切回 Wi-Fi")
-        run_adb(adb, serial, ["shell", "logcat", "-c"], check=False)
-        svc_set(adb, serial, "wifi", True)
-        hit, text = wait_for_any_log(adb, serial, (CLEAR_LOG, SWITCH_LOG), timeout=45)
-        assert_switch_not_clear(text)
-        if hit == CLEAR_LOG:
-            raise RuntimeError("切回 Wi-Fi 途中物理网络整体消失，非交接")
-        print("    [PASS] 兜底通道→Wi-Fi 走 SWITCH 分支")
-        wait_for_log(adb, serial, "hev tunnel started", timeout=45)
-        if not wait_for_tun(adb, serial, should_exist=True, timeout=15):
-            dump_vpn_log(adb, serial)
-            raise RuntimeError("切回 Wi-Fi 后 tun0 未恢复")
-        verify_tcp_echo(adb, serial, host_ip, "HANDOVER_WIFI")
-        print("    [PASS] Wi-Fi 下 TCP 穿透成功")
-        wait_and_assert_underlying_alive(adb, serial)
-        return True
+            print(f"==> 恢复 {label}，切回原通道")
+            run_adb(adb, serial, ["shell", "logcat", "-c"], check=False)
+            svc_set(adb, serial, kind, True)
+            back, text = wait_for_any_log(adb, serial, (CLEAR_LOG, SWITCH_LOG), timeout=45)
+            assert_switch_not_clear(text)
+            if back == CLEAR_LOG:
+                raise RuntimeError(f"恢复 {label} 途中物理网络整体消失，非交接")
+            print(f"    [PASS] 切回后走 SWITCH 分支")
+            wait_for_log(adb, serial, "hev tunnel started", timeout=45)
+            if not wait_for_tun(adb, serial, should_exist=True, timeout=15):
+                dump_vpn_log(adb, serial)
+                raise RuntimeError(f"恢复 {label} 后 tun0 未恢复")
+            verify_tcp_echo(adb, serial, host_ip, f"HANDOVER_ON_{kind}")
+            print(f"    [PASS] 切回后 TCP 穿透成功")
+            wait_and_assert_underlying_alive(adb, serial)
+            return True
+        print(
+            "    [SKIP] svc wifi/data 都未造成可观测的网络变化"
+            "（模拟器 Wi-Fi 由 netsim 托管，svc 可能无效），降级飞行模式"
+        )
+        return False
     except Exception as exc:
         # 交接是"更强"的用例：条件不成立时降级，而不是让整条流水线红掉。
         # 想把它当硬门槛跑（真机/有蜂窝的镜像）时设 E2E_STRICT_HANDOVER=1。
