@@ -1146,6 +1146,39 @@ def run_probe(adb, serial, shell_cmd, timeout=12):
                     timeout=timeout).stdout or "")
 
 
+SPP_CHILD_PATTERN = "libspp.so"
+
+
+def spp_child_pids(adb, serial):
+    """当前存活的 libspp.so 子进程 PID 列表（看门狗重启后 PID 会变）。"""
+    out = run_adb(adb, serial, ["shell", f"pgrep -f {SPP_CHILD_PATTERN}"],
+                  check=False).stdout or ""
+    return [p.strip() for p in out.split() if p.strip()]
+
+
+def assert_spp_child_alive(adb, serial, expected_pid=None, where=""):
+    """SPP 子进程必须还活着——它一退出，后面的探测全变成"没有代理"，与协议无关。
+
+    之前这里只会表现为"连续 3 次未收到预期响应"，看起来像协议回归，实际是
+    native 子进程起来没多久就退了（见过起来 6 秒就 `spp exited cleanly`）。
+    子进程不在时立刻抛出指明原因的错误并附日志，别让重试掩盖真正的故障点。
+    """
+    pids = spp_child_pids(adb, serial)
+    if pids:
+        if expected_pid and expected_pid not in pids:
+            print(
+                f"    [WARN] SPP 子进程 PID 已变（{expected_pid} -> {'/'.join(pids)}）："
+                f"看门狗重启过，本次探测可能打在重启窗口上"
+            )
+        return pids[0]
+    dump_vpn_log(adb, serial)
+    raise RuntimeError(
+        f"{where}SPP 子进程（{SPP_CHILD_PATTERN}）已退出"
+        + (f"，原 PID {expected_pid}" if expected_pid else "")
+        + "：后续探测必然失败。这是 native 进程退出，不是协议回归，见上方日志。"
+    )
+
+
 def probe_with_retries(adb, serial, mode_name, case_name, shell_cmd,
                        required, attempts=3, gap=0.8, timeout=12):
     """对端到端探测做有限次重试。
@@ -1201,13 +1234,23 @@ def verify_udp_session_export(adb, serial, host_ip, mode_name):
     )
 
 
-def verify_all_protocols(adb, serial, host_ip, mode_name):
-    """验证 TCP, UDP, HTTP/1.1, HTTP/2, DNS, WebSocket, gRPC, QUIC 八大常见网络协议穿透与回显"""
+def verify_all_protocols(adb, serial, host_ip, mode_name, liveness=None):
+    """验证 TCP, UDP, HTTP/1.1, HTTP/2, DNS, WebSocket, gRPC, QUIC 八大常见网络协议穿透与回显。
+
+    liveness：可选探活回调，每次探测前调用（SPP 模式用它确认 native 子进程还活着）。
+    代理进程已经不在时重试毫无意义，还会把故障伪装成协议回归。
+    """
+    def probe(case_name, shell_cmd, required, attempts=3, gap=0.8, timeout=12):
+        if liveness is not None:
+            liveness()
+        return probe_with_retries(adb, serial, mode_name, case_name, shell_cmd,
+                                  required, attempts, gap, timeout)
+
     time.sleep(1) # 等待网络路由与规则完全收敛
 
     print(f"[{mode_name}] 1. 测试 TCP 报文穿透...")
     tcp_cmd = f"(printf '{mode_name}_TCP_TEST\\n'; sleep 1) | timeout 4 toybox nc {host_ip} 19001"
-    probe_with_retries(adb, serial, mode_name, "TCP 报文穿透",
+    probe("TCP 报文穿透",
                        tcp_cmd, f"{mode_name}_TCP_TEST")
     print(f"    [PASS] TCP 穿透成功！")
 
@@ -1216,7 +1259,7 @@ def verify_all_protocols(adb, serial, host_ip, mode_name):
     udp_cmd = ("(for i in 1 2 3; do printf '"
                f"{mode_name}_UDP_TEST\\n'; sleep 0.4; done; sleep 1) | "
                f"timeout 5 toybox nc -u {host_ip} 19001")
-    probe_with_retries(adb, serial, mode_name, "UDP 数据报穿透",
+    probe("UDP 数据报穿透",
                        udp_cmd, f"{mode_name}_UDP_TEST")
     print(f"    [PASS] UDP 穿透成功！")
 
@@ -1225,13 +1268,13 @@ def verify_all_protocols(adb, serial, host_ip, mode_name):
 
     print(f"[{mode_name}] 3. 测试 HTTP/1.1 请求穿透...")
     h1_cmd = f"(printf 'GET / HTTP/1.1\\r\\nHost: {host_ip}:19004\\r\\nConnection: close\\r\\n\\r\\n'; sleep 1) | timeout 4 toybox nc {host_ip} 19004"
-    probe_with_retries(adb, serial, mode_name, "HTTP/1.1 请求穿透",
+    probe("HTTP/1.1 请求穿透",
                        h1_cmd, "HTTP1_OK")
     print(f"    [PASS] HTTP/1.1 穿透成功！")
 
     print(f"[{mode_name}] 4. 测试 HTTP/2 握手前奏与帧解析穿透...")
     h2_cmd = f"(printf 'PRI * HTTP/2.0\\r\\n\\r\\nSM\\r\\n\\r\\n\\x00\\x00\\x00\\x04\\x00\\x00\\x00\\x00\\x00'; sleep 1) | timeout 4 toybox nc {host_ip} 19005 | od -A n -t x1"
-    probe_with_retries(adb, serial, mode_name, "HTTP/2 帧握手",
+    probe("HTTP/2 帧握手",
                        h2_cmd, "04", attempts=3, gap=0.5)
     print(f"    [PASS] HTTP/2 前奏与帧握手穿透成功！")
 
@@ -1240,19 +1283,19 @@ def verify_all_protocols(adb, serial, host_ip, mode_name):
                "\\x12\\x34\\x01\\x00\\x00\\x01\\x00\\x00\\x00\\x00\\x00\\x00"
                "\\x04test\\x05local\\x00\\x00\\x01\\x00\\x01'; sleep 0.4; done; sleep 1) | "
                f"timeout 5 toybox nc -u {host_ip} 19006 | od -A n -t x1")
-    probe_with_retries(adb, serial, mode_name, "DNS 域名解析",
+    probe("DNS 域名解析",
                        dns_cmd, ("12", "81"))
     print(f"    [PASS] DNS UDP 查询穿透与解析回包成功！")
 
     print(f"[{mode_name}] 6. 测试 WebSocket 握手升级与数据帧穿透...")
     ws_cmd = f"(printf 'GET /ws HTTP/1.1\\r\\nHost: {host_ip}:19007\\r\\nUpgrade: websocket\\r\\nConnection: Upgrade\\r\\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\\r\\nSec-WebSocket-Version: 13\\r\\n\\r\\n\\x81\\x84\\x00\\x00\\x00\\x00TEST'; sleep 1) | timeout 4 toybox nc {host_ip} 19007"
-    probe_with_retries(adb, serial, mode_name, "WebSocket 握手",
+    probe("WebSocket 握手",
                        ws_cmd, ("101 Switching Protocols", "TEST"))
     print(f"    [PASS] WebSocket 协议握手与双向帧传输穿透成功！")
 
     print(f"[{mode_name}] 7. 测试 gRPC (HTTP/2 + application/grpc) 帧交互穿透...")
     grpc_cmd = f"(printf 'PRI * HTTP/2.0\\r\\n\\r\\nSM\\r\\n\\r\\n\\x00\\x00\\x00\\x04\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x04\\x01\\x04\\x00\\x00\\x00\\x01GRPC'; sleep 1) | timeout 4 toybox nc {host_ip} 19008 | od -A n -t c"
-    probe_with_retries(adb, serial, mode_name, "gRPC 帧交互",
+    probe("gRPC 帧交互",
                        grpc_cmd, ("G", "R", "P"), attempts=3, gap=0.5)
     print(f"    [PASS] gRPC 链路握手与 HEADERS 流穿透成功！")
 
@@ -1262,7 +1305,7 @@ def verify_all_protocols(adb, serial, host_ip, mode_name):
                 "\\xc0\\x00\\x00\\x00\\x01\\x00\\x08\\x11\\x22\\x33\\x44\\x55\\x66\\x77\\x88"
                 "QUIC_CLIENT_HELLO'; sleep 0.4; done; sleep 1) | "
                f"timeout 6 toybox nc -u {host_ip} 19009")
-    probe_with_retries(adb, serial, mode_name, "QUIC 初始包握手",
+    probe("QUIC 初始包握手",
                        quic_cmd, "QUIC_SERVER_HANDSHAKE_ACK")
     print(f"    [PASS] QUIC / HTTP/3 初始报文与握手协商穿透成功！")
 
@@ -1520,17 +1563,26 @@ def main():
         print("==> tun0 虚拟网卡已就绪")
 
         # 检查 libspp.so 进程
-        pgrep = run_adb(adb, serial, ["shell", "pgrep -f libspp.so"], check=False).stdout.strip()
-        print(f"==> libspp.so 子进程 PID: {pgrep}")
-        if not pgrep:
+        pids = spp_child_pids(adb, serial)
+        print(f"==> libspp.so 子进程 PID: {'/'.join(pids) or '(无)'}")
+        if not pids:
             raise RuntimeError("libspp.so 进程未运行！")
+        spp_pid = pids[0]
+        # native 子进程一退出，后面所有探测都会变成"没有代理"，与协议无关。
+        # 每次探测前确认它还活着，死则立刻报明确原因（而不是让重试伪装成协议回归）。
+        spp_liveness = lambda: assert_spp_child_alive(
+            adb, serial, spp_pid, "SPP 模式："
+        )
 
         # 纯全局 SPP 模式下 hev 直连 spp（不经过用户态分流器），
         # 但 TUN 仍必须是默认路由全抓。
         assert_tun_default_routes(adb, serial, expect_ipv6=False)
 
         # 验证八大协议
-        verify_all_protocols(adb, serial, host_lan_ip, "SPP")
+        verify_all_protocols(adb, serial, host_lan_ip, "SPP", liveness=spp_liveness)
+
+        # 并发与大流量压测前再确认一次：长跑中途退出同样会被重试掩盖
+        assert_spp_child_alive(adb, serial, spp_pid, "SPP 模式压测前：")
 
         # 验证 50 并发压力与 5MB 大流量数据吞吐 (SHA-256 校验)
         verify_stress_and_throughput(adb, serial, host_lan_ip, "SPP")
