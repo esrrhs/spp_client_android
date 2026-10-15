@@ -348,6 +348,34 @@ App 配置 server=`10.0.2.2:8888`（模拟器到宿主机 loopback 的专用地�
   缺的是"切换全程无空窗"这一段，只有真机能补。同一份脚本在真机上跑会直接走
   交接分支，无需改代码。
 
+**SPP 场景的偶发失败与收敛闸门（CI 取证结论）：**
+
+曾经出现过一次 SPP 模式 `TCP 报文穿透 连续 3 次未收到预期响应`，同一 run 重跑即绿。
+拉原始日志（指定 attempt：`gh api .../runs/<id>/attempts/<n>/logs`）逐行比对成功 run 后，
+定性为**建链收敛竞态**，并顺带推翻了两个看起来很合理的错误假设：
+
+- ✗「`spp exited cleanly` 是 Android 侧 libspp.so 崩了」→ 那是**宿主的 SPP 服务端**，
+  且它收到 SIGTERM 的时刻紧跟脚本打印 `清理环境与后台服务` 之后，是 `spp_proc.terminate()`
+  的结果而非原因。
+- ✗「晚到的物理网络切换触发了重建」→ 场景内只有一次 `servePipe accept`、一次
+  `processLogin`：数据面没重建过，网络也没切过，Android 侧子进程从未退出。
+
+服务端视角成功/失败完全一致（`processProxyConn start` → `Dial ok` →
+`sendToSonny close by remote`，0.79s vs 0.74s）：请求确实出去了，**回程没到 app 的 nc**。
+唯一可观测差异是失败 run 的 TUN 默认路由当时读不到（`[WARN] 未从 dumpsys/路由表读到
+默认路由`），且场景 2 的 VPN 距场景 1 断开仅 0.74s。
+
+由此在脚本里做了三件事：
+
+- `wait_for_data_plane()`：**tun0 就绪 ≠ 数据面能双向通**。八大协议验收前先等一次
+  TCP echo 双向通（≤30s）；收敛不了报「数据面未收敛」并附日志，不让启动竞态伪装成
+  某个具体协议的回归。
+- `probe_with_retries` 失败前 `dump_vpn_log()`：以前 CI 只剩一句"未收到预期响应"，
+  无从下手。`dump_vpn_log` 加了 `reason` 参数，并把 `NetworkWatchdog:V` 纳入抓取
+  （物理网络切换是"伪装成协议回归"的头号嫌疑，少了它只能靠猜）。
+- `settle_network_events()`：场景 2 前等飞行模式余波平息再清 logcat，使网络事件可归属
+  本场景；超时不失败（后续探测还有重建保护）。
+
 **CI 触发范围：**
 
 `push` 到 master 带 `paths-ignore`（`**.md` 与 `docs/**`）——纯文档提交不会触发单测
