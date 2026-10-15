@@ -3,6 +3,11 @@ name: Unit & E2E Tests
 on:
   push:
     branches: [master]
+    # 纯文档推送不会改变任何被测行为，省掉一次全量单测跑。
+    # PR 不加过滤：PR 该做完整验证。
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
   pull_request:
     branches: [master]
 
