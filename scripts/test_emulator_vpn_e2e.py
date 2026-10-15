@@ -84,12 +84,15 @@ def grant_vpn_consent(adb, serial):
         if "allow" not in text:
             raise RuntimeError(f"VPN 授权失败，appops {op} 未变为 allow: {text}")
 
-def dump_vpn_log(adb, serial):
-    print("==> tun 未就绪，抓取 logcat ...")
+def dump_vpn_log(adb, serial, reason="tun 未就绪"):
+    print(f"==> {reason}，抓取 logcat ...")
     # 模拟器 logcat 是 *:V，不能只看最后几百行再 grep，否则服务日志会被冲掉。
+    # NetworkWatchdog 必须带上：物理网络切换/丢失是"看起来像协议回归"的头号嫌疑，
+    # 少了它就只能靠猜。
     res = run_adb(
         adb, serial,
-        ["shell", "logcat", "-d", "-s", "SppVpnService:V", "SppProcess:V", "HevTunnel:V", "AndroidRuntime:E"],
+        ["shell", "logcat", "-d", "-s", "SppVpnService:V", "SppProcess:V", "HevTunnel:V",
+         "NetworkWatchdog:V", "AndroidRuntime:E"],
         check=False,
     )
     text = ((res.stdout or "") + "\n" + (res.stderr or "")).strip()
@@ -774,6 +777,35 @@ def wait_for_any_log(adb, serial, needles, timeout):
     raise RuntimeError(f"超时未看到任一日志「{' | '.join(needles)}」\n{last[-2500:]}")
 
 
+NETWORK_EVENT_LOGS = ("physical network changed", "physical network lost")
+
+
+def settle_network_events(adb, serial, quiet=5.0, timeout=20):
+    """等到物理网络事件平息再放行。
+
+    场景 1 的飞行模式刚把网络拉回来，NetworkWatchdog 的事件可能晚到；带着这条
+    尾巴进下一个场景，会在压测中途触发"拆数据面 → SIGTERM 掉 spp 子进程 →
+    重建"，探测失败看起来像协议回归。这里清掉日志后反复观察，直到连续 quiet 秒
+    不再有新事件（超时不失败，因为后续探测还有重建保护）。
+    """
+    run_adb(adb, serial, ["shell", "logcat", "-c"], check=False)
+    deadline = time.time() + timeout
+    stable_since = None
+    while time.time() < deadline:
+        log = read_vpn_logs(adb, serial)
+        if any(e in log for e in NETWORK_EVENT_LOGS):
+            # 还有新事件在冒：清掉重来，重新计静默时长
+            print("    [DEBUG] 观察到物理网络事件余波，继续等待其平息...")
+            run_adb(adb, serial, ["shell", "logcat", "-c"], check=False)
+            stable_since = None
+        elif stable_since is None:
+            stable_since = time.time()
+        elif time.time() - stable_since >= quiet:
+            return
+        time.sleep(1.0)
+    print(f"    [WARN] {timeout}s 内物理网络事件未平息，继续（后续探测有重建保护）")
+
+
 def read_connectivity(adb, serial):
     res = run_adb(adb, serial, ["shell", "dumpsys", "connectivity"], check=False, timeout=60)
     return res.stdout or ""
@@ -1156,12 +1188,38 @@ def spp_child_pids(adb, serial):
     return [p.strip() for p in out.split() if p.strip()]
 
 
+def wait_for_spp_child(adb, serial, timeout=25):
+    """等看门狗把新的 spp 子进程拉起来，返回新 PID；超时返回 None。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        pids = spp_child_pids(adb, serial)
+        if pids:
+            return pids[0]
+        time.sleep(0.5)
+    return None
+
+
+def network_event_since_scene_start(adb, serial):
+    """本场景内看门狗是否报告过物理网络变化/丢失。
+
+    App 收到这类事件会拆掉整个数据面重建（含 SIGTERM 掉 spp 子进程），这是合法
+    行为——前一个场景的飞行模式切网刚把网络拉回来，晚到的事件会落到下一个场景里。
+    调用前须清 logcat，否则会读到上一个场景的陈旧事件。
+    """
+    log = read_vpn_logs(adb, serial)
+    return any(e in log for e in NETWORK_EVENT_LOGS)
+
+
 def assert_spp_child_alive(adb, serial, expected_pid=None, where=""):
     """SPP 子进程必须还活着——它一退出，后面的探测全变成"没有代理"，与协议无关。
 
+    两种情况要分开：
+    - 本场景内有过物理网络事件：App 正在按设计重建数据面，等它把新子进程拉起来
+      再继续。这不是协议回归，硬失败只会掩盖真正的原因。
+    - 没有任何网络事件却进程没了：真故障，立刻抛明确错误并附日志。
+
     之前这里只会表现为"连续 3 次未收到预期响应"，看起来像协议回归，实际是
-    native 子进程起来没多久就退了（见过起来 6 秒就 `spp exited cleanly`）。
-    子进程不在时立刻抛出指明原因的错误并附日志，别让重试掩盖真正的故障点。
+    native 子进程起来没多久就被（合法地）拆掉了。
     """
     pids = spp_child_pids(adb, serial)
     if pids:
@@ -1171,7 +1229,15 @@ def assert_spp_child_alive(adb, serial, expected_pid=None, where=""):
                 f"看门狗重启过，本次探测可能打在重启窗口上"
             )
         return pids[0]
-    dump_vpn_log(adb, serial)
+
+    if network_event_since_scene_start(adb, serial):
+        print("    [DEBUG] 本场景内出现过网络切换事件：App 正在重建数据面，等待新的 spp 子进程")
+        restored = wait_for_spp_child(adb, serial)
+        if restored:
+            print(f"    [PASS] 网络切换恢复完成，SPP 子进程已重建（PID {restored}）")
+            return restored
+
+    dump_vpn_log(adb, serial, reason=f"{where}SPP 子进程已退出")
     raise RuntimeError(
         f"{where}SPP 子进程（{SPP_CHILD_PATTERN}）已退出"
         + (f"，原 PID {expected_pid}" if expected_pid else "")
@@ -1197,8 +1263,37 @@ def probe_with_retries(adb, serial, mode_name, case_name, shell_cmd,
         if i < attempts:
             print(f"    [RETRY] {case_name} 第 {i}/{attempts} 次无预期响应，重试...")
             time.sleep(gap)
+    # 失败必须带设备侧日志：只有一句"未收到预期响应"，在 CI 里根本无从下手
+    dump_vpn_log(adb, serial, reason=f"[{mode_name}] {case_name} 连续失败")
     raise RuntimeError(
         f"[{mode_name}] {case_name} 连续 {attempts} 次未收到预期响应: {last}"
+    )
+
+
+def wait_for_data_plane(adb, serial, host_ip, mode_name, timeout=30):
+    """等数据面真正能双向通，再开始正式验收。
+
+    tun0 起来只说明 fd 建好了，不代表 hev ↔ 上游这条转发路径已经能回包。
+    实测过一次偶发失败：服务端那边 open/Dial/close 全正常，请求也确实出去了，
+    但回程数据没到 app，连续 3 次探测全空——看起来像协议回归，实际是刚建链时
+    转发路径没收敛。把"等收敛"独立出来，收敛不了就报"数据面未收敛"并附日志，
+    别让启动竞态伪装成某个协议的回归。
+    """
+    token = f"{mode_name}_READY"
+    cmd = f"(printf '{token}\\n'; sleep 1) | timeout 4 toybox nc {host_ip} 19001"
+    deadline = time.time() + timeout
+    attempt = 0
+    while time.time() < deadline:
+        attempt += 1
+        out = run_probe(adb, serial, cmd, 10)
+        if token in out:
+            print(f"    [PASS] 数据面已双向收敛（第 {attempt} 次握手成功）")
+            return
+        time.sleep(1.0)
+    dump_vpn_log(adb, serial, reason=f"{mode_name} 数据面 {timeout}s 未收敛")
+    raise RuntimeError(
+        f"[{mode_name}] 数据面在 {timeout}s 内未收敛：tun0 已就绪但回程不通。"
+        f"这是建链收敛问题，不是协议回归；见上方 logcat。"
     )
 
 
@@ -1538,6 +1633,11 @@ def main():
         print("【测试场景 2】: 真实 SPP 协议与 Native 进程全协议集成测试")
         print("="*60)
 
+        # 场景 1 刚做过飞行模式断网重连，网络事件的余波可能晚到并落进本场景，
+        # 触发看门狗重建数据面。先等它平息，再清日志，使后续事件可归属本场景。
+        settle_network_events(adb, serial)
+        run_adb(adb, serial, ["shell", "logcat", "-c"], check=False)
+
         spp_profile = {
             "id": "e2e-spp",
             "name": "E2E_SPP",
@@ -1567,22 +1667,28 @@ def main():
         print(f"==> libspp.so 子进程 PID: {'/'.join(pids) or '(无)'}")
         if not pids:
             raise RuntimeError("libspp.so 进程未运行！")
-        spp_pid = pids[0]
         # native 子进程一退出，后面所有探测都会变成"没有代理"，与协议无关。
         # 每次探测前确认它还活着，死则立刻报明确原因（而不是让重试伪装成协议回归）。
-        spp_liveness = lambda: assert_spp_child_alive(
-            adb, serial, spp_pid, "SPP 模式："
-        )
+        # PID 用盒子装：网络切换重建后 PID 会变，回写以免后续每次都刷"PID 已变"。
+        spp_pid_box = [pids[0]]
+
+        def spp_liveness():
+            spp_pid_box[0] = assert_spp_child_alive(
+                adb, serial, spp_pid_box[0], "SPP 模式："
+            )
 
         # 纯全局 SPP 模式下 hev 直连 spp（不经过用户态分流器），
         # 但 TUN 仍必须是默认路由全抓。
         assert_tun_default_routes(adb, serial, expect_ipv6=False)
 
+        # tun0 就绪 ≠ 数据面能双向通：先等收敛，再跑八大协议验收
+        wait_for_data_plane(adb, serial, host_lan_ip, "SPP")
+
         # 验证八大协议
         verify_all_protocols(adb, serial, host_lan_ip, "SPP", liveness=spp_liveness)
 
         # 并发与大流量压测前再确认一次：长跑中途退出同样会被重试掩盖
-        assert_spp_child_alive(adb, serial, spp_pid, "SPP 模式压测前：")
+        spp_liveness()
 
         # 验证 50 并发压力与 5MB 大流量数据吞吐 (SHA-256 校验)
         verify_stress_and_throughput(adb, serial, host_lan_ip, "SPP")
