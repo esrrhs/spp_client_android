@@ -332,7 +332,7 @@ class ProxySplitE2ETest {
     }
 
     @Test
-    fun udp_deadUpstream_cooldownPreventsConnectStorm() {
+    fun udp_deadUpstream_burstIsThrottledNotDropped() {
         // 计数型「死上游」：accept 后立即关连接，SOCKS5 认证必失败。
         // start() 的预热会尝试 1 次后放弃；首个 UDP 报文再尝试 1 次即进入 5s 冷却，
         // 之后突发的报文必须零新增连接，而不是逐包重连形成 connect 风暴。
@@ -399,20 +399,33 @@ class ProxySplitE2ETest {
                         )
                     }
 
-                    // 首包：触发一次上游建链失败 → 冷却
-                    sendDatagram("UDP_COOLDOWN_1")
+                    // 首包：触发一次上游建链失败
+                    sendDatagram("UDP_THROTTLE_1")
                     val afterFirst = System.currentTimeMillis() + 1000
                     while (attempts.get() < baseline + 1 && System.currentTimeMillis() < afterFirst) {
                         Thread.sleep(20)
                     }
-                    assertEquals("first datagram must trigger exactly one upstream attempt",
-                        baseline + 1, attempts.get())
+                    assertTrue(
+                        "first datagram must trigger an upstream attempt, got ${attempts.get()}",
+                        attempts.get() >= baseline + 1,
+                    )
 
-                    // 突发 9 包：全部落在 5s 冷却窗内，零新增连接
-                    repeat(9) { sendDatagram("UDP_COOLDOWN_BURST_$it") }
-                    Thread.sleep(600)
-                    assertEquals("cooldown window must drop burst without reconnecting",
-                        baseline + 1, attempts.get())
+                    // 突发 20 包：上游仍不可用，重试必须被全局建链间隔**节流**，
+                    // 不得随报文数量线性增长（N 包 N 次 connect 会打爆上游与线程池）。
+                    // 旧实现靠"5s 冷却窗内丢弃"达成这点——代价是其它会话的新建
+                    // QUIC 流被连坐丢包（起播失败）；改为节流后两者兼得。
+                    val beforeBurst = attempts.get()
+                    repeat(20) { sendDatagram("UDP_THROTTLE_BURST_$it") }
+                    Thread.sleep(1000)
+                    val burstAttempts = attempts.get() - beforeBurst
+                    assertTrue(
+                        "burst must be throttled by connect spacing, got $burstAttempts/s",
+                        burstAttempts <= 8,
+                    )
+                    assertTrue(
+                        "burst must still retry rather than freeze, got $burstAttempts/s",
+                        burstAttempts >= 1,
+                    )
                 } finally {
                     clientUdp.close()
                 }
@@ -638,11 +651,13 @@ class ProxySplitE2ETest {
                         directElapsed < 2500,
                     )
 
-                    // 自愈：等握手预算(3s)+冷却(5s)过去后再发一包，必须发起第 2 次建链。
+                    // 自愈：等握手预算过去后再发一包，必须继续发起新的建链尝试。
                     // 旧实现派发循环永久阻塞在第一次协商读上，attempts 永远不会再增长。
+                    // 现在退避是每会话的（上限 UPSTREAM_BACKOFF_MAX_MS），且失败只延迟
+                    // 不丢弃，因此重试比旧的"实例级 5s 冷却"更早到来。
                     val retryAt = System.currentTimeMillis() +
                         RuleSocksServer.UPSTREAM_HANDSHAKE_TIMEOUT_MS +
-                        UdpTuning.UPSTREAM_COOLDOWN_MS + 1500
+                        UdpTuning.UPSTREAM_BACKOFF_MAX_MS + 1500
                     while (System.currentTimeMillis() < retryAt) Thread.sleep(50)
                     send(Socks5Codec.ATYP_IPV4.toInt(), "1.1.1.1", 9, "SILENT_PROXY_2")
                     val secondDeadline = System.currentTimeMillis() + 3000
@@ -650,7 +665,7 @@ class ProxySplitE2ETest {
                         Thread.sleep(20)
                     }
                     assertTrue(
-                        "writer must retry after handshake budget + cooldown, attempts=${attempts.get()}",
+                        "writer must retry after handshake budget, attempts=${attempts.get()}",
                         attempts.get() >= baseline + 2,
                     )
                 } finally {

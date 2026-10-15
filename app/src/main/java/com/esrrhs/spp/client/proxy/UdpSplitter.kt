@@ -16,6 +16,7 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
@@ -31,7 +32,26 @@ internal object UdpTuning {
     const val HEV_RECV_LIMIT = 1500
     const val UPSTREAM_QUEUE_CAPACITY = 64
     const val UPSTREAM_WRITER_POLL_MS = 500L
-    const val UPSTREAM_COOLDOWN_MS = 5_000L
+    /**
+     * 本会话上游建链失败后的退避：指数增长到 [UPSTREAM_BACKOFF_MAX_MS]，成功即清零。
+     *
+     * 刻意做成**每会话**的：此前是一次失败设一个实例级 5s 冷却、冷却窗内所有会话的
+     * 报文取出即弃，于是后台任一 UDP 会话失败就会让随后 5 秒新建的 QUIC 流握手包全丢。
+     */
+    const val UPSTREAM_BACKOFF_BASE_MS = 200L
+    const val UPSTREAM_BACKOFF_MAX_MS = 5_000L
+    /**
+     * 全局建链间隔：N 个会话同时失败时把各自的 connect 错开（防雪崩），只延迟不丢弃。
+     * 与退避的区别：它是"最早何时可以发起"，不是"该报文作废"。
+     */
+    const val UPSTREAM_CONNECT_SPACING_MS = 200L
+    /** 单包最多尝试建链几次后放弃，避免上游静默时写线程被一包长期占住。 */
+    const val UPSTREAM_MAX_ATTEMPTS = 2
+    /**
+     * 回程超 [HEV_RECV_LIMIT] 的报文会被 hev 截断（QUIC 直接坏掉）。QUIC 会持续
+     * 触发这条告警，一次性开关会让"之后还在不在发生"永远不可见，改成采样计数。
+     */
+    const val OVERSIZE_LOG_EVERY = 64
     const val RESOLVE_QUEUE_CAPACITY = 16
     const val PENDING_PER_HOST = 32
 }
@@ -58,7 +78,6 @@ internal class UdpSplitter(
     private var upstreamRelay: InetSocketAddress? = null
     private var directV4: DatagramSocket? = null
     private var directV6: DatagramSocket? = null
-    private val oversizeLogged = AtomicBoolean(false)
 
     /**
      * 域名直连解析的专用有界单线程执行器（懒创建：纯代理/纯 IP 会话零线程）。
@@ -262,8 +281,8 @@ internal class UdpSplitter(
 
     /**
      * 上游写线程唯一循环：串行消费队列、懒建立 ASSOCIATE、发送。
-     * 冷却窗内的报文取出即弃（快速排空，不触发建链）；建链失败由 ensureUpstream
-     * 设置冷却；发送异常拆链，下一个出队报文懒重建。空队列周期 poll 以便及时退出。
+     * 建链失败由 [deliverUpstream] 按每会话退避等待重试（不再丢弃报文）；
+     * 发送异常拆链，下一个出队报文懒重建。空队列周期 poll 以便及时退出。
      */
     private fun upstreamWriteLoop() {
         while (deps.running.get() && !control.isClosed) {
@@ -274,21 +293,94 @@ internal class UdpSplitter(
                 return
             }
             if (data == null) continue
-            if (System.currentTimeMillis() < deps.cooldownUntilMs.get()) {
-                // 上游刚失败过（冷却窗内）：快速丢弃，避免突发流量逐包触发建链风暴
-                continue
-            }
-            if (!ensureUpstream()) continue
-            val relay = upRelay ?: continue
-            val target = upstreamRelay ?: continue
-            try {
-                relay.send(DatagramPacket(data, data.size, target))
-            } catch (e: Exception) {
-                if (deps.running.get()) Log.w(TAG, "udp to-upstream: ${e.message}")
-                // 上游会话已失效：拆链（receiveUpstreamLoop 随 socket 关闭退出），下一包懒重建自愈
-                resetUpstream()
+            if (!deliverUpstream(data)) {
+                Log.w(
+                    TAG,
+                    "udp upstream unavailable after ${UdpTuning.UPSTREAM_MAX_ATTEMPTS} attempts, " +
+                        "dropping datagram",
+                )
             }
         }
+    }
+
+    /**
+     * 把一包交给上游：未就绪时按退避**等待并重试**，而不是丢弃。
+     *
+     * 这条路径此前是"实例级冷却窗内取出即弃"：任一 UDP 会话建链失败会给**所有**
+     * 会话设一个共享的 5s 冷却，冷却窗内每包都被静默丢掉。后果是后台某个 UDP 会话
+     * 失败一次，随后 5 秒内新建的 QUIC 流（典型场景：点开视频起播）握手包全丢、
+     * 播放起不来。现在退避是每会话的（A 失败不影响 B 的首次尝试），且只延迟不丢弃：
+     * 上游真不可用时把重传交给 QUIC 自己，比静默黑洞更容易活下来。
+     */
+    private fun deliverUpstream(data: ByteArray): Boolean {
+        var attempts = 0
+        while (deps.running.get() && !control.isClosed) {
+            val waitMs = waitBeforeAttemptMs()
+            if (waitMs > 0) {
+                runCatching { Thread.sleep(waitMs) }
+                if (!deps.running.get() || control.isClosed) return false
+            }
+            if (!ensureUpstream()) {
+                markAttemptFailed()
+                attempts++
+                if (attempts >= UdpTuning.UPSTREAM_MAX_ATTEMPTS) return false
+                continue
+            }
+            val relay = upRelay ?: return false
+            val target = upstreamRelay ?: return false
+            try {
+                relay.send(DatagramPacket(data, data.size, target))
+                onAttemptSucceeded()
+                return true
+            } catch (e: Exception) {
+                if (deps.running.get()) Log.w(TAG, "udp to-upstream: ${e.message}")
+                // 上游会话已失效：拆链（receiveUpstreamLoop 随 socket 关闭退出），下一包懒重建
+                resetUpstream()
+                markAttemptFailed()
+                attempts++
+                if (attempts >= UdpTuning.UPSTREAM_MAX_ATTEMPTS) return false
+            }
+        }
+        return false
+    }
+
+    /** 本会话下一次可以发起建链的时间戳（0 = 立即），仅写线程与等待逻辑访问。 */
+    private val nextAttemptAtMs = AtomicLong(0)
+    /** 连续失败次数，用于指数退避；成功即清零。仅写线程访问。 */
+    private var attemptStreak = 0
+
+    private fun markAttemptFailed() {
+        attemptStreak++
+        val shift = (attemptStreak - 1).coerceAtMost(4)
+        val backoff = (UdpTuning.UPSTREAM_BACKOFF_BASE_MS shl shift)
+            .coerceAtMost(UdpTuning.UPSTREAM_BACKOFF_MAX_MS)
+        nextAttemptAtMs.set(System.currentTimeMillis() + backoff)
+    }
+
+    private fun onAttemptSucceeded() {
+        attemptStreak = 0
+        nextAttemptAtMs.set(0)
+    }
+
+    /** 建链前还需等待多久：取"本会话退避"与"全局建链时隙"的较大者。 */
+    private fun waitBeforeAttemptMs(): Long {
+        if (upstreamRelay != null) return 0L
+        val perSession = nextAttemptAtMs.get() - System.currentTimeMillis()
+        val sharedSlot = reserveConnectSlot()
+        return maxOf(0L, perSession, sharedSlot).coerceAtMost(UdpTuning.UPSTREAM_BACKOFF_MAX_MS)
+    }
+
+    /**
+     * 预约一个全局建链时隙，返回还需等待的毫秒数。
+     *
+     * 目的只是把多个会话的 connect 错开（上游不可用时不至于 N 个会话同时重连），
+     * 不持有锁做实际连接——否则一个新会话的建链会被别人的连接超时拖住。
+     */
+    private fun reserveConnectSlot(): Long = synchronized(deps.connectGate) {
+        val now = System.currentTimeMillis()
+        val earliest = maxOf(deps.nextConnectAtMs.get(), now)
+        deps.nextConnectAtMs.set(earliest + UdpTuning.UPSTREAM_CONNECT_SPACING_MS)
+        earliest - now
     }
 
     /** 拆除上游 ASSOCIATE 会话；仅在失败/失效路径调用，成功路径不复位。 */
@@ -401,8 +493,8 @@ internal class UdpSplitter(
                     upstreamRelay = null
                 }
             }
-            // 冷却窗：防突发流量逐包重试建链（TCP CONNECT 逐包排队会雪崩）
-            deps.cooldownUntilMs.set(System.currentTimeMillis() + UdpTuning.UPSTREAM_COOLDOWN_MS)
+            // 不再在这里设全局冷却：那会把本会话的一次失败变成所有会话的黑洞。
+            // 长退避由调用方按每会话指数退避承担，全局只保留建链错开（见 reserveConnectSlot）。
             return false
         }
     }
@@ -438,7 +530,7 @@ internal class UdpSplitter(
             ) {
                 continue
             }
-            warnIfOversized(packet.length, "to-hev", oversizeLogged)
+            warnIfOversized(packet.length, "to-hev")
             try {
                 clientRelay.send(DatagramPacket(packet.data.copyOf(packet.length), packet.length, target))
             } catch (_: Exception) {
@@ -532,7 +624,7 @@ internal class UdpSplitter(
             val src = packet.socketAddress as? InetSocketAddress ?: continue
             val host = src.address?.hostAddress?.substringBefore('%') ?: continue
             // 这条才是 hev 用 1500 字节缓冲接收的方向，超限会被截成坏包。
-            warnIfOversized(packet.length, "to-hev", oversizeLogged)
+            warnIfOversized(packet.length, "to-hev")
             val atyp = if (useV6) Socks5Codec.ATYP_IPV6.toInt()
             else Socks5Codec.ATYP_IPV4.toInt()
             val header = Socks5Codec.buildUdpHeader(atyp, host, src.port)
@@ -547,10 +639,26 @@ internal class UdpSplitter(
         }
     }
 
-    /** hev 回程缓冲是 1500（含 SOCKS 头）。每条中继只打一次，避免 QUIC 刷屏。 */
-    private fun warnIfOversized(length: Int, dir: String, logged: AtomicBoolean) {
-        if (length <= UdpTuning.HEV_RECV_LIMIT || !logged.compareAndSet(false, true)) return
-        Log.w(TAG, "udp $dir datagram ${length}B > ${UdpTuning.HEV_RECV_LIMIT}; hev will truncate QUIC")
+    /** 回程超 [UdpTuning.HEV_RECV_LIMIT] 的累计次数（QUIC 会持续触发，见下）。 */
+    private val oversizeCount = AtomicInteger(0)
+
+    /**
+     * hev 回程缓冲是 1500（含 SOCKS 头），超限会被截成坏包——QUIC 首当其冲。
+     *
+     * QUIC 会源源不断地触发这条告警，一次性开关（只打第一次）会让"之后还在不在
+     * 发生、有多频繁"永远不可见，排查时等于没有线索。改成首次 + 每 N 次采样，
+     * 并带上累计次数，既能看到量级又不刷屏。
+     */
+    private fun warnIfOversized(length: Int, dir: String) {
+        if (length <= UdpTuning.HEV_RECV_LIMIT) return
+        val n = oversizeCount.incrementAndGet()
+        if (n == 1 || n % UdpTuning.OVERSIZE_LOG_EVERY == 0) {
+            Log.w(
+                TAG,
+                "udp $dir datagram ${length}B > ${UdpTuning.HEV_RECV_LIMIT}; " +
+                    "hev will truncate QUIC (count=$n)",
+            )
+        }
     }
 }
 
@@ -565,7 +673,13 @@ internal class UdpDeps(
     val running: AtomicBoolean,
     val relays: MutableList<DatagramSocket>,
     val pool: ExecutorService,
-    val cooldownUntilMs: AtomicLong,
+    /**
+     * 全局"最早可发起上游建链"的时刻：只用于把多个会话的 connect 错开，
+     * **不是**丢弃窗口——报文只会被延迟，不会因为别的会话失败而作废。
+     */
+    val nextConnectAtMs: AtomicLong,
+    /** 保护 [nextConnectAtMs] 预约的监视器。 */
+    val connectGate: Any,
     val shouldDirect: (host: String, atyp: Int) -> Boolean,
     val isDirectPenalizedKey: (key: String) -> Boolean,
     val penalizeDirectKey: (key: String) -> Unit,
