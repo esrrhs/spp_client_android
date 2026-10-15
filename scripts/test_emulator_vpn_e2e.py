@@ -857,14 +857,64 @@ def svc_set(adb, serial, kind, enabled):
     return res.returncode == 0
 
 
-# dumpsys 各版本对传输类型的写法不一致（TRANSPORT_X / transports: X / type: X），全部覆盖。
-TRANSPORT_PATTERNS = {
-    "WIFI": ("TRANSPORT_WIFI", "TRANSPORTS: WIFI", "TRANSPORT TYPES: WIFI", "TYPE: WIFI"),
-    "CELLULAR": (
-        "TRANSPORT_CELLULAR", "TRANSPORTS: CELLULAR", "TRANSPORT TYPES: CELLULAR", "TYPE: MOBILE",
-    ),
-    "ETHERNET": ("TRANSPORT_ETHERNET", "TRANSPORTS: ETHERNET", "TYPE: ETHERNET"),
+# 传输类型 -> svc 子命令。以太网在部分镜像没有对应子命令，svc_set 会返回 False，
+# 后续切网断言不成立时自然降级，不会误判为通过。
+SVC_KIND = {"WIFI": "wifi", "CELLULAR": "data", "ETHERNET": "ethernet"}
+
+
+# dumpsys 对"传输类型"和"网络状态"的写法随版本差异极大，逐 token 兼容：
+#   A10 : ni{[type: WIFI[], state: CONNECTED/CONNECTED ...]} / Transport types: WIFI
+#   A12+: NI{WIFI CONNECTED EXTRA: } / Transports: WIFI
+# 早期版本按 `STATE: CONNECTED` 判活，在 API 34 上一个块都匹配不到（状态写在
+# NI{} 里且没有 STATE: 前缀），于是双通道探测恒为空、交接用例只能盲降。
+# 只认下面几种传输：VPN 自己的网络是 TRANSPORT_VPN，不参与物理网络交接判定。
+TRANSPORT_ALIASES = {
+    "WIFI": "WIFI",
+    "CELLULAR": "CELLULAR",
+    "MOBILE": "CELLULAR",
+    "ETHERNET": "ETHERNET",
+    "VPN": "VPN",
 }
+
+_TRANSPORT_TOKEN_RE = re.compile(r"TRANSPORT_(WIFI|CELLULAR|ETHERNET|VPN|BLUETOOTH|WIFI_AWARE)")
+_TRANSPORT_FIELD_RE = re.compile(r"TRANSPORTS?\s*(?:TYPES)?:\s*([A-Z|_]+)")
+_TYPE_FIELD_RE = re.compile(r"TYPE:\s*([A-Z|_\[]+)")
+_NI_HEAD_RE = re.compile(r"NI\{")
+
+
+def parse_agent_blocks(text):
+    """把 dumpsys connectivity 里的 NetworkAgentInfo 解析成 (传输集合, 状态)。"""
+    blocks = []
+    for block in text.split("NETWORKAGENTINFO{")[1:]:
+        m = _NI_HEAD_RE.search(block)
+        head = block[m.end():m.end() + 200] if m else ""
+        # DISCONNECTED 含 CONNECTED 子串，断开必须先判，否则会把已断的网络算成活的。
+        if "DISCONNECTED" in head or "DISCONNECTING" in head:
+            state = "DISCONNECTED"
+        elif "CONNECTED" in head:
+            state = "CONNECTED"
+        else:
+            m2 = re.search(r"STATE:\s*([A-Z/]+)", block)
+            state = m2.group(1) if m2 else "?"
+
+        found = set()
+        for tok in _TRANSPORT_TOKEN_RE.findall(block):
+            alias = TRANSPORT_ALIASES.get(tok)
+            if alias:
+                found.add(alias)
+        for pat in (_TRANSPORT_FIELD_RE, _TYPE_FIELD_RE):
+            for raw in pat.findall(block):
+                for tok in re.split(r"[|_\[]", raw):
+                    alias = TRANSPORT_ALIASES.get(tok.strip())
+                    if alias:
+                        found.add(alias)
+        m3 = re.match(r"\s*([A-Z_]+)", head)  # A12+ 的 NI{WIFI CONNECTED EXTRA: }
+        if m3:
+            alias = TRANSPORT_ALIASES.get(m3.group(1))
+            if alias:
+                found.add(alias)
+        blocks.append((found, state))
+    return blocks
 
 
 def verify_network_switch(adb, serial, host_ip):
@@ -881,15 +931,15 @@ def connected_transports(adb, serial):
     """当前处于 CONNECTED 的物理网络传输类型集合（WIFI / CELLULAR / ETHERNET）。"""
     text = read_connectivity(adb, serial).upper()
     found = set()
-    for block in text.split("NETWORKAGENTINFO{")[1:]:
-        if "STATE: CONNECTED" not in block:
-            continue
-        for name, patterns in TRANSPORT_PATTERNS.items():
-            if any(p in block for p in patterns):
-                found.add(name)
-    # 接口名兜底：无论 dumpsys 解析成败都探测一次。只有两条证据都在，
-    # 才能区分"镜像只有单通道"和"解析器读不懂 dumpsys"。
+    seen = []
+    for transports, state in parse_agent_blocks(text):
+        seen.append(f"{'+'.join(sorted(transports)) or '?'}/{state}")
+        if state == "CONNECTED":
+            found |= transports
+    # 接口名兜底：无论 dumpsys 解析成败都探测一次。两条证据互相印证，才能区分
+    # "镜像只有单通道"和"解析器读不懂 dumpsys"。
     ifaces = transports_from_interfaces(adb, serial)
+    print(f"    [DEBUG] connectivity 网络块: agents={len(seen)} {seen[:8]}")
     if not found:
         head = text[:600].replace("\n", " | ")
         print(
@@ -933,50 +983,67 @@ def assert_switch_not_clear(text):
         raise RuntimeError("物理网络整体消失（无蜂窝兜底），属断网重连而非交接")
 
 
+def pick_handover_pair(transports):
+    """挑一对能互相交接的物理通道：优先 Wi-Fi ↔ 蜂窝，其次 Wi-Fi ↔ 以太网。
+
+    只要满足"关掉 A 时 B 仍在"，就是无中断交接；具体是哪种传输不重要。
+    """
+    for a, b in (("WIFI", "CELLULAR"), ("WIFI", "ETHERNET"), ("CELLULAR", "ETHERNET")):
+        if {a, b} <= transports:
+            return a, b
+    return None
+
+
 def verify_network_handover(adb, serial, host_ip):
-    """Wi-Fi ↔ 蜂窝 交接：切换期间物理网络不消失，应走 SWITCH 分支。
+    """双通道真实交接：切换期间物理网络不消失，应走 SWITCH 分支。
 
     与飞行模式用例的区别在于：真实切网时旧网络消失的同时新网络已可用，
     NetworkWatchdog 应判 SWITCH 并原地重建隧道，而不是先 CLEAR 再等新网络。
 
-    设备/镜像不具备 Wi-Fi+蜂窝双通道（或条件不成立）时返回 False，
+    设备/镜像不具备两条物理通道（或条件不成立）时返回 False，
     由调用方降级为飞行模式用例，避免把"没有蜂窝"误判成回归。
     """
     transports = connected_transports(adb, serial)
-    if not {"WIFI", "CELLULAR"} <= transports:
-        print(f"    [SKIP] 当前可用传输 {sorted(transports) or '无'}，缺 Wi-Fi/蜂窝双通道，降级飞行模式")
+    pair = pick_handover_pair(transports)
+    if pair is None:
+        print(
+            f"    [SKIP] 当前可用传输 {sorted(transports) or '无'}，"
+            f"缺两条可交接的物理通道，降级飞行模式"
+        )
         return False
+    primary, backup = pair
+    kp, kb = SVC_KIND[primary], SVC_KIND[backup]
 
-    print("\n[SOCKS5] 11. 模拟真实切网（Wi-Fi → 蜂窝 → Wi-Fi）...")
+    print(f"\n[SOCKS5] 11. 模拟真实切网（{primary} → {backup} → {primary}）...")
     try:
-        svc_set(adb, serial, "data", True)
-        svc_set(adb, serial, "wifi", True)
+        svc_set(adb, serial, kb, True)
+        svc_set(adb, serial, kp, True)
         time.sleep(3)
 
-        print("==> 关闭 Wi-Fi，落到蜂窝")
+        print(f"==> 关闭 {primary}，落到 {backup}")
         run_adb(adb, serial, ["shell", "logcat", "-c"], check=False)
-        svc_set(adb, serial, "wifi", False)
+        svc_set(adb, serial, kp, False)
         assert_switch_not_clear(wait_for_log(adb, serial, "physical network changed", timeout=45))
-        print("    [PASS] Wi-Fi→蜂窝 走 SWITCH 分支（物理网络未整体消失）")
+        print(f"    [PASS] {primary}→{backup} 走 SWITCH 分支（物理网络未整体消失）")
         wait_for_log(adb, serial, "hev tunnel started", timeout=45)
         if not wait_for_tun(adb, serial, should_exist=True, timeout=15):
             dump_vpn_log(adb, serial)
-            raise RuntimeError("切到蜂窝后 tun0 未恢复")
-        verify_tcp_echo(adb, serial, host_ip, "HANDOVER_CELL")
-        print("    [PASS] 蜂窝下 TCP 穿透成功")
+            raise RuntimeError(f"切到 {backup} 后 tun0 未恢复")
+        verify_tcp_echo(adb, serial, host_ip, f"HANDOVER_{backup}")
+        print(f"    [PASS] {backup} 下 TCP 穿透成功")
         wait_and_assert_underlying_alive(adb, serial)
 
-        print("==> 打开 Wi-Fi，切回 Wi-Fi")
+        print(f"==> 打开 {primary}，切回 {primary}")
         run_adb(adb, serial, ["shell", "logcat", "-c"], check=False)
-        svc_set(adb, serial, "wifi", True)
+        svc_set(adb, serial, kp, True)
         assert_switch_not_clear(wait_for_log(adb, serial, "physical network changed", timeout=45))
-        print("    [PASS] 蜂窝→Wi-Fi 走 SWITCH 分支")
+        print(f"    [PASS] {backup}→{primary} 走 SWITCH 分支")
         wait_for_log(adb, serial, "hev tunnel started", timeout=45)
         if not wait_for_tun(adb, serial, should_exist=True, timeout=15):
             dump_vpn_log(adb, serial)
-            raise RuntimeError("切回 Wi-Fi 后 tun0 未恢复")
-        verify_tcp_echo(adb, serial, host_ip, "HANDOVER_WIFI")
-        print("    [PASS] Wi-Fi 下 TCP 穿透成功")
+            raise RuntimeError(f"切回 {primary} 后 tun0 未恢复")
+        verify_tcp_echo(adb, serial, host_ip, f"HANDOVER_{primary}")
+        print(f"    [PASS] {primary} 下 TCP 穿透成功")
         wait_and_assert_underlying_alive(adb, serial)
         return True
     except Exception as exc:
@@ -987,8 +1054,8 @@ def verify_network_handover(adb, serial, host_ip):
         print(f"    [WARN] 交接用例未成立（{exc}），降级飞行模式切网")
         return False
     finally:
-        svc_set(adb, serial, "wifi", True)
-        svc_set(adb, serial, "data", True)
+        svc_set(adb, serial, kp, True)
+        svc_set(adb, serial, kb, True)
 
 
 def wait_for_tun(adb_cmd, serial, should_exist=True, timeout=15):
