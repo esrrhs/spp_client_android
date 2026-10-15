@@ -328,9 +328,9 @@ App 配置 server=`10.0.2.2:8888`（模拟器到宿主机 loopback 的专用地�
 - **交接（真实切网）**：Wi-Fi ↔ 蜂窝，切换全程至少有一个物理网络在，`NetworkWatchdog`
   应走 `SWITCH`（`physical network changed`）并原地重建隧道；
 - **断网重连（飞行模式）**：网络整体消失再恢复，走 `CLEAR`（`physical network lost`）。
-  脚本先探测设备是否有 Wi-Fi+蜂窝双通道，有则跑交接并断言"未出现 lost"，
-  没有兜底通道（关掉 Wi-Fi 后网络整体消失）则交给飞行模式用例——避免把"镜像没有
-  蜂窝"误判成回归。需要把交接当硬门槛时设 `E2E_STRICT_HANDOVER=1`。
+  脚本依次尝试关 Wi-Fi、关蜂窝，看 `NetworkWatchdog` 报 SWITCH（网络只是换了一条）
+  还是 CLEAR（整体消失）；报 CLEAR 就交给飞行模式用例，避免把"镜像没有可用蜂窝"
+  误判成回归。需要把交接当硬门槛时设 `E2E_STRICT_HANDOVER=1`。
 
   **能否交接不看 dumpsys 上报的传输类型，而看行为**：同一个 NetworkAgentInfo 块
   里能同时扫到 WIFI 和 CELLULAR（块内带着 NetworkRequest 的 capabilities），据此
@@ -340,6 +340,13 @@ App 配置 server=`10.0.2.2:8888`（模拟器到宿主机 loopback 的专用地�
 
   交接探测会 flap 一次 Wi-Fi；探测失败（网络真断过）时必须先等它回到基线再跑飞行
   模式用例，否则"开飞行模式"时网络本来就不在，等不到 `physical network lost`。
+
+  **CI 实测结论：模拟器做不出无中断交接。** 它的蜂窝只注册了 NetworkAgent
+  （`dumpsys` 里是 `CELLULAR/CONNECTED`），但没有真实数据通路——关掉 Wi-Fi 后
+  1 秒内就是 `physical network lost`，没有任何东西接得住流量。所以 CI 覆盖的是
+  **断网重连（CLEAR → 恢复时 SWITCH）**；`SWITCH` 分支本身在恢复阶段已被覆盖，
+  缺的是"切换全程无空窗"这一段，只有真机能补。同一份脚本在真机上跑会直接走
+  交接分支，无需改代码。
 
 **下一步：**
 
