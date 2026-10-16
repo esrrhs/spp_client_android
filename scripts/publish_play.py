@@ -52,7 +52,7 @@ def main():
 
         release_body = {
             'releases': [{
-                'name': '0.2.0',
+                'name': '0.2.1',
                 'versionCodes': [str(version_code)],
                 'status': 'completed',
                 'releaseNotes': [
@@ -71,11 +71,10 @@ def main():
         ).execute()
         print(f"==> Track updated: {track_resp.get('track')}")
 
-        print("==> Committing edit to Google Play (changesNotSentForReview=True)...")
+        print("==> Committing edit to Google Play (sent for review automatically)...")
         commit_resp = service.edits().commit(
             packageName=PACKAGE_NAME,
-            editId=edit_id,
-            changesNotSentForReview=True
+            editId=edit_id
         ).execute()
         print(f"==> Successfully committed! Commit ID: {commit_resp.get('id')}")
 
