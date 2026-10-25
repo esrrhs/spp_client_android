@@ -2,6 +2,8 @@
 
 An Android VPN client based on [SPP](https://github.com/esrrhs/spp).
 
+<a href="https://play.google.com/store/apps/details?id=com.esrrhs.spp.client"><img alt="Get it on Google Play" src="https://play.google.com/intl/en_us/badges/images/generic/en-play-badge.png" height="80"></a>
+
 The goal is simple: **tap one button on your phone to turn on the VPN, and all device traffic (including DNS) goes through an SPP Server.**
 
 > For learning, research, and authorized testing only. Do not use it for unauthorized or illegal purposes.
