@@ -1,3 +1,3 @@
-• Fixed a UDP session failure affecting other sessions
-• Android 15/16 edge-to-edge and large-screen compatibility
-• Smaller app size via resource shrinking
+• Updated SPP core, hev-socks5-tunnel, and app dependencies
+• Updated direct routing domain and China IP rules
+• Performance optimizations and Android 15/16 compatibility
