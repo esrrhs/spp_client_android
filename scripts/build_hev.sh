@@ -15,14 +15,14 @@ OUT_DIR="$ROOT/app/src/main/jniLibs"
 ABIS=(${HEV_ABIS:-arm64-v8a x86_64})
 
 # 固定上游版本，确保补丁覆盖的文件与预期完全一致
-PINNED_COMMIT=07bea57d20f71c9804055c2e2a0787d65a7277cb
+PINNED_COMMIT=9b2c2320b26046b307abd6ddb5f102b2ccd1d4a4
 
 if [ ! -d "$HEV_DIR" ]; then
     git clone https://github.com/heiher/hev-socks5-tunnel.git "$HEV_DIR"
 fi
 cd "$HEV_DIR"
 git fetch origin "$PINNED_COMMIT" >/dev/null 2>&1 || true
-git checkout -q "$PINNED_COMMIT"
+git checkout -f -q "$PINNED_COMMIT"
 git submodule update --init --recursive
 
 # 应用本地补丁（patches/hev-socks5-tunnel）：给 JNI 增加 TProxyGetSessions
