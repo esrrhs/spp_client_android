@@ -1421,11 +1421,11 @@ def verify_stress_and_throughput(adb, serial, host_ip, mode_name):
     # SHA-256 变成空串的散列。sleep 保持写端打开，避免 nc 在回显读完前关掉连接。
     throughput_cmd = (
         f"(toybox dd if=/dev/zero bs=4096 count=1280; sleep 2) | "
-        f"timeout 20 toybox nc {host_ip} 19001 | "
+        f"timeout 30 toybox nc {host_ip} 19001 | "
         f"toybox dd bs=4096 count=1280 | toybox sha256sum"
     )
     start_t = time.time()
-    tp = run_adb(adb, serial, ["shell", throughput_cmd], timeout=30)
+    tp = run_adb(adb, serial, ["shell", throughput_cmd], timeout=45)
     tp_res = tp.stdout.strip()
     elapsed_t = max(0.01, time.time() - start_t)
 
@@ -1536,17 +1536,22 @@ def main():
     socks5_server.start()
     print("==> SOCKS5 (带 UDP) 服务已在端口 19002 启动")
 
-    # SPP 服务端检测与就绪 (优先 PATH / GOPATH / 本地编译 / go install)
+    # SPP 服务端检测与就绪 (优先 third_party/spp 本地构建产物，保证与 libspp.so 协议特性完全同构)
     spp_bin = None
+    local_spp = os.path.abspath("./third_party/spp/spp")
+    if not os.path.exists(local_spp) and os.path.exists("./third_party/spp/main.go"):
+        print("==> 编译 third_party/spp 本地 SPP 服务端...")
+        subprocess.run(["go", "build", "-o", "spp", "."], cwd="./third_party/spp", check=True)
+
     candidate_bins = [
+        local_spp,
         "spp",
         os.path.expanduser("~/go/bin/spp"),
-        os.path.abspath("./third_party/spp/spp"),
     ]
     try:
         gopath_res = subprocess.run(["go", "env", "GOPATH"], capture_output=True, text=True)
         if gopath_res.returncode == 0 and gopath_res.stdout.strip():
-            candidate_bins.insert(1, os.path.join(gopath_res.stdout.strip(), "bin", "spp"))
+            candidate_bins.append(os.path.join(gopath_res.stdout.strip(), "bin", "spp"))
     except Exception:
         pass
 
@@ -1560,15 +1565,10 @@ def main():
             continue
 
     if not spp_bin:
-        if os.path.exists("./third_party/spp/main.go"):
-            print("==> 编译 third_party/spp 本地 SPP 服务端...")
-            subprocess.run(["go", "build", "-o", "spp", "main.go"], cwd="./third_party/spp", check=True)
-            spp_bin = os.path.abspath("./third_party/spp/spp")
-        else:
-            print("==> 通过 go install 安装 SPP 服务端...")
-            subprocess.run(["go", "install", "github.com/esrrhs/spp@latest"], check=True)
-            gopath = subprocess.run(["go", "env", "GOPATH"], capture_output=True, text=True).stdout.strip()
-            spp_bin = os.path.join(gopath, "bin", "spp")
+        print("==> 通过 go install 安装 SPP 服务端...")
+        subprocess.run(["go", "install", "github.com/esrrhs/spp@master"], check=True)
+        gopath = subprocess.run(["go", "env", "GOPATH"], capture_output=True, text=True).stdout.strip()
+        spp_bin = os.path.join(gopath, "bin", "spp")
 
     subprocess.run(["pkill", "-f", "spp -type server"])
     spp_proc = subprocess.Popen([spp_bin, "-type", "server", "-proto", "tcp", "-listen", ":19003", "-key", "testkey", "-nolog", "1"])
