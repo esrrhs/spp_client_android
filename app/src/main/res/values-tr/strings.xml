@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">SPP İstemcisi</string>
+    <string name="app_name">SPP Client</string>
     <string name="notif_channel_name">VPN durumu</string>
     <string name="notif_connecting">Bağlanıyor…</string>
     <string name="notif_connected">Bağlandı · %1$s</string>
@@ -10,7 +10,7 @@
     <string name="notif_reconnecting">Bağlantı kesildi, yeniden bağlanılıyor…</string>
     <string name="notif_failover">Yedek profile geçiliyor…</string>
     <string name="notif_paused_trusted">Güvenilir bir ağda VPN duraklatıldı</string>
-    <string name="tile_label">SPP VPN\'i</string>
+    <string name="tile_label">SPP VPN</string>
     <string name="tile_disconnected">Bağlantı kesildi</string>
     <string name="tile_connecting">Bağlanıyor…</string>
     <string name="tile_connected">Bağlı</string>
@@ -18,7 +18,7 @@
     <string name="tile_paused">Duraklatıldı</string>
     <string name="error_establish">VPN arayüzü oluşturulamıyor (null değeri döndürüldü). Sistem VPN ayarlarını yeniden deneyin veya kontrol edin.</string>
     <string name="error_vpn_consent">VPN izni verilmedi</string>
-    <string name="error_hev_start">hev-socks5-tunnel başlatılamadı</string>
+    <string name="error_hev_start">Failed to start hev-socks5-tunnel</string>
     <string name="error_hev_missing">libhev-socks5-tunnel.so eksik. Paketlemeden önce scripts/build_native.sh dosyasını çalıştırın.</string>
     <string name="error_rule_proxy">Alan kuralı proxy\'si başlatılamadı</string>
     <string name="setting_domain_direct_title">Doğrudan etki alanı kuralları</string>
@@ -35,7 +35,7 @@
     <string name="err_host_required">Lütfen sunucu adresini girin</string>
     <string name="err_port_range">Bağlantı noktası 1 ile 65535 arasında olmalıdır</string>
     <string name="err_key_required">Lütfen kimlik doğrulama anahtarını girin</string>
-    <string name="err_kind_unsupported">Geçersiz profil türü (yalnızca spp / çorap5 desteklenir); profil bozulmuş veya tahrif edilmiş olabilir</string>
+    <string name="err_kind_unsupported">Geçersiz profil türü (yalnızca spp / socks5 desteklenir); profil bozulmuş veya tahrif edilmiş olabilir</string>
     <string name="err_proto_unsupported">Geçersiz aktarım protokolü; desteklenen: tcp, rudp, kcp, quic, rhttp</string>
     <string name="err_credentials_too_long">SOCKS5 kullanıcı adı veya şifresi çok uzun (UTF-8\'de her biri maksimum 255 bayt)</string>
     <string name="error_missing_native">libspp.so eksik. Paketlemeden önce scripts/build_native.sh dosyasını çalıştırın.</string>
@@ -149,8 +149,8 @@ Ayrıca tek dokunuşla kontrol için \"SPP VPN\" Hızlı Ayarlar kutucuğunu ter
     <string name="split_bypass_cn_title">CN için doğrudan (chnroute)</string>
     <string name="split_bypass_cn_subtitle">Anakara Çin IP\'leri doğrudan gidiyor; diğer adresler proxy olarak kullanılır. APNIC\'den veriler</string>
     <string name="field_kind">Vekil türü</string>
-    <string name="kind_spp">GES</string>
-    <string name="kind_socks5">ÇORAP5</string>
+    <string name="kind_spp">SPP</string>
+    <string name="kind_socks5">SOCKS5</string>
     <string name="field_username">Kullanıcı adı (boş = kimlik doğrulaması yok)</string>
     <string name="field_password">Şifre</string>
     <string name="field_server_host">Sunucu adresi</string>
@@ -248,7 +248,7 @@ Ayrıca tek dokunuşla kontrol için \"SPP VPN\" Hızlı Ayarlar kutucuğunu ter
     <string name="leak_dns_failed">DNS test hizmetine ulaşılamıyor. Daha sonra tekrar deneyin</string>
     <string name="leak_webrtc_title">WebRTC</string>
     <string name="leak_webrtc_text">Bu uygulamanın kendisi VPN\'in dışında tutulduğundan, uygulama içi Web Görünümü\'ndeki WebRTC tüneli atlar ve sonuçlar geçersiz olur. Aşağıdaki siteleri bir sistem tarayıcısında (trafiği VPN üzerinden giden) açın ve STUN adaylarını inceleyin:</string>
-    <string name="leak_webrtc_browserleaks">tarayıcıleaks.com/webrtc</string>
+    <string name="leak_webrtc_browserleaks">browserleaks.com/webrtc</string>
     <string name="leak_webrtc_ipleak">ipleak.net</string>
     <string name="action_leak">Sızıntı</string>
     <string name="privacy_policy_title">Gizlilik politikası</string>

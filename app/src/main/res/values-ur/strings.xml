@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">ایس پی پی کلائنٹ</string>
-    <string name="notif_channel_name">وی پی این کی حیثیت</string>
+    <string name="app_name">SPP Client</string>
+    <string name="notif_channel_name">VPN کی حیثیت</string>
     <string name="notif_connecting">منسلک ہو رہا ہے…</string>
     <string name="notif_connected">منسلک · %1$s</string>
     <string name="notif_connected_with_rate">منسلک · %1$s ↑ %2$s ↓ %3$s</string>
@@ -10,7 +10,7 @@
     <string name="notif_reconnecting">کنکشن ٹوٹ گیا، دوبارہ منسلک ہو رہا ہے…</string>
     <string name="notif_failover">بیک اپ پروفائل پر سوئچ ہو رہا ہے…</string>
     <string name="notif_paused_trusted">ایک بھروسہ مند نیٹ ورک پر VPN روک دیا گیا۔</string>
-    <string name="tile_label">ایس پی پی وی پی این</string>
+    <string name="tile_label">SPP VPN</string>
     <string name="tile_disconnected">منقطع</string>
     <string name="tile_connecting">منسلک ہو رہا ہے…</string>
     <string name="tile_connected">جڑا ہوا</string>
@@ -18,7 +18,7 @@
     <string name="tile_paused">روک دیا گیا</string>
     <string name="error_establish">VPN انٹرفیس نہیں بنا سکتا (واپس شدہ null قائم کریں)۔ دوبارہ کوشش کریں یا سسٹم VPN سیٹنگز چیک کریں۔</string>
     <string name="error_vpn_consent">VPN کی اجازت نہیں دی گئی ہے۔</string>
-    <string name="error_hev_start">hev-socks5-tunnel شروع کرنے میں ناکام</string>
+    <string name="error_hev_start">Failed to start hev-socks5-tunnel</string>
     <string name="error_hev_missing">libhev-socks5-tunnel.so غائب ہے۔ پیکیجنگ سے پہلے اسکرپٹس/build_native.sh چلائیں۔</string>
     <string name="error_rule_proxy">ڈومین رول پراکسی شروع کرنے میں ناکام</string>
     <string name="setting_domain_direct_title">براہ راست ڈومین کے قواعد</string>
@@ -26,7 +26,7 @@
     <string name="domain_rules_hint">اضافی براہ راست ڈومینز، ایک فی لائن، جیسے baidu.com؛ # سے شروع ہونے والی لائنیں تبصرے ہیں۔</string>
     <string name="error_no_profile">براہ کرم پہلے ایک پروفائل شامل کریں۔</string>
     <string name="error_connect_failed">کنکشن ناکام ہو گیا۔</string>
-    <string name="error_tunnel_lost">ایس پی پی کنکشن منقطع۔ اپنا نیٹ ورک چیک کریں اور دوبارہ جڑیں۔</string>
+    <string name="error_tunnel_lost">SPP کنکشن منقطع۔ اپنا نیٹ ورک چیک کریں اور دوبارہ جڑیں۔</string>
     <string name="error_reconnect_failed">متعدد کوششوں کے بعد دوبارہ جڑنا ناکام ہوگیا۔ اپنا نیٹ ورک یا سرور چیک کریں۔</string>
     <string name="error_no_network">نیٹ ورک دستیاب نہیں ہے۔ اپنا کنکشن چیک کریں اور دوبارہ کوشش کریں۔</string>
     <string name="error_auth_failed">سرور کی توثیق ناکام ہوگئی (کلید/انکرپٹ کی مماثلت نہیں)۔ دوبارہ رابطہ رک گیا۔</string>
@@ -35,11 +35,11 @@
     <string name="err_host_required">براہ کرم سرور کا پتہ درج کریں۔</string>
     <string name="err_port_range">پورٹ 1 اور 65535 کے درمیان ہونا چاہیے۔</string>
     <string name="err_key_required">براہ کرم تصدیق کلید درج کریں۔</string>
-    <string name="err_kind_unsupported">غلط پروفائل قسم (صرف ایس پی پی / جرابوں کی حمایت کی گئی ہے)؛ پروفائل خراب یا چھیڑ چھاڑ ہوسکتی ہے۔</string>
+    <string name="err_kind_unsupported">غلط پروفائل قسم (صرف SPP / socks5 کی حمایت کی گئی ہے)؛ پروفائل خراب یا چھیڑ چھاڑ ہوسکتی ہے۔</string>
     <string name="err_proto_unsupported">غلط ٹرانسپورٹ پروٹوکول؛ تعاون یافتہ: tcp, rudp, kcp, quic, rhttp</string>
     <string name="err_credentials_too_long">SOCKS5 صارف نام یا پاس ورڈ بہت لمبا ہے (UTF-8 میں ہر ایک میں زیادہ سے زیادہ 255 بائٹس)</string>
     <string name="error_missing_native">libspp.so غائب ہے۔ پیکیجنگ سے پہلے اسکرپٹس/build_native.sh چلائیں۔</string>
-    <string name="error_spp_session">ایس پی پی سیشن (کنکشن کا وقت ختم) قائم نہیں کیا جا سکتا۔ سرور کا پتہ، کلید/انکرپٹ اور نیٹ ورک چیک کریں:
+    <string name="error_spp_session">SPP سیشن (کنکشن کا وقت ختم) قائم نہیں کیا جا سکتا۔ سرور کا پتہ، کلید/انکرپٹ اور نیٹ ورک چیک کریں:
 _%1$s</string>
     <string name="error_spp_exited">SPP کلائنٹ جلد باہر نکل گیا:
 _%1$s</string>
@@ -129,10 +129,10 @@ _%1$s</string>
     <string name="alwayson_steps">Android ایپس کو ہمیشہ آن VPN کو خود فعال کرنے کی اجازت نہیں دیتا ہے۔ اسے دستی طور پر ترتیب دیں:
 1۔ سسٹم VPN کی ترتیبات کو کھولنے کے لیے نیچے کے بٹن کو تھپتھپائیں؛
 2۔ \"SPP کلائنٹ\" تلاش کریں اور اس کے ساتھ والے گیئر آئیکن کو تھپتھپائیں؛
-3۔ \"ہمیشہ آن وی پی این\"؛
+3۔ \"ہمیشہ آن VPN\"؛
 4 کو فعال کریں۔ مکمل لیک کے تحفظ کے لیے، \"VPN کے بغیر کنکشنز کو مسدود کریں\" کو بھی فعال کریں۔
 VAR5__آپ \"SPP VPN\" کوئیک سیٹنگز ٹائل کو ون ٹیپ کنٹرول کے لیے اپنی ترجیحی پوزیشن پر بھی گھسیٹ سکتے ہیں۔</string>
-    <string name="action_open_vpn_settings">سسٹم وی پی این کی ترتیبات کھولیں۔</string>
+    <string name="action_open_vpn_settings">سسٹم VPN کی ترتیبات کھولیں۔</string>
     <string name="toast_vpn_settings_unavailable">سسٹم کی ترتیبات نہیں کھول سکتے۔ براہ کرم VPN کی ترتیبات کو دستی طور پر کھولیں۔</string>
     <string name="field_name">پروفائل کا نام</string>
     <string name="editor_add_title">پروفائل شامل کریں۔</string>
@@ -148,7 +148,7 @@ VAR5__آپ \"SPP VPN\" کوئیک سیٹنگز ٹائل کو ون ٹیپ کنٹ�
     <string name="split_bypass_cn_title">براہ راست برائے CN (chnroute)</string>
     <string name="split_bypass_cn_subtitle">مین لینڈ چائنا آئی پیز براہ راست جاتے ہیں۔ دوسرے پتے پراکسی ہیں۔ APNIC سے ڈیٹا</string>
     <string name="field_kind">پراکسی قسم</string>
-    <string name="kind_spp">ایس پی پی</string>
+    <string name="kind_spp">SPP</string>
     <string name="kind_socks5">SOCKS5</string>
     <string name="field_username">صارف نام (خالی = کوئی سند نہیں)</string>
     <string name="field_password">پاس ورڈ</string>
@@ -168,7 +168,7 @@ VAR5__آپ \"SPP VPN\" کوئیک سیٹنگز ٹائل کو ون ٹیپ کنٹ�
     <string name="qr_hint">اسے شامل کرنے کے لیے کسی دوسرے آلے سے اسکین کریں، یا دائیں طرف متن بھیجیں۔</string>
     <string name="qr_too_large">پروفائل کا مواد QR کوڈ کے لیے بہت لمبا ہے۔ براہ کرم اسے بطور متن بھیجیں۔</string>
     <string name="qr_share_chooser">پروفائل شیئر کریں۔</string>
-    <string name="qr_content_description">کیو آر کوڈ</string>
+    <string name="qr_content_description">QR کوڈ</string>
     <string name="action_connections">سیشنز</string>
     <string name="conn_title">فعال رابطے</string>
     <string name="conn_unknown_app">نامعلوم ایپ (uid=%1$d)</string>
@@ -219,7 +219,7 @@ VAR5__آپ \"SPP VPN\" کوئیک سیٹنگز ٹائل کو ون ٹیپ کنٹ�
     <string name="check_running_title">چیک کیا جا رہا ہے…</string>
     <string name="check_running_text">ڈائریکٹ اور ٹنل ایگزٹ آئی پی کا موازنہ کرنا، اور ریموٹ DNS پاتھ کو چیک کرنا</string>
     <string name="check_ok_title">چیک پاس ہو گیا۔</string>
-    <string name="check_ok_text">ایس پی پی سرور کے ذریعے ٹریفک کا اخراج ہوتا ہے اور ڈومینز کو دور سے حل کیا جاتا ہے۔</string>
+    <string name="check_ok_text">SPP سرور کے ذریعے ٹریفک کا اخراج ہوتا ہے اور ڈومینز کو دور سے حل کیا جاتا ہے۔</string>
     <string name="check_same_title">ایک ہی ایگزٹ آئی پی</string>
     <string name="check_same_text">ٹنل ایگزٹ آئی پی ڈائریکٹ جیسا ہی ہے۔ تقسیم کے قواعد / سرور کی تشکیل کو چیک کریں۔</string>
     <string name="check_proxy_failed_title">ٹنل ناقابل استعمال</string>
@@ -253,9 +253,9 @@ VAR5__آپ \"SPP VPN\" کوئیک سیٹنگز ٹائل کو ون ٹیپ کنٹ�
     <string name="privacy_policy_title">رازداری کی پالیسی</string>
     <string name="privacy_policy_subtitle">یہ ایپ ڈیٹا کو کیسے ہینڈل کرتی ہے (GitHub صفحات)</string>
     <string name="privacy_policy_url">https://esrrhs.github.io/spp_client_android/</string>
-    <string name="setting_dns_region_title">ڈی این ایس ریجن اسپلٹ پالیسی</string>
+    <string name="setting_dns_region_title">DNS ریجن اسپلٹ پالیسی</string>
     <string name="setting_dns_region_subtitle">مختلف ممالک کے لیے بلٹ ان ڈائریکٹ ڈومین اور TLD اسپلٹ روٹنگ</string>
-    <string name="split_dns_region_title">ڈی این ایس ریجن اسپلٹ پالیسی</string>
+    <string name="split_dns_region_title">DNS ریجن اسپلٹ پالیسی</string>
     <string name="split_dns_region_subtitle">ملکی TLDs اور بنیادی گھریلو خدمات کے لیے براہ راست روٹنگ</string>
     <string name="region_preset_cn">چین (CN)</string>
     <string name="region_preset_ir">ایران (IR)</string>

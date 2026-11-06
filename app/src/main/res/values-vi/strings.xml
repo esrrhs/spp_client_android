@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Khách hàng SPP</string>
+    <string name="app_name">SPP Client</string>
     <string name="notif_channel_name">Trạng thái VPN</string>
     <string name="notif_connecting">Đang kết nối…</string>
     <string name="notif_connected">Đã kết nối · %1$s</string>
@@ -18,11 +18,11 @@
     <string name="tile_paused">Đã tạm dừng</string>
     <string name="error_establish">Không thể tạo giao diện VPN (thiết lập giá trị rỗng được trả về). Thử lại hoặc kiểm tra cài đặt VPN hệ thống.</string>
     <string name="error_vpn_consent">Quyền VPN chưa được cấp</string>
-    <string name="error_hev_start">Không khởi động được hev-socks5-tunnel</string>
+    <string name="error_hev_start">Failed to start hev-socks5-tunnel</string>
     <string name="error_hev_missing">libhev-socks5-tunnel.so bị thiếu. Chạy scripts/build_native.sh trước khi đóng gói.</string>
     <string name="error_rule_proxy">Không thể khởi động proxy quy tắc tên miền</string>
     <string name="setting_domain_direct_title">Quy tắc tên miền trực tiếp</string>
-    <string name="setting_domain_direct_subtitle">~110k miền tích hợp ở Trung Quốc đại lục (dnsmasq-china-list, bao gồm cả tên miền phụ) đi trực tiếp qua cả TCP và UDP; mọi thứ khác đều được ủy quyền. Thêm tên miền của riêng bạn dưới đây.</string>
+    <string name="setting_domain_direct_subtitle">~110k miền tích hợp ở Trung Quốc đại lục (dnsmasq-china-list, bao gồm cả tên miền phụ) đi trực tiếp qua cả TCP và UDP; mọi thứ khác đều được proxy. Thêm tên miền của riêng bạn dưới đây.</string>
     <string name="domain_rules_hint">Các miền trực tiếp bổ sung, mỗi miền một dòng, ví dụ: baidu.com; dòng bắt đầu bằng # là dòng chú thích</string>
     <string name="error_no_profile">Vui lòng thêm hồ sơ trước</string>
     <string name="error_connect_failed">Kết nối không thành công</string>
@@ -35,7 +35,7 @@
     <string name="err_host_required">Vui lòng nhập địa chỉ máy chủ</string>
     <string name="err_port_range">Cổng phải nằm trong khoảng từ 1 đến 65535</string>
     <string name="err_key_required">Vui lòng nhập khóa xác thực</string>
-    <string name="err_kind_unsupported">Loại hồ sơ không hợp lệ (chỉ hỗ trợ spp/sock5); hồ sơ có thể bị hỏng hoặc giả mạo</string>
+    <string name="err_kind_unsupported">Loại hồ sơ không hợp lệ (chỉ hỗ trợ spp/socks5); hồ sơ có thể bị hỏng hoặc giả mạo</string>
     <string name="err_proto_unsupported">Giao thức vận chuyển không hợp lệ; được hỗ trợ: tcp, rudp, kcp, quic, rhttp</string>
     <string name="err_credentials_too_long">Tên người dùng hoặc mật khẩu SOCKS5 quá dài (tối đa 255 byte mỗi tên trong UTF-8)</string>
     <string name="error_missing_native">libspp.so bị thiếu. Chạy scripts/build_native.sh trước khi đóng gói.</string>
@@ -145,12 +145,12 @@ Bạn cũng có thể kéo ô Cài đặt nhanh \"SPP VPN\" đến vị trí ưa
     <string name="action_choose_apps">Chọn ứng dụng (%1$d)</string>
     <string name="section_smart_split">Chia thông minh</string>
     <string name="split_bypass_lan_title">Bỏ qua mạng LAN</string>
-    <string name="split_bypass_lan_subtitle">Phạm vi riêng tư đi trực tiếp, mọi thứ khác đều được ủy quyền (bao gồm cả unicast toàn cầu IPv6)</string>
+    <string name="split_bypass_lan_subtitle">Phạm vi riêng tư đi trực tiếp, mọi thứ khác đều được proxy (bao gồm cả unicast toàn cầu IPv6)</string>
     <string name="split_bypass_cn_title">Trực tiếp cho CN (chnroute)</string>
-    <string name="split_bypass_cn_subtitle">Các IP của Trung Quốc đại lục đi trực tiếp; các địa chỉ khác được ủy quyền. Dữ liệu từ APNIC</string>
+    <string name="split_bypass_cn_subtitle">Các IP của Trung Quốc đại lục đi trực tiếp; các địa chỉ khác được proxy. Dữ liệu từ APNIC</string>
     <string name="field_kind">Loại proxy</string>
     <string name="kind_spp">SPP</string>
-    <string name="kind_socks5">VỚ5</string>
+    <string name="kind_socks5">SOCKS5</string>
     <string name="field_username">Tên người dùng (trống = không có xác thực)</string>
     <string name="field_password">Mật khẩu</string>
     <string name="field_server_host">Địa chỉ máy chủ</string>
@@ -160,7 +160,7 @@ Bạn cũng có thể kéo ô Cài đặt nhanh \"SPP VPN\" đến vị trí ưa
     <string name="field_encrypt">Khóa mã hóa (để trống để tắt)</string>
     <string name="field_compress">Ngưỡng nén (0 = tắt)</string>
     <string name="field_ipv6_title">Nắm bắt lưu lượng IPv6</string>
-    <string name="field_ipv6_subtitle">Khi tắt, chỉ IPv4 được ủy quyền (IPv6 có thể truy cập trực tiếp)</string>
+    <string name="field_ipv6_subtitle">Khi tắt, chỉ IPv4 được proxy (IPv6 có thể truy cập trực tiếp)</string>
     <string name="app_picker_title">Chọn ứng dụng (đã chọn %1$d)</string>
     <string name="app_picker_search">Tìm kiếm tên ứng dụng hoặc gói</string>
     <string name="logs_empty">(chưa có nhật ký)</string>
@@ -194,7 +194,7 @@ Bạn cũng có thể kéo ô Cài đặt nhanh \"SPP VPN\" đến vị trí ưa
     <string name="history_clear_title">Xóa lịch sử kết nối?</string>
     <string name="history_clear_msg">Tất cả các bản ghi trên mỗi kết nối sẽ bị xóa. Cấu hình và kết nối hiện tại không bị ảnh hưởng. Điều này không thể hoàn tác được.</string>
     <string name="history_delete_one">Xóa bản ghi này</string>
-    <string name="history_route_proxy">ủy quyền</string>
+    <string name="history_route_proxy">proxy</string>
     <string name="history_route_unknown">Không xác định</string>
     <string name="history_result_success">thành công</string>
     <string name="history_result_failed">thất bại</string>

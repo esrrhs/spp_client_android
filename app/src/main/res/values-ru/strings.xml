@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">СПП-клиент</string>
+    <string name="app_name">SPP Client</string>
     <string name="notif_channel_name">Статус VPN</string>
     <string name="notif_connecting">Подключение…</string>
     <string name="notif_connected">Подключено · %1$s</string>
@@ -10,7 +10,7 @@
     <string name="notif_reconnecting">Соединение потеряно, повторное подключение…</string>
     <string name="notif_failover">Переключение на резервный профиль…</string>
     <string name="notif_paused_trusted">VPN приостановлен в доверенной сети</string>
-    <string name="tile_label">СПП VPN</string>
+    <string name="tile_label">SPP VPN</string>
     <string name="tile_disconnected">Отключено</string>
     <string name="tile_connecting">Подключение…</string>
     <string name="tile_connected">Подключено</string>
@@ -18,7 +18,7 @@
     <string name="tile_paused">Приостановлено</string>
     <string name="error_establish">Невозможно создать интерфейс VPN (установить возвращенное значение null). Повторите попытку или проверьте системные настройки VPN.</string>
     <string name="error_vpn_consent">Разрешение VPN не предоставлено</string>
-    <string name="error_hev_start">Не удалось запустить hev-socks5-туннель.</string>
+    <string name="error_hev_start">Failed to start hev-socks5-tunnel</string>
     <string name="error_hev_missing">libhev-socks5-tunnel.so отсутствует. Запустите скрипты/build_native.sh перед упаковкой.</string>
     <string name="error_rule_proxy">Не удалось запустить прокси-сервер правил домена.</string>
     <string name="setting_domain_direct_title">Прямые правила домена</string>
@@ -86,7 +86,7 @@
     <string name="ping_testing">Тестирование…</string>
     <string name="action_ping">Пинг</string>
     <string name="toast_ping_failed">Не удалось выполнить пинг: не удалось вовремя связаться с сервером.</string>
-    <string name="action_qr">QR-код</string>
+    <string name="action_qr">QR</string>
     <string name="action_edit">Редактировать</string>
     <string name="action_delete">Удалить</string>
     <string name="format_traffic">↑ %1$s ↓ %2$s</string>
@@ -149,8 +149,8 @@
     <string name="split_bypass_cn_title">Прямой рейс для Китая (chnroute)</string>
     <string name="split_bypass_cn_subtitle">IP-адреса материкового Китая идут напрямую; остальные адреса проксируются. Данные APNIC</string>
     <string name="field_kind">Тип прокси</string>
-    <string name="kind_spp">СЭС</string>
-    <string name="kind_socks5">НОСКИ5</string>
+    <string name="kind_spp">SPP</string>
+    <string name="kind_socks5">SOCKS5</string>
     <string name="field_username">Имя пользователя (пусто = нет аутентификации)</string>
     <string name="field_password">Пароль</string>
     <string name="field_server_host">Адрес сервера</string>
@@ -246,9 +246,9 @@
     <string name="leak_dns_ok">Обнаружены преобразователи %1$d — DNS разрешается на сервере SPP, а не у вашего локального интернет-провайдера.</string>
     <string name="leak_dns_none">Резолверы не обнаружены. Повторите попытку или переключитесь на сеть, поддерживающую UDP.</string>
     <string name="leak_dns_failed">Служба тестирования DNS недоступна. Повторите попытку позже</string>
-    <string name="leak_webrtc_title">ВебRTC</string>
+    <string name="leak_webrtc_title">WebRTC</string>
     <string name="leak_webrtc_text">Само это приложение исключено из VPN, поэтому WebRTC во внутреннем WebView приложения обходит туннель, и результаты будут недействительными. Откройте сайты ниже в системном браузере (чей трафик проходит через VPN) и проверьте кандидатов STUN:</string>
-    <string name="leak_webrtc_browserleaks">браузерликс.com/webrtc</string>
+    <string name="leak_webrtc_browserleaks">browserleaks.com/webrtc</string>
     <string name="leak_webrtc_ipleak">ipleak.net</string>
     <string name="action_leak">Утечка</string>
     <string name="privacy_policy_title">Политика конфиденциальности</string>
