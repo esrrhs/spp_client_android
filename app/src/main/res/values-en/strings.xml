@@ -279,4 +279,38 @@
     <string name="privacy_policy_title">Privacy policy</string>
     <string name="privacy_policy_subtitle">How this app handles data (GitHub Pages)</string>
     <string name="privacy_policy_url">https://esrrhs.github.io/spp_client_android/</string>
+
+    <!-- Country DNS split presets -->
+    <string name="setting_dns_region_title">DNS Region Split Policy</string>
+    <string name="setting_dns_region_subtitle">Built-in direct domain and TLD split routing for different countries</string>
+    <string name="split_dns_region_title">DNS Region Split Policy</string>
+    <string name="split_dns_region_subtitle">Direct routing for country TLDs and core domestic services</string>
+    <string name="region_preset_cn">China (CN)</string>
+    <string name="region_preset_ir">Iran (IR)</string>
+    <string name="region_preset_ru">Russia (RU)</string>
+    <string name="region_preset_tr">Turkey (TR)</string>
+    <string name="region_preset_mm">Myanmar (MM)</string>
+    <string name="region_preset_pk">Pakistan (PK)</string>
+    <string name="region_preset_vn">Vietnam (VN)</string>
+    <string name="region_preset_eg">Egypt (EG)</string>
+    <string name="region_preset_ae">United Arab Emirates (AE)</string>
+    <string name="region_preset_sa">Saudi Arabia (SA)</string>
+    <string name="region_preset_in">India (IN)</string>
+    <string name="region_preset_none">None / Global (Pure Global)</string>
+
+    <!-- Language selector -->
+    <string name="setting_language_title">App Language</string>
+    <string name="setting_language_subtitle">Change display language for the application</string>
+    <string name="language_follow_system">Follow System</string>
+    <string name="language_zh">中文 (简体)</string>
+    <string name="language_en">English</string>
+    <string name="language_fa">فارسی (Persian)</string>
+    <string name="language_ru">Русский (Russian)</string>
+    <string name="language_tr">Türkçe (Turkish)</string>
+    <string name="language_my">မြန်မာစာ (Burmese)</string>
+    <string name="language_ur">اردو (Urdu)</string>
+    <string name="language_vi">Tiếng Việt (Vietnamese)</string>
+    <string name="language_ar">العربية (Arabic)</string>
+    <string name="language_hi">हिन्दी (Hindi)</string>
+
 </resources>

@@ -290,8 +290,9 @@ class SppVpnService : VpnService() {
             profile.bypassLan ||
             profile.bypassCn
         val directRules: Set<String> = if (cachedSettings.domainDirectEnabled) {
+            val preset = com.esrrhs.spp.client.util.DnsRegionPreset.fromCode(cachedSettings.dnsRegionPreset)
             LinkedHashSet<String>(
-                com.esrrhs.spp.client.util.BundledDirectDomains.load(this),
+                preset.resolveDirectDomains(this),
             ).apply {
                 addAll(
                     com.esrrhs.spp.client.util.DomainRuleMatcher
