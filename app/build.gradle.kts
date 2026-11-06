@@ -23,7 +23,7 @@ android {
         applicationId = "com.esrrhs.spp.client"
         minSdk = 26
         targetSdk = 37
-        versionCode = 7
+        versionCode = 8
         versionName = "0.4.0"
 
         ndk {
