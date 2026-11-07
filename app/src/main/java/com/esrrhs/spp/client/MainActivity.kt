@@ -1,6 +1,7 @@
 package com.esrrhs.spp.client
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.VpnService
@@ -34,6 +35,7 @@ import com.esrrhs.spp.client.ui.ProfileEditorScreen
 import com.esrrhs.spp.client.ui.SettingsScreen
 import com.esrrhs.spp.client.ui.StatsScreen
 import com.esrrhs.spp.client.ui.theme.SppClientTheme
+import com.esrrhs.spp.client.util.AppLanguage
 import com.esrrhs.spp.client.util.ProfileShare
 import com.esrrhs.spp.client.util.ProfilesFile
 import com.esrrhs.spp.client.util.ValidationMessages
@@ -126,6 +128,10 @@ class MainActivity : ComponentActivity() {
                 toast(getString(R.string.toast_import_failed, e.message ?: ""))
             }
         }
+
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(AppLanguage.wrapIfNeeded(newBase))
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
