@@ -178,16 +178,20 @@ class MainActivity : ComponentActivity() {
                 val connections by com.esrrhs.spp.client.util.ConnectionRecorder
                     .liveGroups.collectAsState()
                 val connectionLogs by viewModel.connectionLogs.collectAsState()
+                val dnsLogs by viewModel.dnsLogs.collectAsState()
                 val ipQueryState by viewModel.ipQuery.collectAsState()
 
                 when (screen) {
                     "logs" -> LogsScreen(onBack = { screen = "list" })
 
                     "history" -> HistoryScreen(
-                        entries = connectionLogs,
+                        connectionEntries = connectionLogs,
+                        dnsEntries = dnsLogs,
                         onBack = { screen = "list" },
                         onClear = viewModel::clearConnectionLogs,
+                        onClearDns = viewModel::clearDnsLogs,
                         onDelete = viewModel::deleteConnectionLog,
+                        onDeleteDns = viewModel::deleteDnsLog,
                     )
 
                     "connections" -> ConnectionsScreen(

@@ -7,6 +7,7 @@ import com.esrrhs.spp.client.data.AppSettings
 import com.esrrhs.spp.client.data.ConfigRepository
 import com.esrrhs.spp.client.data.ConnectionLogEntry
 import com.esrrhs.spp.client.data.ConnectionLogRepository
+import com.esrrhs.spp.client.data.DnsLogRepository
 import com.esrrhs.spp.client.data.SettingsRepository
 import com.esrrhs.spp.client.spp.Profile
 import com.esrrhs.spp.client.spp.SppProcess
@@ -169,17 +170,30 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ---- 单连接历史：采集在 Service 层全局进行（ConnectionRecorder），这里只读仓库 ----
 
     private val connectionLogRepository = ConnectionLogRepository(app)
+    private val dnsLogRepository = DnsLogRepository(app)
 
     val connectionLogs: StateFlow<List<ConnectionLogEntry>> =
         connectionLogRepository.entries
+            .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    val dnsLogs: StateFlow<List<ConnectionLogEntry>> =
+        dnsLogRepository.entries
             .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     fun clearConnectionLogs() {
         viewModelScope.launch { connectionLogRepository.clear() }
     }
 
+    fun clearDnsLogs() {
+        viewModelScope.launch { dnsLogRepository.clear() }
+    }
+
     fun deleteConnectionLog(entry: ConnectionLogEntry) {
         viewModelScope.launch { connectionLogRepository.delete(entry.key, entry.startMs) }
+    }
+
+    fun deleteDnsLog(entry: ConnectionLogEntry) {
+        viewModelScope.launch { dnsLogRepository.delete(entry.key, entry.startMs) }
     }
 
     private fun getLanguage(): String {
