@@ -23,8 +23,8 @@ android {
         applicationId = "com.esrrhs.spp.client"
         minSdk = 26
         targetSdk = 37
-        versionCode = 11
-        versionName = "0.4.0"
+        versionCode = 12
+        versionName = "0.4.1"
 
         ndk {
             // MVP 只保留主流 ABI，其余按需在 scripts 里加
