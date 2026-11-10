@@ -6,6 +6,18 @@ import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.ConcurrentLinkedQueue
 
 /**
+ * SPP 底层数据帧/数据包的收发记录（用于全流程剖析 Sonny 连接和 Main 通道转发状况）。
+ */
+data class PacketEvent(
+    val timestampMs: Long = System.currentTimeMillis(),
+    val channel: String, // "SONNY" 或 "MAIN"
+    val isUpload: Boolean, // true = 发送/上行, false = 接收/下行
+    val frameType: String, // "OPEN", "OPENRSP", "DATA", "CLOSE", "PING", "PONG"
+    val sizeBytes: Int,
+    val detail: String = "",
+)
+
+/**
  * 结构化的内部代理管道时序记录（用于渲染可视化瀑布图/甘特图）。
  * 剖析每个连接在各个内部阶段的耗时与传输情况：
  * - 规则路由 (Route)
@@ -14,9 +26,11 @@ import java.util.concurrent.ConcurrentLinkedQueue
  * - 隧道协议握手 (Handshake)
  * - 等待首包响应 / TTFB (Waiting first packet)
  * - 数据传输与双向关闭 (Data Piping & Close)
+ * - SPP 协议级 Sonny ID 与多通道包流记录
  */
 data class InternalPipelineTiming(
     val id: String = java.util.UUID.randomUUID().toString(),
+    val sonnyId: String = "sonny-" + java.util.UUID.randomUUID().toString().take(8),
     val host: String,
     val port: Int,
     val isDirect: Boolean,
@@ -31,6 +45,7 @@ data class InternalPipelineTiming(
     val downloadBytes: Long = 0L,
     val status: String = "ACTIVE", // CONNECTING, ACTIVE, CLOSED, ERROR
     val errorReason: String? = null,
+    val packetEvents: List<PacketEvent> = emptyList(),
 ) {
     val totalTime: Long
         get() = if (totalDurationMs > 0) totalDurationMs else (System.currentTimeMillis() - startTimeMs).coerceAtLeast(1L)
@@ -109,6 +124,20 @@ object ProxyEventBus {
             current.removeAt(0)
         }
         _traces.value = current
+    }
+
+    /**
+     * 为指定的管道记录添加一个底层包/帧事件（用于可视化展现 Sonny 业务流与 Main 隧道帧流）。
+     */
+    fun recordPacket(pipelineId: String, event: PacketEvent) {
+        val current = _pipelines.value.toMutableList()
+        val index = current.indexOfFirst { it.id == pipelineId }
+        if (index >= 0) {
+            val p = current[index]
+            val updatedPackets = (p.packetEvents + event).takeLast(100)
+            current[index] = p.copy(packetEvents = updatedPackets)
+            _pipelines.value = current
+        }
     }
 
     fun clearTraces() {

@@ -884,6 +884,25 @@ private fun RecordDetailDialog(
                                 )
                             }
                         }
+
+                        if (pipeline != null) {
+                            Spacer(Modifier.height(4.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "SPP 业务连接 (Sonny ID)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = pipeline.sonnyId,
+                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold),
+                                    color = ColorInternalTunnel
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -1133,7 +1152,92 @@ private fun RecordDetailDialog(
                     }
                 }
 
-                // 卡片 5: 细粒度内核运转时序与异常排查链路 (向下可滑动查看)
+                // 卡片 5: SPP 协议级 Sonny 子通道与 Main 物理隧道包流可视化 (两条流对比图)
+                if (pipeline != null && pipeline.packetEvents.isNotEmpty()) {
+                    val sonnyPackets = remember(pipeline.packetEvents) {
+                        pipeline.packetEvents.filter { it.channel == "SONNY" }
+                    }
+                    val mainPackets = remember(pipeline.packetEvents) {
+                        pipeline.packetEvents.filter { it.channel == "MAIN" }
+                    }
+                    val pMinTime = remember(pipeline.packetEvents) {
+                        pipeline.packetEvents.minOfOrNull { it.timestampMs } ?: pipeline.startTimeMs
+                    }
+                    val pMaxTime = remember(pipeline.packetEvents) {
+                        val maxT = pipeline.packetEvents.maxOfOrNull { it.timestampMs } ?: (pMinTime + 100)
+                        (maxT - pMinTime).coerceAtLeast(10L).toDouble()
+                    }
+
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp)
+                        ) {
+                            Text(
+                                text = "SPP 协议底层通道包流可视化",
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = "展示 Sonny 业务连接与转发至 Main 主隧道的收发包生命周期与帧类型",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(12.dp))
+
+                            // 1. Sonny 子通道包流图
+                            Text(
+                                text = "通道 1: Sonny 业务子通道 (${pipeline.sonnyId}) - 收发包 (${sonnyPackets.size} 个)",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = Color(0xFF00ACC1),
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            PacketStreamGantt(
+                                packets = sonnyPackets,
+                                baseTimeMs = pMinTime,
+                                totalTimeMs = pMaxTime,
+                            )
+
+                            Spacer(Modifier.height(14.dp))
+
+                            // 2. Main 主物理隧道通道帧流图
+                            Text(
+                                text = "通道 2: Main 物理隧道复用通道 - 帧流转发 (${mainPackets.size} 个)",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = Color(0xFFFF9800),
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            PacketStreamGantt(
+                                packets = mainPackets,
+                                baseTimeMs = pMinTime,
+                                totalTimeMs = pMaxTime,
+                            )
+
+                            Spacer(Modifier.height(12.dp))
+
+                            // 图例与帧类型说明
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                FrameTypeDot(Color(0xFF9C27B0), "OPEN")
+                                FrameTypeDot(Color(0xFF4CAF50), "OPENRSP")
+                                FrameTypeDot(Color(0xFF0288D1), "DATA (↑上传)")
+                                FrameTypeDot(Color(0xFFFB8C00), "DATA (↓下载)")
+                                FrameTypeDot(Color(0xFFE53935), "CLOSE")
+                            }
+                        }
+                    }
+                }
+
+                // 卡片 6: 细粒度内核运转时序与异常排查链路 (向下可滑动查看)
                 if (traces.isNotEmpty()) {
                     Card(
                         modifier = Modifier.fillMaxWidth(),
@@ -1195,6 +1299,58 @@ private fun RecordDetailDialog(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun PacketStreamGantt(
+    packets: List<com.esrrhs.spp.client.proxy.PacketEvent>,
+    baseTimeMs: Long,
+    totalTimeMs: Double,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(24.dp)
+            .clip(RoundedCornerShape(4.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+    ) {
+        if (packets.isNotEmpty()) {
+            Row(modifier = Modifier.fillMaxSize()) {
+                packets.forEach { pkt ->
+                    val offsetMs = (pkt.timestampMs - baseTimeMs).coerceAtLeast(0L).toDouble()
+                    val fraction = (offsetMs / totalTimeMs).coerceIn(0.0, 0.96).toFloat()
+                    val color = when (pkt.frameType) {
+                        "OPEN" -> Color(0xFF9C27B0)      // 紫色
+                        "OPENRSP" -> Color(0xFF4CAF50)   // 绿色
+                        "DATA" -> if (pkt.isUpload) Color(0xFF0288D1) else Color(0xFFFB8C00) // 蓝色上行, 橙色下行
+                        "CLOSE" -> Color(0xFFE53935)     // 红色
+                        else -> Color(0xFF757575)
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .width(6.dp)
+                            .padding(horizontal = 0.5.dp)
+                            .background(color)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FrameTypeDot(color: Color, label: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .size(7.dp)
+                .clip(CircleShape)
+                .background(color)
+        )
+        Spacer(Modifier.width(4.dp))
+        Text(text = label, style = MaterialTheme.typography.labelSmall, fontSize = 9.sp)
     }
 }
 

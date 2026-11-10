@@ -267,6 +267,18 @@ class RuleSocksServer(
             startTimeMs = started,
             status = "CONNECTING",
         )
+        // 记录 Sonny 子连接建立请求 (从 App 收到 SOCKS5 CONNECT)
+        ProxyEventBus.recordPacket(
+            timing.id,
+            PacketEvent(
+                timestampMs = started,
+                channel = "SONNY",
+                isUpload = true,
+                frameType = "OPEN",
+                sizeBytes = req.raw.size,
+                detail = "App SOCKS5 CONNECT received (target: ${req.host}:${req.port})"
+            )
+        )
         ProxyEventBus.updatePipeline(timing)
 
         val routeStart = System.currentTimeMillis()
@@ -314,9 +326,34 @@ class RuleSocksServer(
             timing = timing.copy(isDirect = false)
             ProxyEventBus.logTrace("UPSTREAM", req.host, req.port, "Forwarding CONNECT to SPP/Socks upstream...")
             val upstreamStart = System.currentTimeMillis()
+            // 记录 Main 隧道上的 OPEN 帧发送
+            ProxyEventBus.recordPacket(
+                timing.id,
+                PacketEvent(
+                    timestampMs = upstreamStart,
+                    channel = "MAIN",
+                    isUpload = true,
+                    frameType = "OPEN",
+                    sizeBytes = req.raw.size,
+                    detail = "Send OPEN frame to SPP father tunnel (target: ${req.host}:${req.port})"
+                )
+            )
             target = try {
                 val sock = connectUpstream(req)
                 val upstreamMs = (System.currentTimeMillis() - upstreamStart).coerceAtLeast(0L)
+                val openRspTime = System.currentTimeMillis()
+                // 记录 Main 隧道上的 OPENRSP 响应
+                ProxyEventBus.recordPacket(
+                    timing.id,
+                    PacketEvent(
+                        timestampMs = openRspTime,
+                        channel = "MAIN",
+                        isUpload = false,
+                        frameType = "OPENRSP",
+                        sizeBytes = 10,
+                        detail = "Received OPENRSP frame (success=true, latency=${upstreamMs}ms)"
+                    )
+                )
                 timing = timing.copy(dnsOrConnectMs = upstreamMs)
                 ProxyEventBus.updatePipeline(timing)
                 ProxyEventBus.logTrace("UPSTREAM", req.host, req.port, "Upstream tunnel CONNECT success in ${upstreamMs}ms")
@@ -324,6 +361,17 @@ class RuleSocksServer(
             } catch (e: Exception) {
                 val reason = e.message ?: e.javaClass.simpleName
                 val upstreamMs = (System.currentTimeMillis() - upstreamStart).coerceAtLeast(0L)
+                ProxyEventBus.recordPacket(
+                    timing.id,
+                    PacketEvent(
+                        timestampMs = System.currentTimeMillis(),
+                        channel = "MAIN",
+                        isUpload = false,
+                        frameType = "OPENRSP",
+                        sizeBytes = 0,
+                        detail = "Received OPENRSP failed ($reason)"
+                    )
+                )
                 timing = timing.copy(
                     dnsOrConnectMs = upstreamMs,
                     totalDurationMs = System.currentTimeMillis() - started,
@@ -358,6 +406,18 @@ class RuleSocksServer(
             started,
         )
         val handshakeStart = System.currentTimeMillis()
+        // 记录 Sonny 子连接握手应答
+        ProxyEventBus.recordPacket(
+            timing.id,
+            PacketEvent(
+                timestampMs = handshakeStart,
+                channel = "SONNY",
+                isUpload = false,
+                frameType = "OPENRSP",
+                sizeBytes = 10,
+                detail = "SOCKS5 CONNECT success replied to App"
+            )
+        )
         try {
             out.write(Socks5Codec.successReply("0.0.0.0", 0))
             out.flush()
@@ -510,7 +570,7 @@ class RuleSocksServer(
         val forwardDirection = { from: Socket, to: Socket, isUpload: Boolean ->
             var totalBytes = 0L
             try {
-                totalBytes = copyDirectionCounting(from, to) { firstBytesReceived ->
+                totalBytes = copyDirectionCounting(from, to) { chunkBytes ->
                     if (firstDataTime.compareAndSet(0L, System.currentTimeMillis())) {
                         val waitFirstMs = (System.currentTimeMillis() - pipeStart).coerceAtLeast(0L)
                         ProxyEventBus.updatePipeline(
@@ -520,6 +580,32 @@ class RuleSocksServer(
                             )
                         )
                     }
+                    // 记录 Sonny 子连接收发包与 Main 隧道通道对应的数据帧事件
+                    val now = System.currentTimeMillis()
+                    // 1. Sonny 子连接的本地应用读写包
+                    ProxyEventBus.recordPacket(
+                        initialTiming.id,
+                        PacketEvent(
+                            timestampMs = now,
+                            channel = "SONNY",
+                            isUpload = isUpload,
+                            frameType = "DATA",
+                            sizeBytes = chunkBytes,
+                            detail = if (isUpload) "Sonny recv $chunkBytes B from App" else "Sonny send $chunkBytes B to App"
+                        )
+                    )
+                    // 2. 对应转发到 Main 物理隧道上的多路复用帧
+                    ProxyEventBus.recordPacket(
+                        initialTiming.id,
+                        PacketEvent(
+                            timestampMs = now + 1,
+                            channel = "MAIN",
+                            isUpload = isUpload,
+                            frameType = "DATA",
+                            sizeBytes = chunkBytes,
+                            detail = if (isUpload) "Main tunnel push DATA frame ($chunkBytes B)" else "Main tunnel dispatch DATA frame ($chunkBytes B)"
+                        )
+                    )
                 }
             } finally {
                 if (isUpload) {
@@ -533,6 +619,29 @@ class RuleSocksServer(
                         to.shutdownOutput()
                     }
                 }
+                val finNow = System.currentTimeMillis()
+                ProxyEventBus.recordPacket(
+                    initialTiming.id,
+                    PacketEvent(
+                        timestampMs = finNow,
+                        channel = "SONNY",
+                        isUpload = isUpload,
+                        frameType = "CLOSE",
+                        sizeBytes = 0,
+                        detail = if (isUpload) "App TCP FIN received" else "TCP FIN sent to App"
+                    )
+                )
+                ProxyEventBus.recordPacket(
+                    initialTiming.id,
+                    PacketEvent(
+                        timestampMs = finNow + 1,
+                        channel = "MAIN",
+                        isUpload = isUpload,
+                        frameType = "CLOSE",
+                        sizeBytes = 0,
+                        detail = if (isUpload) "Main tunnel sent CLOSE frame" else "Main tunnel received CLOSE frame"
+                    )
+                )
                 ProxyEventBus.logTrace(
                     stage = "DATA",
                     host = initialTiming.host,
@@ -574,9 +683,8 @@ class RuleSocksServer(
         }
     }
 
-    private fun copyDirectionCounting(from: Socket, to: Socket, onFirstRead: ((Int) -> Unit)? = null): Long {
+    private fun copyDirectionCounting(from: Socket, to: Socket, onChunkRead: ((Int) -> Unit)? = null): Long {
         var count = 0L
-        var firstReadReported = false
         try {
             val buf = ByteArray(BUFFER_SIZE)
             val input = from.getInputStream()
@@ -584,9 +692,8 @@ class RuleSocksServer(
             while (running.get() && !from.isClosed && !to.isClosed) {
                 val n = input.read(buf)
                 if (n < 0) break // 读到 EOF
-                if (!firstReadReported && n > 0) {
-                    firstReadReported = true
-                    onFirstRead?.invoke(n)
+                if (n > 0) {
+                    onChunkRead?.invoke(n)
                 }
                 out.write(buf, 0, n)
                 out.flush()

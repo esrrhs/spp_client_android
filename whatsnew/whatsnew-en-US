@@ -1,4 +1,3 @@
-• Parallel Dual-layer Timing: detail view displays parallel aligned Gantt bars for direct physical correlation between browser and kernel
-• Vertical Scrollable Breakdown: scroll down to inspect request info, browser network phases, kernel pipeline steps, and internal event traces
-• Color Separation: distinct cool tones for browser timing vs. warm amber/coral tones for kernel proxy stages
-• Real-time Alignment: timeline physically aligns user trigger, browser requests, and internal connections
+• Sonny ID & Packet Streams: visualizes Sonny sub-channel and Main tunnel OPEN/DATA/CLOSE frame lifecycle
+• Parallel Dual-layer Timing: aligned Gantt bars for physical correlation between browser and kernel
+• Vertical Scrollable Breakdown: scroll to inspect requests, network phases, and internal event traces
