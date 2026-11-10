@@ -15,6 +15,11 @@ data class TimingRecord(
     val responseEnd: Double = 0.0,
     val duration: Double = 0.0,
     // 阶段细分
+    val unloadStart: Double = 0.0,
+    val unloadEnd: Double = 0.0,
+    val redirectStart: Double = 0.0,
+    val redirectEnd: Double = 0.0,
+    val fetchStart: Double = 0.0,
     val dnsStart: Double = 0.0,
     val dnsEnd: Double = 0.0,
     val connectStart: Double = 0.0,
@@ -28,10 +33,34 @@ data class TimingRecord(
     val nextHopProtocol: String = "",
     val pageUrl: String = "",
     val timeOrigin: Double = 0.0, // 页面全局时间起点 window.performance.timeOrigin (毫秒 Unix 时间戳)
+    val userTriggerMs: Long = 0L, // 用户点击回车/导航触发的物理时间戳 (ms Unix epoch)
 ) {
     /** 绝对起始绝对时间戳 (ms Unix epoch) */
     val absoluteStartMs: Long
         get() = if (timeOrigin > 0.0) (timeOrigin + startTime).toLong() else 0L
+
+    /** 触发到导航启动耗时 (UI 事件/Binder 跨进程分发与引擎调度) */
+    val dispatchDuration: Double
+        get() = if (userTriggerMs > 0L && timeOrigin > 0.0 && timeOrigin >= userTriggerMs) {
+            (timeOrigin - userTriggerMs.toDouble()).coerceAtLeast(0.0)
+        } else 0.0
+
+    /** 本地应用缓存/重定向/HSTS策略比对耗时 (从 fetchStart 到真正网络查找开始) */
+    val cacheOrPrecheckDuration: Double
+        get() = when {
+            dnsStart > fetchStart && fetchStart > 0 -> dnsStart - fetchStart
+            connectStart > fetchStart && fetchStart > 0 -> connectStart - fetchStart
+            requestStart > fetchStart && fetchStart > 0 -> requestStart - fetchStart
+            else -> 0.0
+        }
+
+    /** 网络排队/Socket 等待配额耗时 (Stalling / Queueing: 从开始请求到 connectStart 或从 connectEnd 到 requestStart) */
+    val queueingDuration: Double
+        get() = if (requestStart > connectEnd && connectEnd > 0) {
+            (requestStart - connectEnd).coerceAtLeast(0.0)
+        } else if (connectStart > dnsEnd && dnsEnd > 0) {
+            (connectStart - dnsEnd).coerceAtLeast(0.0)
+        } else 0.0
 
     /** DNS 查找耗时（ms） */
     val dnsDuration: Double

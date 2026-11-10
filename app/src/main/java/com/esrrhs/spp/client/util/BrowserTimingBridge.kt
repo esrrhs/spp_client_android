@@ -26,6 +26,9 @@ class BrowserTimingBridge {
     @Volatile
     var currentPageUrl: String = ""
 
+    @Volatile
+    var lastUserTriggerMs: Long = 0L
+
     // 记录用户手动点击「清空」时各页面的最后已清空时间戳（毫秒）
     private val clearedPageTimeMap = java.util.concurrent.ConcurrentHashMap<String, Double>()
 
@@ -38,10 +41,11 @@ class BrowserTimingBridge {
         val minStartTime = clearedPageTimeMap[page] ?: -1.0
 
         // 过滤掉清空前已经开始的旧请求（如果页面未刷新，其 startTime 必然小于清空时刻的相对时间）
-        // 并为新来的记录打上对应的页面 URL
+        // 并为新来的记录打上对应的页面 URL 和用户点击触发时间戳
+        val trigger = lastUserTriggerMs
         val incoming = list
             .filter { it.startTime > minStartTime }
-            .map { it.copy(pageUrl = page) }
+            .map { it.copy(pageUrl = page, userTriggerMs = trigger) }
         if (incoming.isEmpty()) return
         val current = _records.value
         val merged = current.toMutableList()
@@ -153,6 +157,11 @@ class BrowserTimingBridge {
                                     startTime: n.startTime || 0,
                                     responseEnd: n.responseEnd || 0,
                                     duration: n.duration || 0,
+                                    unloadStart: n.unloadEventStart || 0,
+                                    unloadEnd: n.unloadEventEnd || 0,
+                                    redirectStart: n.redirectStart || 0,
+                                    redirectEnd: n.redirectEnd || 0,
+                                    fetchStart: n.fetchStart || 0,
                                     dnsStart: n.domainLookupStart || 0,
                                     dnsEnd: n.domainLookupEnd || 0,
                                     connectStart: n.connectStart || 0,
@@ -178,6 +187,7 @@ class BrowserTimingBridge {
                                     startTime: r.startTime || 0,
                                     responseEnd: r.responseEnd || 0,
                                     duration: r.duration || 0,
+                                    fetchStart: r.fetchStart || 0,
                                     dnsStart: r.domainLookupStart || 0,
                                     dnsEnd: r.domainLookupEnd || 0,
                                     connectStart: r.connectStart || 0,
@@ -230,6 +240,11 @@ class BrowserTimingBridge {
                             startTime = obj["startTime"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
                             responseEnd = obj["responseEnd"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
                             duration = obj["duration"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+                            unloadStart = obj["unloadStart"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+                            unloadEnd = obj["unloadEnd"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+                            redirectStart = obj["redirectStart"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+                            redirectEnd = obj["redirectEnd"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+                            fetchStart = obj["fetchStart"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
                             dnsStart = obj["dnsStart"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
                             dnsEnd = obj["dnsEnd"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
                             connectStart = obj["connectStart"]?.jsonPrimitive?.doubleOrNull ?: 0.0,

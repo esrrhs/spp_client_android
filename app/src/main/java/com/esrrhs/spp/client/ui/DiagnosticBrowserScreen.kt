@@ -114,6 +114,11 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.runtime.mutableLongStateOf
 
+// 预建连与引擎调度开销色彩（灰靛蓝/紫灰/石板蓝）
+private val ColorDispatch = Color(0xFF5C6BC0)       // 靛蓝: UI 点击 -> WebKit 引擎调度 / IPC
+private val ColorPrecheck = Color(0xFF7E57C2)       // 浅紫: 缓存比对 / 策略判定 / 重定向
+private val ColorQueueing = Color(0xFF78909C)       // 蓝灰: 网络排队 / Socket 准备
+
 // 浏览器网络时序色彩（现代冷色调体系：明蓝/青色/天蓝/绿）
 private val ColorDns = Color(0xFF0288D1)       // 明蓝: DNS 查询
 private val ColorConnect = Color(0xFF00ACC1)   // 湖蓝/青: TCP 建连
@@ -227,7 +232,9 @@ fun DiagnosticBrowserScreen(
                                 currentUrl = target
                                 timingBridge.currentPageUrl = target
                                 selectedRecord = null
-                                userTriggerTimestampMs = System.currentTimeMillis()
+                                val now = System.currentTimeMillis()
+                                userTriggerTimestampMs = now
+                                timingBridge.lastUserTriggerMs = now
                                 webViewInstance?.loadUrl(target)
                             }),
                             trailingIcon = {
@@ -248,7 +255,9 @@ fun DiagnosticBrowserScreen(
                             currentUrl = target
                             timingBridge.currentPageUrl = target
                             selectedRecord = null
-                            userTriggerTimestampMs = System.currentTimeMillis()
+                            val now = System.currentTimeMillis()
+                            userTriggerTimestampMs = now
+                            timingBridge.lastUserTriggerMs = now
                             webViewInstance?.loadUrl(target)
                         }) {
                             Icon(Icons.Filled.ArrowForward, contentDescription = stringResource(R.string.diag_go))
@@ -972,6 +981,65 @@ private fun RecordDetailDialog(
                         val browserStartWeight = (browserStartOffsetMs / totalTimelineMs).coerceIn(0.0, 0.95).toFloat()
                         val browserDurationWeight = (record.duration / totalTimelineMs).coerceIn(0.01, 1.0).toFloat()
 
+                        // 序列 0: 预建连与引擎调度阶段 (若有记录或有触发起点)
+                        val totalPreOverheadMs = record.dispatchDuration + record.cacheOrPrecheckDuration + record.queueingDuration
+                        if (totalPreOverheadMs > 0.0 || (triggerTimeMs > 0L && timelineBaseMs == triggerTimeMs)) {
+                            val triggerOffsetMs = if (triggerTimeMs > 0L && timelineBaseMs > 0L) {
+                                (triggerTimeMs - timelineBaseMs).coerceAtLeast(0L).toDouble()
+                            } else 0.0
+                            val triggerStartWeight = (triggerOffsetMs / totalTimelineMs).coerceIn(0.0, 0.95).toFloat()
+                            val preDurationSpan = if (totalPreOverheadMs > 0.0) totalPreOverheadMs else (browserStartOffsetMs - triggerOffsetMs).coerceAtLeast(1.0)
+                            val preDurationWeight = (preDurationSpan / totalTimelineMs).coerceIn(0.01, 1.0).toFloat()
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "0. 预备: 引擎调度/缓存判定/排队准备",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = ColorDispatch,
+                                )
+                                Text(
+                                    text = "${preDurationSpan.toInt()} ms",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold),
+                                    color = ColorDispatch,
+                                )
+                            }
+                            Spacer(Modifier.height(3.dp))
+
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(14.dp)
+                                    .clip(RoundedCornerShape(3.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxHeight()
+                                        .fillMaxWidth(fraction = (triggerStartWeight + preDurationWeight).coerceAtMost(1f))
+                                        .padding(start = (triggerStartWeight * 260).coerceAtLeast(0f).dp)
+                                ) {
+                                    val d = preDurationSpan
+                                    val dispW = (record.dispatchDuration / d).toFloat().coerceIn(0f, 1f)
+                                    val cacheW = (record.cacheOrPrecheckDuration / d).toFloat().coerceIn(0f, 1f)
+                                    val queueW = (record.queueingDuration / d).toFloat().coerceIn(0f, 1f)
+
+                                    if (dispW > 0) Box(Modifier.fillMaxHeight().weight(dispW).background(ColorDispatch))
+                                    if (cacheW > 0) Box(Modifier.fillMaxHeight().weight(cacheW).background(ColorPrecheck))
+                                    if (queueW > 0) Box(Modifier.fillMaxHeight().weight(queueW).background(ColorQueueing))
+
+                                    if (dispW <= 0 && cacheW <= 0 && queueW <= 0) {
+                                        Box(Modifier.fillMaxSize().background(ColorDispatch.copy(alpha = 0.8f)))
+                                    }
+                                }
+                            }
+
+                            Spacer(Modifier.height(10.dp))
+                        }
+
                         // 序列 1: 浏览器上层条标签 + 甘特条
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -1188,6 +1256,20 @@ private fun RecordDetailDialog(
                             color = MaterialTheme.colorScheme.primary,
                         )
                         Spacer(Modifier.height(8.dp))
+
+                        // 发包前的预备开销拆解展示
+                        if (record.dispatchDuration > 0) {
+                            DetailTimingRow(ColorDispatch, "UI 点击 -> WebKit 引擎调度 / IPC", record.dispatchDuration)
+                        }
+                        if (record.cacheOrPrecheckDuration > 0) {
+                            DetailTimingRow(ColorPrecheck, "本地缓存 / HSTS / 策略比对", record.cacheOrPrecheckDuration)
+                        }
+                        if (record.queueingDuration > 0) {
+                            DetailTimingRow(ColorQueueing, "网络连接池排队 / Socket 准备", record.queueingDuration)
+                        }
+                        if (record.dispatchDuration > 0 || record.cacheOrPrecheckDuration > 0 || record.queueingDuration > 0) {
+                            HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp), thickness = 0.5.dp)
+                        }
 
                         DetailTimingRow(ColorDns, stringResource(R.string.diag_phase_dns), record.dnsDuration)
                         DetailTimingRow(ColorConnect, stringResource(R.string.diag_phase_connect), record.connectDuration)
