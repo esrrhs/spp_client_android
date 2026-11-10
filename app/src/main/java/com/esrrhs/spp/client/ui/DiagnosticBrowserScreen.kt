@@ -112,21 +112,21 @@ import java.util.Date
 import java.util.Locale
 import androidx.compose.runtime.mutableLongStateOf
 
-// 时序阶段标准色彩（Chrome / Firefox DevTools 同款色系）
-private val ColorDns = Color(0xFF1E88E5)       // 蓝色: DNS 查询
-private val ColorConnect = Color(0xFFFB8C00)   // 橙色: TCP 握手
-private val ColorSsl = Color(0xFF8E24AA)       // 紫色: SSL/TLS
-private val ColorTtfb = Color(0xFF43A047)      // 绿色: 等待首字节 (TTFB)
-private val ColorDownload = Color(0xFF00ACC1)  // 青色: 下载
-private val ColorOther = Color(0xFF757575)     // 灰色: 排队/其他
+// 浏览器网络时序色彩（现代冷色调体系：青/蓝/紫/翠绿）
+private val ColorDns = Color(0xFF0288D1)       // 明蓝: DNS 查询
+private val ColorConnect = Color(0xFF00ACC1)   // 湖蓝/青: TCP 建连
+private val ColorSsl = Color(0xFF7E57C2)       // 浅紫: SSL/TLS
+private val ColorTtfb = Color(0xFF26A69A)      // 翠绿/青绿: 等待首字节 (TTFB)
+private val ColorDownload = Color(0xFF42A5F5)  // 浅天蓝: 内容下载
+private val ColorOther = Color(0xFF9E9E9E)     // 灰色: 排队/其他
 
-// 内部代理链路阶段色彩
-private val ColorInternalRoute = Color(0xFF3F51B5)      // 靛蓝: 分流路由判定
-private val ColorInternalTunnel = Color(0xFFFF9800)     // 橙色: 上游隧道建连
-private val ColorInternalHandshake = Color(0xFF9C27B0)  // 紫色: SOCKS5 握手
-private val ColorInternalWait = Color(0xFF4CAF50)       // 绿色: 等待首包 (TTFB)
-private val ColorInternalPipe = Color(0xFF00BCD4)       // 青蓝: 双向数据转发
-private val ColorTrigger = Color(0xFFE91E63)            // 玫红: 用户回车触发上网起点
+// 内部代理内核链路阶段色彩（温暖/琥珀/深橙/深紫/珊瑚色体系，与上层冷色调鲜明区分）
+private val ColorInternalRoute = Color(0xFF673AB7)      // 浓郁深紫: 分流路由判定
+private val ColorInternalTunnel = Color(0xFFFF9800)     // 琥珀橙: 上游隧道建连
+private val ColorInternalHandshake = Color(0xFFE91E63)  // 玫红紫: SOCKS5 握手
+private val ColorInternalWait = Color(0xFFFFB300)       // 金黄/琥珀: 等待首包 (TTFB)
+private val ColorInternalPipe = Color(0xFFFF7043)       // 珊瑚橙红: 双向数据转发
+private val ColorTrigger = Color(0xFFD81B60)            // 鲜亮洋红: 用户回车触发上网起点
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -788,7 +788,21 @@ private fun RecordDetailDialog(
                     style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                     color = MaterialTheme.colorScheme.primary,
                 )
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(6.dp))
+
+                // 浏览器时序阶段水平连续甘特图条
+                DetailProgressBar(
+                    items = listOf(
+                        ProgressSegment(stringResource(R.string.diag_phase_dns), record.dnsDuration, ColorDns),
+                        ProgressSegment(stringResource(R.string.diag_phase_connect), (record.connectDuration - record.sslDuration).coerceAtLeast(0.0), ColorConnect),
+                        ProgressSegment(stringResource(R.string.diag_phase_ssl), record.sslDuration, ColorSsl),
+                        ProgressSegment(stringResource(R.string.diag_phase_ttfb), record.ttfb, ColorTtfb),
+                        ProgressSegment(stringResource(R.string.diag_phase_download), record.downloadDuration, ColorDownload),
+                    ),
+                    totalDuration = record.duration
+                )
+                Spacer(Modifier.height(8.dp))
+
                 DetailTimingRow(ColorDns, stringResource(R.string.diag_phase_dns), record.dnsDuration)
                 DetailTimingRow(ColorConnect, stringResource(R.string.diag_phase_connect), record.connectDuration)
                 if (record.sslDuration > 0) {
@@ -822,7 +836,7 @@ private fun RecordDetailDialog(
                     Text(
                         text = stringResource(R.string.diag_internal_section_title),
                         style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.secondary,
+                        color = ColorInternalTunnel,
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
@@ -830,7 +844,20 @@ private fun RecordDetailDialog(
                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
                         color = if (pipeline.isDirect) Color(0xFF2E7D32) else Color(0xFFEF6C00),
                     )
-                    Spacer(Modifier.height(4.dp))
+                    Spacer(Modifier.height(6.dp))
+
+                    // 内核时序阶段水平连续甘特图条
+                    DetailProgressBar(
+                        items = listOf(
+                            ProgressSegment(stringResource(R.string.diag_internal_route), pipeline.routeMs.toDouble(), ColorInternalRoute),
+                            ProgressSegment(if (pipeline.isDirect) "本地建连" else stringResource(R.string.diag_internal_tunnel), pipeline.dnsOrConnectMs.toDouble(), ColorInternalTunnel),
+                            ProgressSegment(stringResource(R.string.diag_internal_handshake), pipeline.handshakeMs.toDouble(), ColorInternalHandshake),
+                            ProgressSegment(stringResource(R.string.diag_internal_wait), pipeline.waitFirstDataMs.toDouble(), ColorInternalWait),
+                            ProgressSegment(stringResource(R.string.diag_internal_pipe), pipeline.dataTransferMs.toDouble(), ColorInternalPipe),
+                        ),
+                        totalDuration = pipeline.totalTime.toDouble()
+                    )
+                    Spacer(Modifier.height(8.dp))
 
                     DetailTimingRow(ColorInternalRoute, stringResource(R.string.diag_internal_route), pipeline.routeMs.toDouble())
                     DetailTimingRow(ColorInternalTunnel, if (pipeline.isDirect) "目标 DNS / 本地建连" else stringResource(R.string.diag_internal_tunnel), pipeline.dnsOrConnectMs.toDouble())
@@ -892,6 +919,51 @@ private fun DetailTimingRow(color: Color, label: String, durationMs: Double, isS
             style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
             color = if (durationMs > 0) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
         )
+    }
+}
+
+private data class ProgressSegment(
+    val name: String,
+    val durationMs: Double,
+    val color: Color,
+)
+
+@Composable
+private fun DetailProgressBar(
+    items: List<ProgressSegment>,
+    totalDuration: Double,
+) {
+    val validItems = items.filter { it.durationMs > 0.0 }
+    val safeTotal = if (totalDuration > 0.0) totalDuration else validItems.sumOf { it.durationMs }.coerceAtLeast(1.0)
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(16.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+        ) {
+            if (validItems.isNotEmpty()) {
+                Row(modifier = Modifier.fillMaxSize()) {
+                    validItems.forEach { seg ->
+                        val weight = (seg.durationMs / safeTotal).toFloat().coerceIn(0.01f, 1f)
+                        Box(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .weight(weight)
+                                .background(seg.color)
+                        )
+                    }
+                }
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(ColorOther.copy(alpha = 0.4f))
+                )
+            }
+        }
     }
 }
 

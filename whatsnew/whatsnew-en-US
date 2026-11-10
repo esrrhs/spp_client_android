@@ -1,4 +1,3 @@
-• Unified Real Timing Alignment: accurately mark user trigger moment on the timeline, perfectly aligning browser network timing with internal proxy stages to inspect connection and TTFB breakdowns
-• Unified Diagnosis Timing: seamlessly integrate browser network timing with App internal routing/handshake/pipeline breakdown
-• Support built-in direct routing presets for multiple countries
-• Multilingual translations and in-app language switching
+• Visual Timing Breakdown: detail dialog now displays graphical Gantt bars showing phase sequences and proportions
+• Color Separation: distinct cool tones for browser timing vs. warm amber/coral tones for kernel proxy stages
+• Real-time Alignment: timeline physically aligns user trigger, browser requests, and internal connections
