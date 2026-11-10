@@ -24,6 +24,7 @@ import com.esrrhs.spp.client.R
 import com.esrrhs.spp.client.spp.Profile
 import com.esrrhs.spp.client.ui.AppPickerScreen
 import com.esrrhs.spp.client.ui.ConnectionsScreen
+import com.esrrhs.spp.client.ui.DiagnosticBrowserScreen
 import com.esrrhs.spp.client.ui.HistoryScreen
 import com.esrrhs.spp.client.ui.IpQueryDialog
 import com.esrrhs.spp.client.ui.LeakScreen
@@ -184,6 +185,8 @@ class MainActivity : ComponentActivity() {
                 when (screen) {
                     "logs" -> LogsScreen(onBack = { screen = "list" })
 
+                    "browser" -> DiagnosticBrowserScreen(onBack = { screen = "list" })
+
                     "history" -> HistoryScreen(
                         connectionEntries = connectionLogs,
                         dnsEntries = dnsLogs,
@@ -292,6 +295,7 @@ class MainActivity : ComponentActivity() {
                         onShowIp = viewModel::runIpQuery,
                         onShowHistory = { screen = "history" },
                         onShowLeak = { screen = "leak" },
+                        onShowBrowser = { screen = "browser" },
                         onRunCheck = viewModel::runSelfCheck,
                         onDismissCheck = viewModel::dismissSelfCheck,
                         selfCheckState = selfCheckState,

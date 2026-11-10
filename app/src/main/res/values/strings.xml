@@ -317,6 +317,24 @@
     <string name="language_hi">हिन्दी (Hindi)</string>
 
 
+    <!-- 诊断浏览器 (F12 时序表) -->
+    <string name="diag_browser_title">诊断浏览器 (F12)</string>
+    <string name="diag_go">前往</string>
+    <string name="diag_refresh">刷新</string>
+    <string name="diag_toggle_devtools">F12 开发者时序</string>
+    <string name="diag_tab_network">网络时序</string>
+    <string name="diag_tab_console">控制台</string>
+    <string name="diag_phase_dns">DNS 查询</string>
+    <string name="diag_phase_connect">TCP 握手</string>
+    <string name="diag_phase_ssl">SSL/TLS</string>
+    <string name="diag_phase_ttfb">等待响应 (TTFB)</string>
+    <string name="diag_phase_download">内容下载</string>
+    <string name="diag_empty_network">暂无网络请求，请输入网址并访问</string>
+    <string name="diag_empty_console">暂无控制台日志</string>
+    <string name="diag_timing_detail_title">请求时序明细</string>
+    <string name="diag_total_duration">总持续时间</string>
+    <string name="diag_transfer_size">传输大小</string>
+
     <!-- 关于与版本信息 -->
     <string name="setting_about_title">关于与版本</string>
     <string name="about_app_version">应用版本</string>

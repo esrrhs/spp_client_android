@@ -48,8 +48,8 @@ android {
         applicationId = "com.esrrhs.spp.client"
         minSdk = 26
         targetSdk = 37
-        versionCode = 13
-        versionName = "0.4.2"
+        versionCode = 14
+        versionName = "0.4.3"
 
         buildConfigField("String", "GIT_COMMIT_APP", "\"$appGitHash\"")
         buildConfigField("String", "GIT_COMMIT_SPP", "\"$sppGitHash\"")

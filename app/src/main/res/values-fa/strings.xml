@@ -293,4 +293,20 @@
     <string name="about_build_time">زمان ساخت</string>
     <string name="about_core_version">نسخه هسته (SPP)</string>
     <string name="about_hev_version">نسخه hev-socks5-tunnel</string>
+    <string name="diag_browser_title">Diagnostic Browser</string>
+    <string name="diag_go">Go</string>
+    <string name="diag_refresh">Refresh</string>
+    <string name="diag_toggle_devtools">F12</string>
+    <string name="diag_tab_network">Network</string>
+    <string name="diag_tab_console">Console</string>
+    <string name="diag_phase_dns">DNS</string>
+    <string name="diag_phase_connect">Connect</string>
+    <string name="diag_phase_ssl">SSL</string>
+    <string name="diag_phase_ttfb">TTFB</string>
+    <string name="diag_phase_download">Download</string>
+    <string name="diag_empty_network">No network requests</string>
+    <string name="diag_empty_console">No logs</string>
+    <string name="diag_timing_detail_title">Timing Details</string>
+    <string name="diag_total_duration">Duration</string>
+    <string name="diag_transfer_size">Transfer Size</string>
 </resources>
