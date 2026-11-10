@@ -267,6 +267,7 @@ class RuleSocksServer(
             startTimeMs = started,
             status = "CONNECTING",
         )
+        ProxyEventBus.updatePipeline(timing)
         // 记录 Sonny 子连接建立请求 (从 App 收到 SOCKS5 CONNECT)
         ProxyEventBus.recordPacket(
             timing.id,
@@ -279,7 +280,6 @@ class RuleSocksServer(
                 detail = "App SOCKS5 CONNECT received (target: ${req.host}:${req.port})"
             )
         )
-        ProxyEventBus.updatePipeline(timing)
 
         val routeStart = System.currentTimeMillis()
         val ruleDirect = shouldDirect(req.host, req.atyp)

@@ -1,4 +1,3 @@
+• Fix diagnosis timing alignment & packet stream rendering: accurate positioning and pipeline lifecycle tracking
+• Proportional network phase rendering: Gantt bar segment widths strictly match actual elapsed milliseconds
 • Pre-dispatch Breakdown: details overhead between UI click and first packet, including engine IPC dispatch, local cache/policy checks, and socket queueing
-• Stream 0 in Unified Timeline: visualizes pre-dispatch phases before network activity
-• 4-Stream Unified Timeline: Browser, Kernel, Sonny, and Main tunnel frames fully aligned on the same physical time axis
-• Protocol & Compression Ratio: Live SPP transit protocol and compression metrics in detail view

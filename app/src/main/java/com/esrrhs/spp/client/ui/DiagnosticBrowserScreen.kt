@@ -18,6 +18,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -25,6 +26,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -685,18 +687,22 @@ private fun UnifiedWaterfallRow(
             val browserDurationWeight = (record.duration / totalTimelineMs).coerceIn(0.01, 1.0).toFloat()
 
             // 浏览器视角网络瀑布流
-            Box(
+            BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(11.dp)
                     .clip(RoundedCornerShape(2.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
             ) {
+                val totalWidth = maxWidth
+                val leftOffset = totalWidth * browserStartWeight
+                val barWidth = (totalWidth * browserDurationWeight).coerceAtLeast(3.dp)
+
                 Row(
                     modifier = Modifier
                         .fillMaxHeight()
-                        .fillMaxWidth(fraction = (browserStartWeight + browserDurationWeight).coerceAtMost(1f))
-                        .padding(start = (browserStartWeight * 180).coerceAtLeast(0f).dp)
+                        .offset(x = leftOffset)
+                        .width(barWidth)
                 ) {
                     if (record.duration > 0) {
                         val d = record.duration
@@ -705,14 +711,19 @@ private fun UnifiedWaterfallRow(
                         val sslW = (record.sslDuration / d).toFloat().coerceIn(0f, 1f)
                         val ttfbW = (record.ttfb / d).toFloat().coerceIn(0f, 1f)
                         val downW = (record.downloadDuration / d).toFloat().coerceIn(0f, 1f)
+                        val accountedW = dnsW + connW + sslW + ttfbW + downW
+                        val otherW = (1f - accountedW).coerceIn(0f, 1f)
 
+                        if (otherW > 0.05f && (record.cacheOrPrecheckDuration > 0 || record.queueingDuration > 0)) {
+                            Box(Modifier.fillMaxHeight().weight(otherW).background(ColorQueueing))
+                        }
                         if (dnsW > 0) Box(Modifier.fillMaxHeight().weight(dnsW).background(ColorDns))
                         if (connW > 0) Box(Modifier.fillMaxHeight().weight(connW).background(ColorConnect))
                         if (sslW > 0) Box(Modifier.fillMaxHeight().weight(sslW).background(ColorSsl))
                         if (ttfbW > 0) Box(Modifier.fillMaxHeight().weight(ttfbW).background(ColorTtfb))
                         if (downW > 0) Box(Modifier.fillMaxHeight().weight(downW).background(ColorDownload))
 
-                        if (dnsW <= 0 && connW <= 0 && sslW <= 0 && ttfbW <= 0 && downW <= 0) {
+                        if (dnsW <= 0 && connW <= 0 && sslW <= 0 && ttfbW <= 0 && downW <= 0 && otherW <= 0.05f) {
                             Box(Modifier.fillMaxSize().background(ColorOther))
                         }
                     } else {
@@ -732,18 +743,22 @@ private fun UnifiedWaterfallRow(
                 val pipeDurationWeight = (pipeline.totalTime.toDouble() / totalTimelineMs).coerceIn(0.01, 1.0).toFloat()
                 val d = pipeline.totalTime.toDouble()
 
-                Box(
+                BoxWithConstraints(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(7.dp)
                         .clip(RoundedCornerShape(2.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
                 ) {
+                    val totalWidth = maxWidth
+                    val leftOffset = totalWidth * pipeStartWeight
+                    val barWidth = (totalWidth * pipeDurationWeight).coerceAtLeast(3.dp)
+
                     Row(
                         modifier = Modifier
                             .fillMaxHeight()
-                            .fillMaxWidth(fraction = (pipeStartWeight + pipeDurationWeight).coerceAtMost(1f))
-                            .padding(start = (pipeStartWeight * 180).coerceAtLeast(0f).dp)
+                            .offset(x = leftOffset)
+                            .width(barWidth)
                     ) {
                         val routeW = (pipeline.routeMs / d).toFloat().coerceIn(0f, 1f)
                         val connW = (pipeline.dnsOrConnectMs / d).toFloat().coerceIn(0f, 1f)
@@ -1009,18 +1024,22 @@ private fun RecordDetailDialog(
                             }
                             Spacer(Modifier.height(3.dp))
 
-                            Box(
+                            BoxWithConstraints(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(14.dp)
                                     .clip(RoundedCornerShape(3.dp))
                                     .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
                             ) {
+                                val totalWidth = maxWidth
+                                val leftOffset = totalWidth * triggerStartWeight
+                                val barWidth = (totalWidth * preDurationWeight).coerceAtLeast(3.dp)
+
                                 Row(
                                     modifier = Modifier
                                         .fillMaxHeight()
-                                        .fillMaxWidth(fraction = (triggerStartWeight + preDurationWeight).coerceAtMost(1f))
-                                        .padding(start = (triggerStartWeight * 260).coerceAtLeast(0f).dp)
+                                        .offset(x = leftOffset)
+                                        .width(barWidth)
                                 ) {
                                     val d = preDurationSpan
                                     val dispW = (record.dispatchDuration / d).toFloat().coerceIn(0f, 1f)
@@ -1059,18 +1078,22 @@ private fun RecordDetailDialog(
                         }
                         Spacer(Modifier.height(3.dp))
 
-                        Box(
+                        BoxWithConstraints(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(16.dp)
                                 .clip(RoundedCornerShape(3.dp))
                                 .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
                         ) {
+                            val totalWidth = maxWidth
+                            val leftOffset = totalWidth * browserStartWeight
+                            val barWidth = (totalWidth * browserDurationWeight).coerceAtLeast(3.dp)
+
                             Row(
                                 modifier = Modifier
                                     .fillMaxHeight()
-                                    .fillMaxWidth(fraction = (browserStartWeight + browserDurationWeight).coerceAtMost(1f))
-                                    .padding(start = (browserStartWeight * 260).coerceAtLeast(0f).dp)
+                                    .offset(x = leftOffset)
+                                    .width(barWidth)
                             ) {
                                 if (record.duration > 0) {
                                     val d = record.duration
@@ -1079,14 +1102,19 @@ private fun RecordDetailDialog(
                                     val sslW = (record.sslDuration / d).toFloat().coerceIn(0f, 1f)
                                     val ttfbW = (record.ttfb / d).toFloat().coerceIn(0f, 1f)
                                     val downW = (record.downloadDuration / d).toFloat().coerceIn(0f, 1f)
+                                    val accountedW = dnsW + connW + sslW + ttfbW + downW
+                                    val otherW = (1f - accountedW).coerceIn(0f, 1f)
 
+                                    if (otherW > 0.05f && (record.cacheOrPrecheckDuration > 0 || record.queueingDuration > 0)) {
+                                        Box(Modifier.fillMaxHeight().weight(otherW).background(ColorQueueing))
+                                    }
                                     if (dnsW > 0) Box(Modifier.fillMaxHeight().weight(dnsW).background(ColorDns))
                                     if (connW > 0) Box(Modifier.fillMaxHeight().weight(connW).background(ColorConnect))
                                     if (sslW > 0) Box(Modifier.fillMaxHeight().weight(sslW).background(ColorSsl))
                                     if (ttfbW > 0) Box(Modifier.fillMaxHeight().weight(ttfbW).background(ColorTtfb))
                                     if (downW > 0) Box(Modifier.fillMaxHeight().weight(downW).background(ColorDownload))
 
-                                    if (dnsW <= 0 && connW <= 0 && sslW <= 0 && ttfbW <= 0 && downW <= 0) {
+                                    if (dnsW <= 0 && connW <= 0 && sslW <= 0 && ttfbW <= 0 && downW <= 0 && otherW <= 0.05f) {
                                         Box(Modifier.fillMaxSize().background(ColorOther))
                                     }
                                 } else {
@@ -1126,18 +1154,22 @@ private fun RecordDetailDialog(
                             }
                             Spacer(Modifier.height(3.dp))
 
-                            Box(
+                            BoxWithConstraints(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(14.dp)
                                     .clip(RoundedCornerShape(3.dp))
                                     .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
                             ) {
+                                val totalWidth = maxWidth
+                                val leftOffset = totalWidth * pipeStartWeight
+                                val barWidth = (totalWidth * pipeDurationWeight).coerceAtLeast(3.dp)
+
                                 Row(
                                     modifier = Modifier
                                         .fillMaxHeight()
-                                        .fillMaxWidth(fraction = (pipeStartWeight + pipeDurationWeight).coerceAtMost(1f))
-                                        .padding(start = (pipeStartWeight * 260).coerceAtLeast(0f).dp)
+                                        .offset(x = leftOffset)
+                                        .width(barWidth)
                                 ) {
                                     val routeW = (pipeline.routeMs / d).toFloat().coerceIn(0f, 1f)
                                     val connW = (pipeline.dnsOrConnectMs / d).toFloat().coerceIn(0f, 1f)
@@ -1422,17 +1454,19 @@ private fun PacketStreamTimelineBar(
     timelineBaseMs: Long,
     totalTimelineMs: Double,
 ) {
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
             .height(14.dp)
             .clip(RoundedCornerShape(3.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
     ) {
+        val totalWidth = maxWidth
         if (packets.isNotEmpty() && totalTimelineMs > 0) {
             packets.forEach { pkt ->
                 val offsetMs = (pkt.timestampMs - timelineBaseMs).coerceAtLeast(0L).toDouble()
                 val fraction = (offsetMs / totalTimelineMs).coerceIn(0.0, 0.98).toFloat()
+                val xPos = totalWidth * fraction
                 val color = when (pkt.frameType) {
                     "OPEN" -> ColorFrameOpen
                     "OPENRSP" -> ColorFrameOpenRsp
@@ -1442,20 +1476,11 @@ private fun PacketStreamTimelineBar(
                 }
                 Box(
                     modifier = Modifier
+                        .offset(x = xPos)
                         .fillMaxHeight()
-                        .width(4.dp)
-                        .padding(start = 0.dp)
-                        .align(Alignment.CenterStart)
-                        .fillMaxWidth(fraction = (fraction + 0.02f).coerceAtMost(1f))
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .width(3.dp)
-                            .align(Alignment.CenterEnd)
-                            .background(color)
-                    )
-                }
+                        .width(3.dp)
+                        .background(color)
+                )
             }
         }
     }

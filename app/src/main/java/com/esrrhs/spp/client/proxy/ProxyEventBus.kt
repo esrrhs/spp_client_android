@@ -100,7 +100,14 @@ object ProxyEventBus {
         val current = _pipelines.value.toMutableList()
         val index = current.indexOfFirst { it.id == pipeline.id }
         if (index >= 0) {
-            current[index] = pipeline
+            val existing = current[index]
+            // 保留已追加的 packetEvents，避免被传入的旧引用冲掉
+            val mergedPackets = if (pipeline.packetEvents.size >= existing.packetEvents.size) {
+                pipeline.packetEvents
+            } else {
+                existing.packetEvents
+            }
+            current[index] = pipeline.copy(packetEvents = mergedPackets)
         } else {
             current.add(pipeline)
             if (current.size > 200) {
@@ -202,8 +209,18 @@ object ProxyEventBus {
         val candidates = _pipelines.value.filter { hostEquals(it.host, targetHost) }
         if (candidates.isEmpty()) return null
         if (targetTimeMs <= 0L) return candidates.lastOrNull()
-        // 查找与 targetTimeMs 绝对差最小的连接（优先偏向在 request 发生之前或附近建立的连接）
-        return candidates.minByOrNull { kotlin.math.abs(it.startTimeMs - targetTimeMs) }
+
+        // 优先匹配在 request 发起附近（前后 5000ms）建立的连接
+        val closeCandidate = candidates
+            .filter { kotlin.math.abs(it.startTimeMs - targetTimeMs) <= 5000L }
+            .minByOrNull { kotlin.math.abs(it.startTimeMs - targetTimeMs) }
+        if (closeCandidate != null) return closeCandidate
+
+        // 若请求发生较晚（例如复用已有长连接），查找在请求发起之前建立且未过期的活跃连接
+        val activeOrEarlier = candidates
+            .filter { it.startTimeMs <= targetTimeMs }
+            .maxByOrNull { it.startTimeMs }
+        return activeOrEarlier ?: candidates.minByOrNull { kotlin.math.abs(it.startTimeMs - targetTimeMs) }
     }
 
     private fun hostEquals(a: String, b: String): Boolean =
