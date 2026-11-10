@@ -1,4 +1,4 @@
-• Added built-in Web Diagnosis with network waterfall timing and App internal proxy pipeline breakdown
+• Unified Diagnosis Timing: seamlessly integrate browser network timing with App internal routing/handshake/pipeline breakdown
 • Support built-in direct routing presets for multiple countries
 • Multilingual translations and in-app language switching
 • Dedicated DNS queries tab and connection lifecycle timing

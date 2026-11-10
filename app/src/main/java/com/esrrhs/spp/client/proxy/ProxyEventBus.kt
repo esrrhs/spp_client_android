@@ -163,6 +163,17 @@ object ProxyEventBus {
         return bestFailure ?: bestSuccess
     }
 
+    /**
+     * 查找与目标 host 匹配的最近一条内部管道时序记录（用于在网络时序列表中直接关联展示内核运转细节）。
+     */
+    fun findPipeline(host: String?): InternalPipelineTiming? {
+        if (host.isNullOrBlank()) return null
+        val targetHost = host.trimEnd('.')
+        return _pipelines.value.lastOrNull {
+            hostEquals(it.host, targetHost)
+        }
+    }
+
     private fun hostEquals(a: String, b: String): Boolean =
         a.equals(b, ignoreCase = true).let { eq ->
             if (eq) true else a.trimEnd('.').equals(b.trimEnd('.'), ignoreCase = true)

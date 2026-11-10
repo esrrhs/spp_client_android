@@ -297,9 +297,7 @@
     <string name="diag_go">Go</string>
     <string name="diag_refresh">Refresh</string>
     <string name="diag_toggle_devtools">Timing</string>
-    <string name="diag_tab_network">Network</string>
-    <string name="diag_tab_internal">Internal</string>
-    <string name="diag_tab_console">Console</string>
+    <string name="diag_tab_unified">Timing</string>
     <string name="diag_phase_dns">DNS</string>
     <string name="diag_phase_connect">Connect</string>
     <string name="diag_phase_ssl">SSL</string>
@@ -311,10 +309,9 @@
     <string name="diag_internal_handshake">Handshake</string>
     <string name="diag_internal_wait">Wait Pkt</string>
     <string name="diag_internal_pipe">Data Pipe</string>
-    <string name="diag_internal_detail_title">Pipeline Details</string>
-    <string name="diag_empty_internal">No events</string>
-    <string name="diag_empty_console">No logs</string>
     <string name="diag_timing_detail_title">Timing Details</string>
     <string name="diag_total_duration">Duration</string>
     <string name="diag_transfer_size">Transfer Size</string>
+    <string name="diag_internal_section_title">Internal Pipeline</string>
+    <string name="diag_browser_section_title">Browser Timing</string>
 </resources>
