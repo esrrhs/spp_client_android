@@ -149,6 +149,34 @@ fun DiagnosticBrowserScreen(
     val records by timingBridge.records.collectAsState()
     val internalPipelines by ProxyEventBus.pipelines.collectAsState()
 
+    val hasAbsoluteTiming = records.any { it.absoluteStartMs > 0L }
+    val (timelineBaseMs, totalTimelineMs) = remember(records, internalPipelines, userTriggerTimestampMs, hasAbsoluteTiming) {
+        if (hasAbsoluteTiming) {
+            val recordStarts = records.filter { it.absoluteStartMs > 0L }.map { it.absoluteStartMs }
+            val recordEnds = records.filter { it.absoluteStartMs > 0L }.map { it.absoluteStartMs + it.duration.toLong() }
+            val pipelineStarts = internalPipelines.filter { it.startTimeMs > 0L }.map { it.startTimeMs }
+            val pipelineEnds = internalPipelines.filter { it.startTimeMs > 0L }.map { it.startTimeMs + it.totalTime }
+
+            val allStarts = mutableListOf<Long>()
+            allStarts.addAll(recordStarts)
+            allStarts.addAll(pipelineStarts)
+            if (userTriggerTimestampMs > 0L) {
+                val minEvent = allStarts.minOrNull() ?: userTriggerTimestampMs
+                if (Math.abs(userTriggerTimestampMs - minEvent) < 30_000L) {
+                    allStarts.add(userTriggerTimestampMs)
+                }
+            }
+
+            val base = allStarts.minOrNull() ?: 0L
+            val maxEnd = (recordEnds + pipelineEnds).maxOrNull() ?: (base + 1000L)
+            val span = (maxEnd - base).coerceAtLeast(100L).toDouble()
+            Pair(base, span)
+        } else {
+            val span = records.maxOfOrNull { it.startTime + it.duration }?.coerceAtLeast(10.0) ?: 100.0
+            Pair(0L, span)
+        }
+    }
+
     var selectedRecord by remember { mutableStateOf<TimingRecord?>(null) }
     var selectedPipeline by remember { mutableStateOf<InternalPipelineTiming?>(null) }
 
@@ -400,6 +428,8 @@ fun DiagnosticBrowserScreen(
             record = rec,
             pipeline = matchedPipeline,
             traces = hostTraces,
+            timelineBaseMs = timelineBaseMs,
+            totalTimelineMs = totalTimelineMs,
             triggerTimeMs = userTriggerTimestampMs,
             onDismiss = { selectedRecord = null }
         )
@@ -746,6 +776,8 @@ private fun RecordDetailDialog(
     record: TimingRecord,
     pipeline: InternalPipelineTiming?,
     traces: List<InternalProxyTrace> = emptyList(),
+    timelineBaseMs: Long = 0L,
+    totalTimelineMs: Double = 100.0,
     triggerTimeMs: Long,
     onDismiss: () -> Unit,
 ) {
@@ -855,7 +887,7 @@ private fun RecordDetailDialog(
                     }
                 }
 
-                // 卡片 2: 浏览器网络时序卡片 (冷色调甘特图 + 阶段明细)
+                // 卡片 2: 上下平行的双层对比时序甘特图 (和诊断列表完全一致的双层物理时序对齐条，更宽更高更易读)
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
@@ -865,36 +897,172 @@ private fun RecordDetailDialog(
                             .fillMaxWidth()
                             .padding(14.dp)
                     ) {
+                        Text(
+                            text = "双层物理时序对齐视图",
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = "上层为浏览器网络阶段，下层为内部内核代理运转，横向基于真实时间物理对齐",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(12.dp))
+
+                        // 计算相对偏移量与比例
+                        val browserStartOffsetMs = if (timelineBaseMs > 0L && record.absoluteStartMs > 0L) {
+                            (record.absoluteStartMs - timelineBaseMs).coerceAtLeast(0L).toDouble()
+                        } else {
+                            record.startTime
+                        }
+                        val browserStartWeight = (browserStartOffsetMs / totalTimelineMs).coerceIn(0.0, 0.95).toFloat()
+                        val browserDurationWeight = (record.duration / totalTimelineMs).coerceIn(0.01, 1.0).toFloat()
+
+                        // 浏览器上层条标签 + 甘特条
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = stringResource(R.string.diag_browser_section_title),
-                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                text = "上层: 浏览器请求",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                 color = MaterialTheme.colorScheme.primary,
                             )
                             Text(
-                                text = "总耗时: ${record.duration.toInt()} ms",
-                                style = MaterialTheme.typography.titleSmall.copy(fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold),
+                                text = "${record.duration.toInt()} ms",
+                                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold),
                                 color = MaterialTheme.colorScheme.primary,
                             )
                         }
+                        Spacer(Modifier.height(4.dp))
+
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(18.dp)
+                                .clip(RoundedCornerShape(3.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .fillMaxWidth(fraction = (browserStartWeight + browserDurationWeight).coerceAtMost(1f))
+                                    .padding(start = (browserStartWeight * 260).coerceAtLeast(0f).dp)
+                            ) {
+                                if (record.duration > 0) {
+                                    val d = record.duration
+                                    val dnsW = (record.dnsDuration / d).toFloat().coerceIn(0f, 1f)
+                                    val connW = ((record.connectDuration - record.sslDuration).coerceAtLeast(0.0) / d).toFloat().coerceIn(0f, 1f)
+                                    val sslW = (record.sslDuration / d).toFloat().coerceIn(0f, 1f)
+                                    val ttfbW = (record.ttfb / d).toFloat().coerceIn(0f, 1f)
+                                    val downW = (record.downloadDuration / d).toFloat().coerceIn(0f, 1f)
+
+                                    if (dnsW > 0) Box(Modifier.fillMaxHeight().weight(dnsW).background(ColorDns))
+                                    if (connW > 0) Box(Modifier.fillMaxHeight().weight(connW).background(ColorConnect))
+                                    if (sslW > 0) Box(Modifier.fillMaxHeight().weight(sslW).background(ColorSsl))
+                                    if (ttfbW > 0) Box(Modifier.fillMaxHeight().weight(ttfbW).background(ColorTtfb))
+                                    if (downW > 0) Box(Modifier.fillMaxHeight().weight(downW).background(ColorDownload))
+
+                                    if (dnsW <= 0 && connW <= 0 && sslW <= 0 && ttfbW <= 0 && downW <= 0) {
+                                        Box(Modifier.fillMaxSize().background(ColorOther))
+                                    }
+                                } else {
+                                    Box(Modifier.fillMaxSize().background(ColorOther))
+                                }
+                            }
+                        }
+
                         Spacer(Modifier.height(10.dp))
 
-                        // 浏览器时序阶段水平连续甘特图条 (全宽充分展示)
-                        DetailProgressBar(
-                            items = listOf(
-                                ProgressSegment(stringResource(R.string.diag_phase_dns), record.dnsDuration, ColorDns),
-                                ProgressSegment(stringResource(R.string.diag_phase_connect), (record.connectDuration - record.sslDuration).coerceAtLeast(0.0), ColorConnect),
-                                ProgressSegment(stringResource(R.string.diag_phase_ssl), record.sslDuration, ColorSsl),
-                                ProgressSegment(stringResource(R.string.diag_phase_ttfb), record.ttfb, ColorTtfb),
-                                ProgressSegment(stringResource(R.string.diag_phase_download), record.downloadDuration, ColorDownload),
-                            ),
-                            totalDuration = record.duration
+                        // 内核底层条标签 + 甘特条 (与上层平行排列)
+                        if (pipeline != null && pipeline.totalTime > 0) {
+                            val pipeStartOffsetMs = if (timelineBaseMs > 0L && pipeline.startTimeMs > 0L) {
+                                (pipeline.startTimeMs - timelineBaseMs).coerceAtLeast(0L).toDouble()
+                            } else {
+                                browserStartOffsetMs
+                            }
+                            val pipeStartWeight = (pipeStartOffsetMs / totalTimelineMs).coerceIn(0.0, 0.95).toFloat()
+                            val pipeDurationWeight = (pipeline.totalTime.toDouble() / totalTimelineMs).coerceIn(0.01, 1.0).toFloat()
+                            val d = pipeline.totalTime.toDouble()
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "底层: 内核代理运转 (${if (pipeline.isDirect) "DIRECT" else "TUNNEL"})",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = ColorInternalTunnel,
+                                )
+                                Text(
+                                    text = "${pipeline.totalTime} ms",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold),
+                                    color = ColorInternalTunnel,
+                                )
+                            }
+                            Spacer(Modifier.height(4.dp))
+
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(14.dp)
+                                    .clip(RoundedCornerShape(3.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxHeight()
+                                        .fillMaxWidth(fraction = (pipeStartWeight + pipeDurationWeight).coerceAtMost(1f))
+                                        .padding(start = (pipeStartWeight * 260).coerceAtLeast(0f).dp)
+                                ) {
+                                    val routeW = (pipeline.routeMs / d).toFloat().coerceIn(0f, 1f)
+                                    val connW = (pipeline.dnsOrConnectMs / d).toFloat().coerceIn(0f, 1f)
+                                    val hsW = (pipeline.handshakeMs / d).toFloat().coerceIn(0f, 1f)
+                                    val waitW = (pipeline.waitFirstDataMs / d).toFloat().coerceIn(0f, 1f)
+                                    val pipeW = (pipeline.dataTransferMs / d).toFloat().coerceIn(0f, 1f)
+
+                                    if (routeW > 0) Box(Modifier.fillMaxHeight().weight(routeW).background(ColorInternalRoute))
+                                    if (connW > 0) Box(Modifier.fillMaxHeight().weight(connW).background(ColorInternalTunnel))
+                                    if (hsW > 0) Box(Modifier.fillMaxHeight().weight(hsW).background(ColorInternalHandshake))
+                                    if (waitW > 0) Box(Modifier.fillMaxHeight().weight(waitW).background(ColorInternalWait))
+                                    if (pipeW > 0) Box(Modifier.fillMaxHeight().weight(pipeW).background(ColorInternalPipe))
+
+                                    if (routeW <= 0 && connW <= 0 && hsW <= 0 && waitW <= 0 && pipeW <= 0) {
+                                        Box(Modifier.fillMaxSize().background(ColorOther))
+                                    }
+                                }
+                            }
+                        } else {
+                            Text(
+                                text = "无对应内核连接记录（可能直接命中浏览器/系统缓存）",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 11.sp,
+                            )
+                        }
+                    }
+                }
+
+                // 卡片 3: 上层浏览器阶段明细列表 (向下可滑动查看)
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp)
+                    ) {
+                        Text(
+                            text = stringResource(R.string.diag_browser_section_title),
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.primary,
                         )
-                        Spacer(Modifier.height(12.dp))
+                        Spacer(Modifier.height(8.dp))
 
                         DetailTimingRow(ColorDns, stringResource(R.string.diag_phase_dns), record.dnsDuration)
                         DetailTimingRow(ColorConnect, stringResource(R.string.diag_phase_connect), record.connectDuration)
@@ -906,7 +1074,7 @@ private fun RecordDetailDialog(
                     }
                 }
 
-                // 卡片 3: App 内部代理链路运转卡片 (暖色调甘特图 + 阶段明细)
+                // 卡片 4: 底层内核代理运转明细列表 (向下可滑动查看)
                 if (pipeline != null) {
                     Card(
                         modifier = Modifier.fillMaxWidth(),
@@ -928,31 +1096,12 @@ private fun RecordDetailDialog(
                                     color = ColorInternalTunnel,
                                 )
                                 Text(
-                                    text = "内核耗时: ${pipeline.totalTime} ms",
-                                    style = MaterialTheme.typography.titleSmall.copy(fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold),
-                                    color = ColorInternalTunnel,
+                                    text = if (pipeline.isDirect) "本地直连 (DIRECT)" else "SPP 代理隧道 (TUNNEL)",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = if (pipeline.isDirect) Color(0xFF2E7D32) else Color(0xFFEF6C00),
                                 )
                             }
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                text = if (pipeline.isDirect) "路由决策: 本地直连 (DIRECT)" else "路由决策: SPP 代理隧道 (TUNNEL)",
-                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
-                                color = if (pipeline.isDirect) Color(0xFF2E7D32) else Color(0xFFEF6C00),
-                            )
-                            Spacer(Modifier.height(10.dp))
-
-                            // 内核时序阶段水平连续甘特图条 (全宽充分展示)
-                            DetailProgressBar(
-                                items = listOf(
-                                    ProgressSegment(stringResource(R.string.diag_internal_route), pipeline.routeMs.toDouble(), ColorInternalRoute),
-                                    ProgressSegment(if (pipeline.isDirect) "本地建连" else stringResource(R.string.diag_internal_tunnel), pipeline.dnsOrConnectMs.toDouble(), ColorInternalTunnel),
-                                    ProgressSegment(stringResource(R.string.diag_internal_handshake), pipeline.handshakeMs.toDouble(), ColorInternalHandshake),
-                                    ProgressSegment(stringResource(R.string.diag_internal_wait), pipeline.waitFirstDataMs.toDouble(), ColorInternalWait),
-                                    ProgressSegment(stringResource(R.string.diag_internal_pipe), pipeline.dataTransferMs.toDouble(), ColorInternalPipe),
-                                ),
-                                totalDuration = pipeline.totalTime.toDouble()
-                            )
-                            Spacer(Modifier.height(12.dp))
+                            Spacer(Modifier.height(8.dp))
 
                             DetailTimingRow(ColorInternalRoute, stringResource(R.string.diag_internal_route), pipeline.routeMs.toDouble())
                             DetailTimingRow(ColorInternalTunnel, if (pipeline.isDirect) "目标 DNS / 本地建连" else stringResource(R.string.diag_internal_tunnel), pipeline.dnsOrConnectMs.toDouble())
@@ -984,7 +1133,7 @@ private fun RecordDetailDialog(
                     }
                 }
 
-                // 卡片 4: 细粒度内核运转时序与异常排查链路 (排查死锁/断连/重试/DNS失败)
+                // 卡片 5: 细粒度内核运转时序与异常排查链路 (向下可滑动查看)
                 if (traces.isNotEmpty()) {
                     Card(
                         modifier = Modifier.fillMaxWidth(),
