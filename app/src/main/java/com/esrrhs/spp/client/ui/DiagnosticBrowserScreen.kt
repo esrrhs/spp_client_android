@@ -110,6 +110,8 @@ import java.net.URI
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.runtime.mutableLongStateOf
 
 // 浏览器网络时序色彩（现代冷色调体系：青/蓝/紫/翠绿）
@@ -386,9 +388,18 @@ fun DiagnosticBrowserScreen(
             val host = runCatching { URI(rec.name).host }.getOrNull()
             ProxyEventBus.findPipeline(host, rec.absoluteStartMs)
         }
+        val hostTraces = remember(rec) {
+            val host = runCatching { URI(rec.name).host }.getOrNull()?.trimEnd('.').orEmpty()
+            if (host.isNotBlank()) {
+                ProxyEventBus.traces.value.filter {
+                    it.host.trimEnd('.').equals(host, ignoreCase = true)
+                }
+            } else emptyList()
+        }
         RecordDetailDialog(
             record = rec,
             pipeline = matchedPipeline,
+            traces = hostTraces,
             triggerTimeMs = userTriggerTimestampMs,
             onDismiss = { selectedRecord = null }
         )
@@ -729,170 +740,313 @@ private fun UnifiedWaterfallRow(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun RecordDetailDialog(
     record: TimingRecord,
     pipeline: InternalPipelineTiming?,
+    traces: List<InternalProxyTrace> = emptyList(),
     triggerTimeMs: Long,
     onDismiss: () -> Unit,
 ) {
-    androidx.compose.material3.AlertDialog(
+    Dialog(
         onDismissRequest = onDismiss,
-        title = {
-            Text(
-                text = stringResource(R.string.diag_timing_detail_title),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-            )
-        },
-        text = {
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = true,
+        ),
+    ) {
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = {
+                        Text(
+                            text = stringResource(R.string.diag_timing_detail_title),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = onDismiss) {
+                            Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.action_close))
+                        }
+                    },
+                )
+            }
+        ) { innerPadding ->
             Column(
                 modifier = Modifier
-                    .fillMaxWidth()
+                    .fillMaxSize()
+                    .padding(innerPadding)
                     .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                Text(
-                    text = record.name,
-                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                    color = MaterialTheme.colorScheme.primary,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Spacer(Modifier.height(10.dp))
-
-                // 回车触发时间相关分析
-                if (triggerTimeMs > 0L && record.absoluteStartMs > 0L) {
-                    val triggerDeltaMs = (record.absoluteStartMs - triggerTimeMs).coerceAtLeast(0L)
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                // 卡片 1: 基础请求概览与触发时差
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp)
                     ) {
                         Text(
-                            text = "从回车到本请求发起",
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
-                            color = ColorTrigger
+                            text = record.name,
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                            color = MaterialTheme.colorScheme.primary,
                         )
-                        Text(
-                            text = "+$triggerDeltaMs ms",
-                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold),
-                            color = ColorTrigger
-                        )
+                        Spacer(Modifier.height(8.dp))
+
+                        if (triggerTimeMs > 0L && record.absoluteStartMs > 0L) {
+                            val triggerDeltaMs = (record.absoluteStartMs - triggerTimeMs).coerceAtLeast(0L)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "从回车出发到本请求发起",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                                    color = ColorTrigger
+                                )
+                                Text(
+                                    text = "+$triggerDeltaMs ms",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold),
+                                    color = ColorTrigger
+                                )
+                            }
+                            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), thickness = 0.5.dp)
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "请求类型 / 协议",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = "${record.initiatorType.ifBlank { "resource" }} ${record.nextHopProtocol.let { if (it.isNotBlank()) "· $it" else "" }}",
+                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
+                            )
+                        }
+
+                        if (record.transferSize > 0) {
+                            Spacer(Modifier.height(4.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.diag_transfer_size),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = "${record.transferSize} bytes (解码 ${record.decodedBodySize} bytes)",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
+                                )
+                            }
+                        }
                     }
-                    Spacer(Modifier.height(8.dp))
                 }
 
-                // 浏览器网络时序部分
-                Text(
-                    text = stringResource(R.string.diag_browser_section_title),
-                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                    color = MaterialTheme.colorScheme.primary,
-                )
-                Spacer(Modifier.height(6.dp))
-
-                // 浏览器时序阶段水平连续甘特图条
-                DetailProgressBar(
-                    items = listOf(
-                        ProgressSegment(stringResource(R.string.diag_phase_dns), record.dnsDuration, ColorDns),
-                        ProgressSegment(stringResource(R.string.diag_phase_connect), (record.connectDuration - record.sslDuration).coerceAtLeast(0.0), ColorConnect),
-                        ProgressSegment(stringResource(R.string.diag_phase_ssl), record.sslDuration, ColorSsl),
-                        ProgressSegment(stringResource(R.string.diag_phase_ttfb), record.ttfb, ColorTtfb),
-                        ProgressSegment(stringResource(R.string.diag_phase_download), record.downloadDuration, ColorDownload),
-                    ),
-                    totalDuration = record.duration
-                )
-                Spacer(Modifier.height(8.dp))
-
-                DetailTimingRow(ColorDns, stringResource(R.string.diag_phase_dns), record.dnsDuration)
-                DetailTimingRow(ColorConnect, stringResource(R.string.diag_phase_connect), record.connectDuration)
-                if (record.sslDuration > 0) {
-                    DetailTimingRow(ColorSsl, stringResource(R.string.diag_phase_ssl), record.sslDuration, isSub = true)
-                }
-                DetailTimingRow(ColorTtfb, stringResource(R.string.diag_phase_ttfb), record.ttfb)
-                DetailTimingRow(ColorDownload, stringResource(R.string.diag_phase_download), record.downloadDuration)
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 4.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                // 卡片 2: 浏览器网络时序卡片 (冷色调甘特图 + 阶段明细)
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
                 ) {
-                    Text(text = stringResource(R.string.diag_total_duration), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall)
-                    Text(text = "${record.duration.toInt()} ms", fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
-                }
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = stringResource(R.string.diag_browser_section_title),
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                            Text(
+                                text = "总耗时: ${record.duration.toInt()} ms",
+                                style = MaterialTheme.typography.titleSmall.copy(fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                        Spacer(Modifier.height(10.dp))
 
-                if (record.transferSize > 0) {
-                    Spacer(Modifier.height(4.dp))
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text(text = stringResource(R.string.diag_transfer_size), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(text = "${record.transferSize} bytes", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-
-                // 如果关联到了内核运转记录，剖析展示内核运作各阶段
-                if (pipeline != null) {
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp))
-
-                    Text(
-                        text = stringResource(R.string.diag_internal_section_title),
-                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                        color = ColorInternalTunnel,
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = if (pipeline.isDirect) "路由决策: 本地直连 (DIRECT)" else "路由决策: SPP 代理隧道 (TUNNEL)",
-                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
-                        color = if (pipeline.isDirect) Color(0xFF2E7D32) else Color(0xFFEF6C00),
-                    )
-                    Spacer(Modifier.height(6.dp))
-
-                    // 内核时序阶段水平连续甘特图条
-                    DetailProgressBar(
-                        items = listOf(
-                            ProgressSegment(stringResource(R.string.diag_internal_route), pipeline.routeMs.toDouble(), ColorInternalRoute),
-                            ProgressSegment(if (pipeline.isDirect) "本地建连" else stringResource(R.string.diag_internal_tunnel), pipeline.dnsOrConnectMs.toDouble(), ColorInternalTunnel),
-                            ProgressSegment(stringResource(R.string.diag_internal_handshake), pipeline.handshakeMs.toDouble(), ColorInternalHandshake),
-                            ProgressSegment(stringResource(R.string.diag_internal_wait), pipeline.waitFirstDataMs.toDouble(), ColorInternalWait),
-                            ProgressSegment(stringResource(R.string.diag_internal_pipe), pipeline.dataTransferMs.toDouble(), ColorInternalPipe),
-                        ),
-                        totalDuration = pipeline.totalTime.toDouble()
-                    )
-                    Spacer(Modifier.height(8.dp))
-
-                    DetailTimingRow(ColorInternalRoute, stringResource(R.string.diag_internal_route), pipeline.routeMs.toDouble())
-                    DetailTimingRow(ColorInternalTunnel, if (pipeline.isDirect) "目标 DNS / 本地建连" else stringResource(R.string.diag_internal_tunnel), pipeline.dnsOrConnectMs.toDouble())
-                    DetailTimingRow(ColorInternalHandshake, stringResource(R.string.diag_internal_handshake), pipeline.handshakeMs.toDouble())
-                    DetailTimingRow(ColorInternalWait, stringResource(R.string.diag_internal_wait), pipeline.waitFirstDataMs.toDouble())
-                    DetailTimingRow(ColorInternalPipe, stringResource(R.string.diag_internal_pipe), pipeline.dataTransferMs.toDouble())
-
-                    Spacer(Modifier.height(4.dp))
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text(text = "内核总耗时", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall)
-                        Text(text = "${pipeline.totalTime} ms", fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
-                    }
-
-                    Spacer(Modifier.height(4.dp))
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text(text = "传输流量", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(text = "↑ ${pipeline.uploadBytes} B  ↓ ${pipeline.downloadBytes} B", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
-                    }
-
-                    if (!pipeline.errorReason.isNullOrBlank()) {
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            text = "错误原因: ${pipeline.errorReason}",
-                            style = MaterialTheme.typography.labelSmall.copy(color = Color(0xFFE53935)),
+                        // 浏览器时序阶段水平连续甘特图条 (全宽充分展示)
+                        DetailProgressBar(
+                            items = listOf(
+                                ProgressSegment(stringResource(R.string.diag_phase_dns), record.dnsDuration, ColorDns),
+                                ProgressSegment(stringResource(R.string.diag_phase_connect), (record.connectDuration - record.sslDuration).coerceAtLeast(0.0), ColorConnect),
+                                ProgressSegment(stringResource(R.string.diag_phase_ssl), record.sslDuration, ColorSsl),
+                                ProgressSegment(stringResource(R.string.diag_phase_ttfb), record.ttfb, ColorTtfb),
+                                ProgressSegment(stringResource(R.string.diag_phase_download), record.downloadDuration, ColorDownload),
+                            ),
+                            totalDuration = record.duration
                         )
+                        Spacer(Modifier.height(12.dp))
+
+                        DetailTimingRow(ColorDns, stringResource(R.string.diag_phase_dns), record.dnsDuration)
+                        DetailTimingRow(ColorConnect, stringResource(R.string.diag_phase_connect), record.connectDuration)
+                        if (record.sslDuration > 0) {
+                            DetailTimingRow(ColorSsl, stringResource(R.string.diag_phase_ssl), record.sslDuration, isSub = true)
+                        }
+                        DetailTimingRow(ColorTtfb, stringResource(R.string.diag_phase_ttfb), record.ttfb)
+                        DetailTimingRow(ColorDownload, stringResource(R.string.diag_phase_download), record.downloadDuration)
                     }
                 }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text(stringResource(R.string.action_close))
+
+                // 卡片 3: App 内部代理链路运转卡片 (暖色调甘特图 + 阶段明细)
+                if (pipeline != null) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.diag_internal_section_title),
+                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = ColorInternalTunnel,
+                                )
+                                Text(
+                                    text = "内核耗时: ${pipeline.totalTime} ms",
+                                    style = MaterialTheme.typography.titleSmall.copy(fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold),
+                                    color = ColorInternalTunnel,
+                                )
+                            }
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = if (pipeline.isDirect) "路由决策: 本地直连 (DIRECT)" else "路由决策: SPP 代理隧道 (TUNNEL)",
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                                color = if (pipeline.isDirect) Color(0xFF2E7D32) else Color(0xFFEF6C00),
+                            )
+                            Spacer(Modifier.height(10.dp))
+
+                            // 内核时序阶段水平连续甘特图条 (全宽充分展示)
+                            DetailProgressBar(
+                                items = listOf(
+                                    ProgressSegment(stringResource(R.string.diag_internal_route), pipeline.routeMs.toDouble(), ColorInternalRoute),
+                                    ProgressSegment(if (pipeline.isDirect) "本地建连" else stringResource(R.string.diag_internal_tunnel), pipeline.dnsOrConnectMs.toDouble(), ColorInternalTunnel),
+                                    ProgressSegment(stringResource(R.string.diag_internal_handshake), pipeline.handshakeMs.toDouble(), ColorInternalHandshake),
+                                    ProgressSegment(stringResource(R.string.diag_internal_wait), pipeline.waitFirstDataMs.toDouble(), ColorInternalWait),
+                                    ProgressSegment(stringResource(R.string.diag_internal_pipe), pipeline.dataTransferMs.toDouble(), ColorInternalPipe),
+                                ),
+                                totalDuration = pipeline.totalTime.toDouble()
+                            )
+                            Spacer(Modifier.height(12.dp))
+
+                            DetailTimingRow(ColorInternalRoute, stringResource(R.string.diag_internal_route), pipeline.routeMs.toDouble())
+                            DetailTimingRow(ColorInternalTunnel, if (pipeline.isDirect) "目标 DNS / 本地建连" else stringResource(R.string.diag_internal_tunnel), pipeline.dnsOrConnectMs.toDouble())
+                            DetailTimingRow(ColorInternalHandshake, stringResource(R.string.diag_internal_handshake), pipeline.handshakeMs.toDouble())
+                            DetailTimingRow(ColorInternalWait, stringResource(R.string.diag_internal_wait), pipeline.waitFirstDataMs.toDouble())
+                            DetailTimingRow(ColorInternalPipe, stringResource(R.string.diag_internal_pipe), pipeline.dataTransferMs.toDouble())
+
+                            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), thickness = 0.5.dp)
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(text = "传输流量", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(
+                                    text = "↑ ${pipeline.uploadBytes} B  ↓ ${pipeline.downloadBytes} B",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
+                                )
+                            }
+
+                            if (!pipeline.errorReason.isNullOrBlank()) {
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    text = "错误原因: ${pipeline.errorReason}",
+                                    style = MaterialTheme.typography.bodySmall.copy(color = Color(0xFFE53935)),
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // 卡片 4: 细粒度内核运转时序与异常排查链路 (排查死锁/断连/重试/DNS失败)
+                if (traces.isNotEmpty()) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp)
+                        ) {
+                            Text(
+                                text = "内核内部事件轨迹 (${traces.size} 条)",
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            traces.forEachIndexed { index, tr ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 3.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    val traceColor = if (tr.isError) Color(0xFFE53935) else when (tr.stage) {
+                                        "ROUTE" -> ColorInternalRoute
+                                        "UPSTREAM", "DIRECT", "DNS" -> ColorInternalTunnel
+                                        "HANDSHAKE" -> ColorInternalHandshake
+                                        "DATA" -> ColorInternalPipe
+                                        else -> ColorOther
+                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .size(7.dp)
+                                            .clip(CircleShape)
+                                            .background(traceColor)
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        text = tr.stage,
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                        fontSize = 10.sp,
+                                        color = traceColor,
+                                        modifier = Modifier.width(72.dp)
+                                    )
+                                    Text(
+                                        text = tr.detail,
+                                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                        fontSize = 11.sp,
+                                        color = if (tr.isError) Color(0xFFE53935) else MaterialTheme.colorScheme.onSurface,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                                if (index < traces.lastIndex) {
+                                    HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
-    )
+    }
 }
 
 @Composable

@@ -1,3 +1,4 @@
-• Visual Timing Breakdown: detail dialog now displays graphical Gantt bars showing phase sequences and proportions
+• Fullscreen Diagnosis Details: fullscreen view with vertical scrolling, displaying full URLs, visual Gantt bars, and internal kernel event traces
+• Visual Timing Breakdown: detail dialog displays graphical Gantt bars showing phase sequences and proportions
 • Color Separation: distinct cool tones for browser timing vs. warm amber/coral tones for kernel proxy stages
 • Real-time Alignment: timeline physically aligns user trigger, browser requests, and internal connections
