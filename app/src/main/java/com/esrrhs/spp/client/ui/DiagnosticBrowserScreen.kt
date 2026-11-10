@@ -306,7 +306,14 @@ fun DiagnosticBrowserScreen(
                                     leadingIcon = { Icon(Icons.Filled.Code, contentDescription = null, modifier = Modifier.size(16.dp)) }
                                 )
                             }
-                            IconButton(onClick = { timingBridge.clear(); selectedRecord = null }, modifier = Modifier.size(32.dp)) {
+                            IconButton(
+                                onClick = {
+                                    timingBridge.clear()
+                                    selectedRecord = null
+                                    webViewInstance?.evaluateJavascript("if (window.__clearTimingBuffer) window.__clearTimingBuffer();", null)
+                                },
+                                modifier = Modifier.size(32.dp)
+                            ) {
                                 Icon(Icons.Filled.Clear, contentDescription = stringResource(R.string.action_clear), modifier = Modifier.size(18.dp))
                             }
                             IconButton(onClick = {

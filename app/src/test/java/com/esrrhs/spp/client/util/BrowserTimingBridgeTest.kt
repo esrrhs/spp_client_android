@@ -79,4 +79,38 @@ class BrowserTimingBridgeTest {
         assertEquals("https://page1.com", bridge.records.value[0].pageUrl)
         assertEquals("https://page2.com", bridge.records.value[1].pageUrl)
     }
+
+    @Test
+    fun testClearPreventsReaddingPastRecordsOnSamePage() {
+        val bridge = BrowserTimingBridge()
+        val json = """
+            [
+                { "name": "https://page1.com/index.html", "initiatorType": "navigation", "startTime": 10.0, "duration": 100 },
+                { "name": "https://page1.com/style.css", "initiatorType": "link", "startTime": 20.0, "duration": 50 }
+            ]
+        """.trimIndent()
+
+        bridge.currentPageUrl = "https://page1.com"
+        bridge.postTimingData(json)
+        assertEquals(2, bridge.records.value.size)
+
+        // 用户点击清空
+        bridge.clear()
+        assertEquals(0, bridge.records.value.size)
+
+        // 页面未刷新的定时轮询再次推送相同的 json
+        bridge.postTimingData(json)
+        // 验证旧记录不会再重新冒出
+        assertEquals(0, bridge.records.value.size)
+
+        // 如果页面产生了新的后续请求（startTime 更大）
+        val jsonNew = """
+            [
+                { "name": "https://page1.com/dynamic.js", "initiatorType": "script", "startTime": 30.0, "duration": 80 }
+            ]
+        """.trimIndent()
+        bridge.postTimingData(jsonNew)
+        assertEquals(1, bridge.records.value.size)
+        assertEquals("https://page1.com/dynamic.js", bridge.records.value[0].name)
+    }
 }

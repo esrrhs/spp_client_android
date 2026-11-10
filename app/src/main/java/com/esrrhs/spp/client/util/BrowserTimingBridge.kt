@@ -26,14 +26,23 @@ class BrowserTimingBridge {
     @Volatile
     var currentPageUrl: String = ""
 
+    // 记录用户手动点击「清空」时各页面的最后已清空时间戳（毫秒）
+    private val clearedPageTimeMap = java.util.concurrent.ConcurrentHashMap<String, Double>()
+
     @JavascriptInterface
     fun postTimingData(jsonString: String) {
         val list = parseTimingJson(jsonString)
         if (list.isEmpty()) return
 
         val page = currentPageUrl
-        // 为新来的记录打上对应的页面 URL，并合并到历史记录中（按 name + startTime 去重）
-        val incoming = list.map { it.copy(pageUrl = page) }
+        val minStartTime = clearedPageTimeMap[page] ?: -1.0
+
+        // 过滤掉清空前已经开始的旧请求（如果页面未刷新，其 startTime 必然小于清空时刻的相对时间）
+        // 并为新来的记录打上对应的页面 URL
+        val incoming = list
+            .filter { it.startTime > minStartTime }
+            .map { it.copy(pageUrl = page) }
+        if (incoming.isEmpty()) return
         val current = _records.value
         val merged = current.toMutableList()
         val existingKeys = HashSet<String>(current.size)
@@ -79,6 +88,13 @@ class BrowserTimingBridge {
     }
 
     fun clear() {
+        // 记录当前页面已经加载到的最大 startTime，后续同一页面的旧性能条目不再重新采入
+        val page = currentPageUrl
+        val currentMaxStartTime = _records.value
+            .filter { it.pageUrl == page }
+            .maxOfOrNull { it.startTime } ?: 0.0
+        clearedPageTimeMap[page] = currentMaxStartTime
+
         _records.value = emptyList()
         _logs.value = emptyList()
     }
@@ -185,6 +201,15 @@ class BrowserTimingBridge {
                 // 定时轮询 + 监听完成
                 setInterval(window.__collectTiming, 1000);
                 window.addEventListener('load', window.__collectTiming);
+
+                // 提供给 Android 客户端直接清空前端 Performance Buffer 的方法
+                window.__clearTimingBuffer = function() {
+                    try {
+                        if (window.performance && window.performance.clearResourceTimings) {
+                            window.performance.clearResourceTimings();
+                        }
+                    } catch (e) {}
+                };
             })();
         """
 
