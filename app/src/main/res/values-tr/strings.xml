@@ -306,6 +306,12 @@ Ayrıca tek dokunuşla kontrol için \"SPP VPN\" Hızlı Ayarlar kutucuğunu ter
     <string name="diag_phase_ttfb">TTFB</string>
     <string name="diag_phase_download">Download</string>
     <string name="diag_empty_network">No network requests</string>
+        <string name="diag_internal_route">Route</string>
+    <string name="diag_internal_tunnel">Tunnel</string>
+    <string name="diag_internal_handshake">Handshake</string>
+    <string name="diag_internal_wait">Wait Pkt</string>
+    <string name="diag_internal_pipe">Data Pipe</string>
+    <string name="diag_internal_detail_title">Pipeline Details</string>
     <string name="diag_empty_internal">No events</string>
     <string name="diag_empty_console">No logs</string>
     <string name="diag_timing_detail_title">Timing Details</string>

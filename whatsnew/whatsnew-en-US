@@ -1,4 +1,4 @@
-• Added built-in Web Diagnosis with network waterfall timing (DNS, TCP, SSL, TTFB, and Console logs)
+• Added built-in Web Diagnosis with network waterfall timing and App internal proxy pipeline breakdown
 • Support built-in direct routing presets for multiple countries
 • Multilingual translations and in-app language switching
 • Dedicated DNS queries tab and connection lifecycle timing

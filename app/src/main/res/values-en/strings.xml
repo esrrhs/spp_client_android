@@ -330,10 +330,16 @@
     <string name="diag_phase_ssl">SSL/TLS</string>
     <string name="diag_phase_ttfb">Waiting (TTFB)</string>
     <string name="diag_phase_download">Download</string>
+    <string name="diag_internal_route">Routing</string>
+    <string name="diag_internal_tunnel">Tunnel Connect</string>
+    <string name="diag_internal_handshake">Handshake</string>
+    <string name="diag_internal_wait">Wait First Pkt</string>
+    <string name="diag_internal_pipe">Data Transfer</string>
     <string name="diag_empty_network">No requests yet. Enter a URL to test.</string>
-    <string name="diag_empty_internal">No internal proxy events</string>
+    <string name="diag_empty_internal">No internal proxy records</string>
     <string name="diag_empty_console">No console logs</string>
     <string name="diag_timing_detail_title">Timing Details</string>
+    <string name="diag_internal_detail_title">Internal Pipeline Details</string>
     <string name="diag_total_duration">Total Duration</string>
     <string name="diag_transfer_size">Transfer Size</string>
 

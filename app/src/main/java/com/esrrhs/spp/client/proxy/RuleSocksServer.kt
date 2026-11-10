@@ -259,24 +259,45 @@ class RuleSocksServer(
         out: OutputStream,
         client: Socket,
     ) {
-        val ruleDirect = shouldDirect(req.host, req.atyp)
         val started = System.currentTimeMillis()
+        var timing = InternalPipelineTiming(
+            host = req.host,
+            port = req.port,
+            isDirect = false,
+            startTimeMs = started,
+            status = "CONNECTING",
+        )
+        ProxyEventBus.updatePipeline(timing)
+
+        val routeStart = System.currentTimeMillis()
+        val ruleDirect = shouldDirect(req.host, req.atyp)
+        val routeDuration = (System.currentTimeMillis() - routeStart).coerceAtLeast(0L)
+        timing = timing.copy(
+            isDirect = ruleDirect,
+            routeMs = routeDuration,
+        )
+        ProxyEventBus.updatePipeline(timing)
 
         ProxyEventBus.logTrace(
             stage = "ROUTE",
             host = req.host,
             port = req.port,
-            detail = "Received CONNECT request. Decision: ${if (ruleDirect) "DIRECT" else "PROXY"}"
+            detail = "Received CONNECT request. Decision: ${if (ruleDirect) "DIRECT" else "PROXY"} (${routeDuration}ms)"
         )
 
         val inDirectPenalty = ruleDirect && isDirectPenalized(req.host)
         var directFailReason: String? = null
         var target: Socket? = null
+        val connStart = System.currentTimeMillis()
+
         if (ruleDirect && !inDirectPenalty) {
             ProxyEventBus.logTrace("DIRECT", req.host, req.port, "Resolving DNS and opening direct socket...")
             try {
                 target = openConnected(req.host, req.port)
-                ProxyEventBus.logTrace("DIRECT", req.host, req.port, "Direct connection established in ${System.currentTimeMillis() - started}ms")
+                val directConnMs = (System.currentTimeMillis() - connStart).coerceAtLeast(0L)
+                timing = timing.copy(dnsOrConnectMs = directConnMs)
+                ProxyEventBus.updatePipeline(timing)
+                ProxyEventBus.logTrace("DIRECT", req.host, req.port, "Direct connection established in ${directConnMs}ms")
             } catch (e: Exception) {
                 directFailReason = e.message ?: e.javaClass.simpleName
                 markDirectPenalized(req.host)
@@ -290,13 +311,26 @@ class RuleSocksServer(
         val usedDirect = target != null
 
         if (target == null) {
+            timing = timing.copy(isDirect = false)
             ProxyEventBus.logTrace("UPSTREAM", req.host, req.port, "Forwarding CONNECT to SPP/Socks upstream...")
+            val upstreamStart = System.currentTimeMillis()
             target = try {
                 val sock = connectUpstream(req)
-                ProxyEventBus.logTrace("UPSTREAM", req.host, req.port, "Upstream tunnel CONNECT success in ${System.currentTimeMillis() - started}ms")
+                val upstreamMs = (System.currentTimeMillis() - upstreamStart).coerceAtLeast(0L)
+                timing = timing.copy(dnsOrConnectMs = upstreamMs)
+                ProxyEventBus.updatePipeline(timing)
+                ProxyEventBus.logTrace("UPSTREAM", req.host, req.port, "Upstream tunnel CONNECT success in ${upstreamMs}ms")
                 sock
             } catch (e: Exception) {
                 val reason = e.message ?: e.javaClass.simpleName
+                val upstreamMs = (System.currentTimeMillis() - upstreamStart).coerceAtLeast(0L)
+                timing = timing.copy(
+                    dnsOrConnectMs = upstreamMs,
+                    totalDurationMs = System.currentTimeMillis() - started,
+                    status = "ERROR",
+                    errorReason = reason,
+                )
+                ProxyEventBus.updatePipeline(timing)
                 ProxyEventBus.logTrace("UPSTREAM", req.host, req.port, "Upstream CONNECT failed: $reason", isError = true)
                 Log.w(TAG, "connect ${req.host}:${req.port} (direct=$ruleDirect) failed: $reason")
                 recordEvent(
@@ -323,20 +357,33 @@ class RuleSocksServer(
             directFailReason?.let { "direct failed -> proxy ($it)" },
             started,
         )
+        val handshakeStart = System.currentTimeMillis()
         try {
             out.write(Socks5Codec.successReply("0.0.0.0", 0))
             out.flush()
-            ProxyEventBus.logTrace("HANDSHAKE", req.host, req.port, "Replied SUCCESS to client. Starting bidirectional data piping.")
+            val handshakeMs = (System.currentTimeMillis() - handshakeStart).coerceAtLeast(0L)
+            timing = timing.copy(
+                handshakeMs = handshakeMs,
+                status = "ACTIVE",
+            )
+            ProxyEventBus.updatePipeline(timing)
+            ProxyEventBus.logTrace("HANDSHAKE", req.host, req.port, "Replied SUCCESS to client in ${handshakeMs}ms. Starting bidirectional data piping.")
         } catch (e: Exception) {
             // 客户端可能在我们建连期间已经 RST 走人：target 已连接成功，
             // 不关掉就是永久 fd 泄漏（handleClient 的 finally 只关 client）。
+            timing = timing.copy(
+                totalDurationMs = System.currentTimeMillis() - started,
+                status = "ERROR",
+                errorReason = "Client disconnected: ${e.message}",
+            )
+            ProxyEventBus.updatePipeline(timing)
             ProxyEventBus.logTrace("HANDSHAKE", req.host, req.port, "Client disconnected before reply: ${e.message}", isError = true)
             Log.v(TAG, "client gone before CONNECT reply, closing target: ${e.message}")
             runCatching { target.close() }
             return
         }
         client.soTimeout = 0 // 进入双向转发：copyDirection 的读必须无限阻塞
-        awaitPipe(client, target, req.host, req.port)
+        awaitPipe(client, target, timing)
     }
 
     /**
@@ -447,7 +494,7 @@ class RuleSocksServer(
      * 但保留反向继续传输的能力（严格兼容 HTTP/2 和 gRPC 双向流）。
      * 当双向转发全部完成，或者发生底层异常时，统一关闭两端 Socket。
      */
-    private fun awaitPipe(a: Socket, b: Socket, host: String = "", port: Int = 0) {
+    private fun awaitPipe(a: Socket, b: Socket, initialTiming: InternalPipelineTiming) {
         runCatching {
             a.sendBufferSize = TCP_SOCKET_BUFFER
             a.receiveBufferSize = TCP_SOCKET_BUFFER
@@ -455,12 +502,31 @@ class RuleSocksServer(
             b.receiveBufferSize = TCP_SOCKET_BUFFER
         }
         val latch = java.util.concurrent.CountDownLatch(2)
+        val pipeStart = System.currentTimeMillis()
+        val uploadBytes = java.util.concurrent.atomic.AtomicLong(0L)
+        val downloadBytes = java.util.concurrent.atomic.AtomicLong(0L)
+        val firstDataTime = java.util.concurrent.atomic.AtomicLong(0L)
 
         val forwardDirection = { from: Socket, to: Socket, isUpload: Boolean ->
             var totalBytes = 0L
             try {
-                totalBytes = copyDirectionCounting(from, to)
+                totalBytes = copyDirectionCounting(from, to) { firstBytesReceived ->
+                    if (firstDataTime.compareAndSet(0L, System.currentTimeMillis())) {
+                        val waitFirstMs = (System.currentTimeMillis() - pipeStart).coerceAtLeast(0L)
+                        ProxyEventBus.updatePipeline(
+                            initialTiming.copy(
+                                waitFirstDataMs = waitFirstMs,
+                                status = "TRANSFERRING",
+                            )
+                        )
+                    }
+                }
             } finally {
+                if (isUpload) {
+                    uploadBytes.set(totalBytes)
+                } else {
+                    downloadBytes.set(totalBytes)
+                }
                 // 该方向读取结束，通知目标端此方向已无新数据 (发送 TCP FIN)
                 runCatching {
                     if (!to.isClosed && !to.isOutputShutdown) {
@@ -469,8 +535,8 @@ class RuleSocksServer(
                 }
                 ProxyEventBus.logTrace(
                     stage = "DATA",
-                    host = host,
-                    port = port,
+                    host = initialTiming.host,
+                    port = initialTiming.port,
                     detail = if (isUpload) "Upload FIN: $totalBytes bytes sent" else "Download FIN: $totalBytes bytes received"
                 )
                 latch.countDown()
@@ -488,12 +554,29 @@ class RuleSocksServer(
         } finally {
             runCatching { a.close() }
             runCatching { b.close() }
-            ProxyEventBus.logTrace("CLOSE", host, port, "Connection closed")
+            val now = System.currentTimeMillis()
+            val totalMs = now - initialTiming.startTimeMs
+            val transferMs = (now - pipeStart).coerceAtLeast(0L)
+            val waitMs = if (firstDataTime.get() > 0L) (firstDataTime.get() - pipeStart).coerceAtLeast(0L) else transferMs
+            val pureDataMs = (transferMs - waitMs).coerceAtLeast(0L)
+
+            ProxyEventBus.updatePipeline(
+                initialTiming.copy(
+                    waitFirstDataMs = waitMs,
+                    dataTransferMs = pureDataMs,
+                    totalDurationMs = totalMs,
+                    uploadBytes = uploadBytes.get(),
+                    downloadBytes = downloadBytes.get(),
+                    status = "CLOSED",
+                )
+            )
+            ProxyEventBus.logTrace("CLOSE", initialTiming.host, initialTiming.port, "Connection closed. Duration: ${totalMs}ms, ↑${uploadBytes.get()}B ↓${downloadBytes.get()}B")
         }
     }
 
-    private fun copyDirectionCounting(from: Socket, to: Socket): Long {
+    private fun copyDirectionCounting(from: Socket, to: Socket, onFirstRead: ((Int) -> Unit)? = null): Long {
         var count = 0L
+        var firstReadReported = false
         try {
             val buf = ByteArray(BUFFER_SIZE)
             val input = from.getInputStream()
@@ -501,6 +584,10 @@ class RuleSocksServer(
             while (running.get() && !from.isClosed && !to.isClosed) {
                 val n = input.read(buf)
                 if (n < 0) break // 读到 EOF
+                if (!firstReadReported && n > 0) {
+                    firstReadReported = true
+                    onFirstRead?.invoke(n)
+                }
                 out.write(buf, 0, n)
                 out.flush()
                 count += n

@@ -49,8 +49,6 @@ import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Timeline
-import com.esrrhs.spp.client.proxy.InternalProxyTrace
-import com.esrrhs.spp.client.proxy.ProxyEventBus
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.BottomSheetDefaults
@@ -97,6 +95,9 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.esrrhs.spp.client.R
 import com.esrrhs.spp.client.data.TimingRecord
+import com.esrrhs.spp.client.proxy.InternalPipelineTiming
+import com.esrrhs.spp.client.proxy.InternalProxyTrace
+import com.esrrhs.spp.client.proxy.ProxyEventBus
 import com.esrrhs.spp.client.util.BrowserTimingBridge
 import com.esrrhs.spp.client.vpn.ActiveSession
 import androidx.webkit.ProxyConfig
@@ -114,6 +115,13 @@ private val ColorSsl = Color(0xFF8E24AA)       // 紫色: SSL/TLS
 private val ColorTtfb = Color(0xFF43A047)      // 绿色: 等待首字节 (TTFB)
 private val ColorDownload = Color(0xFF00ACC1)  // 青色: 下载
 private val ColorOther = Color(0xFF757575)     // 灰色: 排队/其他
+
+// 内部代理链路阶段色彩
+private val ColorInternalRoute = Color(0xFF3F51B5)      // 靛蓝: 分流路由判定
+private val ColorInternalTunnel = Color(0xFFFF9800)     // 橙色: 上游隧道建连
+private val ColorInternalHandshake = Color(0xFF9C27B0)  // 紫色: SOCKS5 握手
+private val ColorInternalWait = Color(0xFF4CAF50)       // 绿色: 等待首包 (TTFB)
+private val ColorInternalPipe = Color(0xFF00BCD4)       // 青蓝: 双向数据转发
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -133,9 +141,10 @@ fun DiagnosticBrowserScreen(
     val timingBridge = remember { BrowserTimingBridge() }
     val records by timingBridge.records.collectAsState()
     val consoleLogs by timingBridge.logs.collectAsState()
-    val internalTraces by ProxyEventBus.traces.collectAsState()
+    val internalPipelines by ProxyEventBus.pipelines.collectAsState()
 
     var selectedRecord by remember { mutableStateOf<TimingRecord?>(null) }
+    var selectedPipeline by remember { mutableStateOf<InternalPipelineTiming?>(null) }
 
     BackHandler {
         if (webViewInstance?.canGoBack() == true) {
@@ -306,7 +315,7 @@ fun DiagnosticBrowserScreen(
                                 FilterChip(
                                     selected = selectedTab == 1,
                                     onClick = { selectedTab = 1 },
-                                    label = { Text("${stringResource(R.string.diag_tab_internal)} (${internalTraces.size})") },
+                                    label = { Text("${stringResource(R.string.diag_tab_internal)} (${internalPipelines.size})") },
                                     leadingIcon = { Icon(Icons.Filled.Memory, contentDescription = null, modifier = Modifier.size(16.dp)) },
                                     modifier = Modifier.padding(end = 6.dp)
                                 )
@@ -340,7 +349,7 @@ fun DiagnosticBrowserScreen(
                         }
 
                         // 阶段色彩图例
-                        TimingLegendBar()
+                        TimingLegendBar(selectedTab = selectedTab)
 
                         HorizontalDivider()
 
@@ -351,7 +360,11 @@ fun DiagnosticBrowserScreen(
                                 selected = selectedRecord,
                                 onSelect = { selectedRecord = it }
                             )
-                            1 -> InternalTracesTab(traces = internalTraces)
+                            1 -> InternalPipelineWaterfallTab(
+                                pipelines = internalPipelines,
+                                selected = selectedPipeline,
+                                onSelect = { selectedPipeline = it }
+                            )
                             2 -> ConsoleLogsTab(logs = consoleLogs)
                         }
                     }
@@ -364,10 +377,15 @@ fun DiagnosticBrowserScreen(
     if (selectedRecord != null) {
         RecordDetailDialog(record = selectedRecord!!, onDismiss = { selectedRecord = null })
     }
+
+    // 内核链路详情弹出框
+    if (selectedPipeline != null) {
+        PipelineDetailDialog(pipeline = selectedPipeline!!, onDismiss = { selectedPipeline = null })
+    }
 }
 
 @Composable
-private fun TimingLegendBar() {
+private fun TimingLegendBar(selectedTab: Int) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -376,11 +394,19 @@ private fun TimingLegendBar() {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        LegendDot(ColorDns, stringResource(R.string.diag_phase_dns))
-        LegendDot(ColorConnect, stringResource(R.string.diag_phase_connect))
-        LegendDot(ColorSsl, stringResource(R.string.diag_phase_ssl))
-        LegendDot(ColorTtfb, stringResource(R.string.diag_phase_ttfb))
-        LegendDot(ColorDownload, stringResource(R.string.diag_phase_download))
+        if (selectedTab == 1) {
+            LegendDot(ColorInternalRoute, stringResource(R.string.diag_internal_route))
+            LegendDot(ColorInternalTunnel, stringResource(R.string.diag_internal_tunnel))
+            LegendDot(ColorInternalHandshake, stringResource(R.string.diag_internal_handshake))
+            LegendDot(ColorInternalWait, stringResource(R.string.diag_internal_wait))
+            LegendDot(ColorInternalPipe, stringResource(R.string.diag_internal_pipe))
+        } else {
+            LegendDot(ColorDns, stringResource(R.string.diag_phase_dns))
+            LegendDot(ColorConnect, stringResource(R.string.diag_phase_connect))
+            LegendDot(ColorSsl, stringResource(R.string.diag_phase_ssl))
+            LegendDot(ColorTtfb, stringResource(R.string.diag_phase_ttfb))
+            LegendDot(ColorDownload, stringResource(R.string.diag_phase_download))
+        }
     }
 }
 
@@ -546,6 +572,208 @@ private fun WaterfallRow(
             modifier = Modifier.width(52.dp)
         )
     }
+}
+
+@Composable
+private fun InternalPipelineWaterfallTab(
+    pipelines: List<InternalPipelineTiming>,
+    selected: InternalPipelineTiming?,
+    onSelect: (InternalPipelineTiming) -> Unit,
+) {
+    if (pipelines.isEmpty()) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = stringResource(R.string.diag_empty_internal),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        return
+    }
+
+    val maxTimelineMs = remember(pipelines) {
+        pipelines.maxOfOrNull { it.totalTime }?.coerceAtLeast(10L)?.toDouble() ?: 100.0
+    }
+
+    LazyColumn(modifier = Modifier.fillMaxSize()) {
+        items(pipelines.reversed(), key = { it.id }) { p ->
+            PipelineWaterfallRow(
+                pipeline = p,
+                totalTimelineMs = maxTimelineMs,
+                isSelected = p == selected,
+                onClick = { onSelect(p) }
+            )
+            HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+        }
+    }
+}
+
+@Composable
+private fun PipelineWaterfallRow(
+    pipeline: InternalPipelineTiming,
+    totalTimelineMs: Double,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+) {
+    val totalTime = pipeline.totalTime.toDouble()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .background(if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f) else Color.Transparent)
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.width(110.dp)) {
+            Text(
+                text = "${pipeline.host}:${pipeline.port}",
+                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = if (pipeline.isDirect) "DIRECT" else "TUNNEL",
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                    fontSize = 9.sp,
+                    color = if (pipeline.isDirect) Color(0xFF2E7D32) else Color(0xFFEF6C00),
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    text = pipeline.status,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontSize = 9.sp,
+                    color = when (pipeline.status) {
+                        "ERROR" -> Color(0xFFE53935)
+                        "ACTIVE", "TRANSFERRING" -> Color(0xFF1E88E5)
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+            }
+        }
+
+        Spacer(Modifier.width(8.dp))
+
+        // 可视化时序条 (甘特图分段)
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .height(18.dp)
+                .clip(RoundedCornerShape(3.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+        ) {
+            val durationWeight = (totalTime / totalTimelineMs).coerceIn(0.02, 1.0).toFloat()
+
+            Row(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(fraction = durationWeight)
+            ) {
+                if (totalTime > 0) {
+                    val d = totalTime
+                    val routeW = (pipeline.routeMs / d).toFloat().coerceIn(0f, 1f)
+                    val connW = (pipeline.dnsOrConnectMs / d).toFloat().coerceIn(0f, 1f)
+                    val hsW = (pipeline.handshakeMs / d).toFloat().coerceIn(0f, 1f)
+                    val waitW = (pipeline.waitFirstDataMs / d).toFloat().coerceIn(0f, 1f)
+                    val pipeW = (pipeline.dataTransferMs / d).toFloat().coerceIn(0f, 1f)
+
+                    if (routeW > 0) Box(Modifier.fillMaxHeight().weight(routeW).background(ColorInternalRoute))
+                    if (connW > 0) Box(Modifier.fillMaxHeight().weight(connW).background(ColorInternalTunnel))
+                    if (hsW > 0) Box(Modifier.fillMaxHeight().weight(hsW).background(ColorInternalHandshake))
+                    if (waitW > 0) Box(Modifier.fillMaxHeight().weight(waitW).background(ColorInternalWait))
+                    if (pipeW > 0) Box(Modifier.fillMaxHeight().weight(pipeW).background(ColorInternalPipe))
+
+                    if (routeW <= 0 && connW <= 0 && hsW <= 0 && waitW <= 0 && pipeW <= 0) {
+                        Box(Modifier.fillMaxSize().background(ColorOther))
+                    }
+                } else {
+                    Box(Modifier.fillMaxSize().background(ColorOther))
+                }
+            }
+        }
+
+        Spacer(Modifier.width(8.dp))
+
+        // 总耗时数字
+        Text(
+            text = "${totalTime.toInt()} ms",
+            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+            fontSize = 11.sp,
+            modifier = Modifier.width(52.dp)
+        )
+    }
+}
+
+@Composable
+private fun PipelineDetailDialog(
+    pipeline: InternalPipelineTiming,
+    onDismiss: () -> Unit,
+) {
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = stringResource(R.string.diag_internal_detail_title),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+            )
+        },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "${pipeline.host}:${pipeline.port}",
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = if (pipeline.isDirect) "路由决策: 本地直连 (DIRECT)" else "路由决策: SPP 代理隧道 (TUNNEL)",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Medium),
+                        color = if (pipeline.isDirect) Color(0xFF2E7D32) else Color(0xFFEF6C00),
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+
+                DetailTimingRow(ColorInternalRoute, stringResource(R.string.diag_internal_route), pipeline.routeMs.toDouble())
+                DetailTimingRow(ColorInternalTunnel, if (pipeline.isDirect) "目标 DNS / 本地建连" else stringResource(R.string.diag_internal_tunnel), pipeline.dnsOrConnectMs.toDouble())
+                DetailTimingRow(ColorInternalHandshake, stringResource(R.string.diag_internal_handshake), pipeline.handshakeMs.toDouble())
+                DetailTimingRow(ColorInternalWait, stringResource(R.string.diag_internal_wait), pipeline.waitFirstDataMs.toDouble())
+                DetailTimingRow(ColorInternalPipe, stringResource(R.string.diag_internal_pipe), pipeline.dataTransferMs.toDouble())
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(text = stringResource(R.string.diag_total_duration), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+                    Text(text = "${pipeline.totalTime} ms", fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodyMedium)
+                }
+
+                Spacer(Modifier.height(6.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(text = "传输流量", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(text = "↑ ${pipeline.uploadBytes} B  ↓ ${pipeline.downloadBytes} B", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                }
+
+                if (!pipeline.errorReason.isNullOrBlank()) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = "错误原因: ${pipeline.errorReason}",
+                        style = MaterialTheme.typography.labelSmall.copy(color = Color(0xFFE53935)),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.action_close))
+            }
+        }
+    )
 }
 
 @Composable

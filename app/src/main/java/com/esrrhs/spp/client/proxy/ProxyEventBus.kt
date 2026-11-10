@@ -6,12 +6,43 @@ import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.ConcurrentLinkedQueue
 
 /**
+ * 结构化的内部代理管道时序记录（用于渲染可视化瀑布图/甘特图）。
+ * 剖析每个连接在各个内部阶段的耗时与传输情况：
+ * - 规则路由 (Route)
+ * - 目标 DNS 解析 / 直连建连 (DNS / Direct Connect)
+ * - 上游隧道建连 (Upstream Connect)
+ * - 隧道协议握手 (Handshake)
+ * - 等待首包响应 / TTFB (Waiting first packet)
+ * - 数据传输与双向关闭 (Data Piping & Close)
+ */
+data class InternalPipelineTiming(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val host: String,
+    val port: Int,
+    val isDirect: Boolean,
+    val startTimeMs: Long = System.currentTimeMillis(),
+    val routeMs: Long = 0L,
+    val dnsOrConnectMs: Long = 0L,
+    val handshakeMs: Long = 0L,
+    val waitFirstDataMs: Long = 0L,
+    val dataTransferMs: Long = 0L,
+    val totalDurationMs: Long = 0L,
+    val uploadBytes: Long = 0L,
+    val downloadBytes: Long = 0L,
+    val status: String = "ACTIVE", // CONNECTING, ACTIVE, CLOSED, ERROR
+    val errorReason: String? = null,
+) {
+    val totalTime: Long
+        get() = if (totalDurationMs > 0) totalDurationMs else (System.currentTimeMillis() - startTimeMs).coerceAtLeast(1L)
+}
+
+/**
  * 细粒度的代理内部运转事件（用于诊断分析 App 内部到底卡在哪个阶段、发了什么、收了什么）。
  */
 data class InternalProxyTrace(
     val id: String = java.util.UUID.randomUUID().toString(),
     val timestampMs: Long = System.currentTimeMillis(),
-    val stage: String,     // e.g., "DNS", "HANDSHAKE", "UPSTREAM", "DIRECT", "DATA", "CLOSE"
+    val stage: String,     // e.g., "ROUTE", "DNS", "HANDSHAKE", "UPSTREAM", "DIRECT", "DATA", "CLOSE"
     val host: String,
     val port: Int,
     val detail: String,
@@ -47,6 +78,23 @@ object ProxyEventBus {
     private val _traces = MutableStateFlow<List<InternalProxyTrace>>(emptyList())
     val traces: StateFlow<List<InternalProxyTrace>> = _traces.asStateFlow()
 
+    private val _pipelines = MutableStateFlow<List<InternalPipelineTiming>>(emptyList())
+    val pipelines: StateFlow<List<InternalPipelineTiming>> = _pipelines.asStateFlow()
+
+    fun updatePipeline(pipeline: InternalPipelineTiming) {
+        val current = _pipelines.value.toMutableList()
+        val index = current.indexOfFirst { it.id == pipeline.id }
+        if (index >= 0) {
+            current[index] = pipeline
+        } else {
+            current.add(pipeline)
+            if (current.size > 200) {
+                current.removeAt(0)
+            }
+        }
+        _pipelines.value = current
+    }
+
     fun logTrace(stage: String, host: String, port: Int, detail: String, isError: Boolean = false) {
         val trace = InternalProxyTrace(
             stage = stage,
@@ -65,6 +113,7 @@ object ProxyEventBus {
 
     fun clearTraces() {
         _traces.value = emptyList()
+        _pipelines.value = emptyList()
     }
 
     fun record(

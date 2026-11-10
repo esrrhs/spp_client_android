@@ -330,10 +330,16 @@
     <string name="diag_phase_ssl">SSL/TLS</string>
     <string name="diag_phase_ttfb">等待响应 (TTFB)</string>
     <string name="diag_phase_download">内容下载</string>
+    <string name="diag_internal_route">分流判定</string>
+    <string name="diag_internal_tunnel">上游隧道</string>
+    <string name="diag_internal_handshake">SOCKS握手</string>
+    <string name="diag_internal_wait">首包等待</string>
+    <string name="diag_internal_pipe">双向传输</string>
     <string name="diag_empty_network">暂无网络请求，请输入网址并访问</string>
-    <string name="diag_empty_internal">暂无内核运转事件</string>
+    <string name="diag_empty_internal">暂无内核运转记录</string>
     <string name="diag_empty_console">暂无控制台日志</string>
     <string name="diag_timing_detail_title">请求时序明细</string>
+    <string name="diag_internal_detail_title">内核链路时序明细</string>
     <string name="diag_total_duration">总持续时间</string>
     <string name="diag_transfer_size">传输大小</string>
 
