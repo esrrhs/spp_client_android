@@ -293,10 +293,10 @@
     <string name="about_build_time">တည်ဆောက်ချိန်</string>
     <string name="about_core_version">ကုဒ်ပင်မ ဗားရှင်း (SPP)</string>
     <string name="about_hev_version">hev-socks5-tunnel ဗားရှင်း</string>
-    <string name="diag_browser_title">Diagnostic Browser</string>
+    <string name="diag_browser_title">Diagnosis</string>
     <string name="diag_go">Go</string>
     <string name="diag_refresh">Refresh</string>
-    <string name="diag_toggle_devtools">F12</string>
+    <string name="diag_toggle_devtools">Timing</string>
     <string name="diag_tab_network">Network</string>
     <string name="diag_tab_console">Console</string>
     <string name="diag_phase_dns">DNS</string>

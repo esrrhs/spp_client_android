@@ -8,6 +8,7 @@ import kotlinx.serialization.Serializable
  */
 @Serializable
 data class TimingRecord(
+    val id: String = java.util.UUID.randomUUID().toString(),
     val name: String,
     val initiatorType: String = "",
     val startTime: Double = 0.0,
@@ -25,6 +26,7 @@ data class TimingRecord(
     val transferSize: Long = 0L,
     val decodedBodySize: Long = 0L,
     val nextHopProtocol: String = "",
+    val pageUrl: String = "",
 ) {
     /** DNS 查找耗时（ms） */
     val dnsDuration: Double

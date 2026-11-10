@@ -317,11 +317,11 @@
     <string name="language_hi">हिन्दी (Hindi)</string>
 
 
-    <!-- Diagnostic Browser (F12 Timing) -->
-    <string name="diag_browser_title">Diagnostic Browser (F12)</string>
+    <!-- Diagnostic Browser (Timing) -->
+    <string name="diag_browser_title">Diagnosis</string>
     <string name="diag_go">Go</string>
     <string name="diag_refresh">Refresh</string>
-    <string name="diag_toggle_devtools">F12 Timing DevTools</string>
+    <string name="diag_toggle_devtools">Timing Details</string>
     <string name="diag_tab_network">Network Timing</string>
     <string name="diag_tab_console">Console</string>
     <string name="diag_phase_dns">DNS Lookup</string>

@@ -54,4 +54,29 @@ class BrowserTimingBridgeTest {
         assertEquals(200, logs.size)
         assertTrue(logs.last().contains("message 249"))
     }
+
+    @Test
+    fun testRetainHistoryAcrossNavigation() {
+        val bridge = BrowserTimingBridge()
+        val jsonPage1 = """
+            [
+                { "name": "https://page1.com/index.html", "initiatorType": "navigation", "startTime": 0, "duration": 100 }
+            ]
+        """.trimIndent()
+        val jsonPage2 = """
+            [
+                { "name": "https://page2.com/index.html", "initiatorType": "navigation", "startTime": 0, "duration": 150 }
+            ]
+        """.trimIndent()
+
+        bridge.currentPageUrl = "https://page1.com"
+        bridge.postTimingData(jsonPage1)
+        assertEquals(1, bridge.records.value.size)
+
+        bridge.currentPageUrl = "https://page2.com"
+        bridge.postTimingData(jsonPage2)
+        assertEquals(2, bridge.records.value.size)
+        assertEquals("https://page1.com", bridge.records.value[0].pageUrl)
+        assertEquals("https://page2.com", bridge.records.value[1].pageUrl)
+    }
 }

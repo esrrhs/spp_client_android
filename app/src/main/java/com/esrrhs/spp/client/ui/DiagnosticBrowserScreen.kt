@@ -171,7 +171,7 @@ fun DiagnosticBrowserScreen(
                                 val target = sanitizeUrl(urlInput)
                                 urlInput = target
                                 currentUrl = target
-                                timingBridge.clear()
+                                timingBridge.currentPageUrl = target
                                 selectedRecord = null
                                 webViewInstance?.loadUrl(target)
                             }),
@@ -191,7 +191,7 @@ fun DiagnosticBrowserScreen(
                             val target = sanitizeUrl(urlInput)
                             urlInput = target
                             currentUrl = target
-                            timingBridge.clear()
+                            timingBridge.currentPageUrl = target
                             selectedRecord = null
                             webViewInstance?.loadUrl(target)
                         }) {
@@ -206,7 +206,6 @@ fun DiagnosticBrowserScreen(
                 },
                 actions = {
                     IconButton(onClick = {
-                        timingBridge.clear()
                         selectedRecord = null
                         webViewInstance?.reload()
                     }) {
@@ -245,7 +244,7 @@ fun DiagnosticBrowserScreen(
                 )
             }
 
-            // WebView 与 F12 面板的垂直布局
+            // WebView 与时序面板的垂直布局
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -262,6 +261,7 @@ fun DiagnosticBrowserScreen(
                                 if (url != null) {
                                     urlInput = url
                                     currentUrl = url
+                                    timingBridge.currentPageUrl = url
                                 }
                             }
                         ).also {
@@ -273,7 +273,7 @@ fun DiagnosticBrowserScreen(
                 )
             }
 
-            // F12 面板 (时序表与 Console 日志)
+            // 时序面板 (时序表与 Console 日志)
             AnimatedVisibility(visible = showDevTools) {
                 Surface(
                     modifier = Modifier

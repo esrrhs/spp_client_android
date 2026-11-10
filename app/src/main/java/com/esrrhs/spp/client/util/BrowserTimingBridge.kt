@@ -23,11 +23,47 @@ class BrowserTimingBridge {
     private val _logs = MutableStateFlow<List<String>>(emptyList())
     val logs: StateFlow<List<String>> = _logs.asStateFlow()
 
+    @Volatile
+    var currentPageUrl: String = ""
+
     @JavascriptInterface
     fun postTimingData(jsonString: String) {
         val list = parseTimingJson(jsonString)
-        if (list.isNotEmpty()) {
-            _records.value = list
+        if (list.isEmpty()) return
+
+        val page = currentPageUrl
+        // 为新来的记录打上对应的页面 URL，并合并到历史记录中（按 name + startTime 去重）
+        val incoming = list.map { it.copy(pageUrl = page) }
+        val current = _records.value
+        val merged = current.toMutableList()
+        val existingKeys = HashSet<String>(current.size)
+        current.forEach { existingKeys.add("${it.pageUrl}|${it.name}|${it.startTime.toInt()}") }
+
+        var hasNewOrUpdate = false
+        for (item in incoming) {
+            val key = "${item.pageUrl}|${item.name}|${item.startTime.toInt()}"
+            if (existingKeys.add(key)) {
+                merged.add(item)
+                hasNewOrUpdate = true
+            } else {
+                // 如果已存在但持续时间发生了变化（比如进行中 -> 完成），更新记录
+                val idx = merged.indexOfFirst {
+                    it.pageUrl == item.pageUrl && it.name == item.name && it.startTime.toInt() == item.startTime.toInt()
+                }
+                if (idx != -1 && (item.duration > merged[idx].duration || item.responseEnd > merged[idx].responseEnd)) {
+                    merged[idx] = item
+                    hasNewOrUpdate = true
+                }
+            }
+        }
+
+        if (hasNewOrUpdate) {
+            // 最多保留 1000 条历史记录，防止无限增长
+            if (merged.size > 1000) {
+                _records.value = merged.takeLast(1000)
+            } else {
+                _records.value = merged
+            }
         }
     }
 

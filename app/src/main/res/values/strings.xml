@@ -317,11 +317,11 @@
     <string name="language_hi">हिन्दी (Hindi)</string>
 
 
-    <!-- 诊断浏览器 (F12 时序表) -->
-    <string name="diag_browser_title">诊断浏览器 (F12)</string>
+    <!-- 诊断浏览器 (时序表) -->
+    <string name="diag_browser_title">诊断</string>
     <string name="diag_go">前往</string>
     <string name="diag_refresh">刷新</string>
-    <string name="diag_toggle_devtools">F12 开发者时序</string>
+    <string name="diag_toggle_devtools">时序明细</string>
     <string name="diag_tab_network">网络时序</string>
     <string name="diag_tab_console">控制台</string>
     <string name="diag_phase_dns">DNS 查询</string>
