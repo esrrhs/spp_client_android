@@ -141,6 +141,7 @@ class BrowserTimingBridge {
                 window.__collectTiming = function() {
                     try {
                         if (!window.performance) return;
+                        var origin = (window.performance.timeOrigin) || (window.performance.timing ? window.performance.timing.navigationStart : 0) || Date.now();
                         var entries = [];
                         var nav = performance.getEntriesByType('navigation');
                         if (nav && nav.length > 0) {
@@ -162,7 +163,8 @@ class BrowserTimingBridge {
                                     responseStart: n.responseStart || 0,
                                     transferSize: n.transferSize || 0,
                                     decodedBodySize: n.decodedBodySize || 0,
-                                    nextHopProtocol: n.nextHopProtocol || ''
+                                    nextHopProtocol: n.nextHopProtocol || '',
+                                    timeOrigin: origin
                                 });
                             }
                         }
@@ -186,7 +188,8 @@ class BrowserTimingBridge {
                                     responseStart: r.responseStart || 0,
                                     transferSize: r.transferSize || 0,
                                     decodedBodySize: r.decodedBodySize || 0,
-                                    nextHopProtocol: r.nextHopProtocol || ''
+                                    nextHopProtocol: r.nextHopProtocol || '',
+                                    timeOrigin: origin
                                 });
                             }
                         }
@@ -238,6 +241,7 @@ class BrowserTimingBridge {
                             transferSize = obj["transferSize"]?.jsonPrimitive?.longOrNull ?: 0L,
                             decodedBodySize = obj["decodedBodySize"]?.jsonPrimitive?.longOrNull ?: 0L,
                             nextHopProtocol = obj["nextHopProtocol"]?.jsonPrimitive?.content ?: "",
+                            timeOrigin = obj["timeOrigin"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
                         )
                     )
                 }

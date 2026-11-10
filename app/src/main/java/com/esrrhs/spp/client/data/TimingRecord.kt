@@ -27,7 +27,12 @@ data class TimingRecord(
     val decodedBodySize: Long = 0L,
     val nextHopProtocol: String = "",
     val pageUrl: String = "",
+    val timeOrigin: Double = 0.0, // 页面全局时间起点 window.performance.timeOrigin (毫秒 Unix 时间戳)
 ) {
+    /** 绝对起始绝对时间戳 (ms Unix epoch) */
+    val absoluteStartMs: Long
+        get() = if (timeOrigin > 0.0) (timeOrigin + startTime).toLong() else 0L
+
     /** DNS 查找耗时（ms） */
     val dnsDuration: Double
         get() = if (dnsEnd > dnsStart && dnsStart > 0) dnsEnd - dnsStart else 0.0

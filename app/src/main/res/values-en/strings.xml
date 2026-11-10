@@ -323,6 +323,8 @@
     <string name="diag_refresh">Refresh</string>
     <string name="diag_toggle_devtools">Timing Details</string>
     <string name="diag_tab_unified">Diagnosis Timing</string>
+    <string name="diag_trigger_origin">Triggered: %1$s</string>
+    <string name="diag_trigger_legend">Trigger/Go</string>
     <string name="diag_phase_dns">DNS Lookup</string>
     <string name="diag_phase_connect">TCP Connect</string>
     <string name="diag_phase_ssl">SSL/TLS</string>

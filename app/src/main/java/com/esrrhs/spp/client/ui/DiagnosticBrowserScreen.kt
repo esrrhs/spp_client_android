@@ -107,7 +107,10 @@ import androidx.webkit.WebViewFeature
 import java.util.concurrent.Executor
 import kotlinx.coroutines.launch
 import java.net.URI
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
+import androidx.compose.runtime.mutableLongStateOf
 
 // 时序阶段标准色彩（Chrome / Firefox DevTools 同款色系）
 private val ColorDns = Color(0xFF1E88E5)       // 蓝色: DNS 查询
@@ -123,6 +126,7 @@ private val ColorInternalTunnel = Color(0xFFFF9800)     // 橙色: 上游隧道�
 private val ColorInternalHandshake = Color(0xFF9C27B0)  // 紫色: SOCKS5 握手
 private val ColorInternalWait = Color(0xFF4CAF50)       // 绿色: 等待首包 (TTFB)
 private val ColorInternalPipe = Color(0xFF00BCD4)       // 青蓝: 双向数据转发
+private val ColorTrigger = Color(0xFFE91E63)            // 玫红: 用户回车触发上网起点
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -137,6 +141,7 @@ fun DiagnosticBrowserScreen(
     var isPageLoading by remember { mutableStateOf(false) }
     var showDevTools by remember { mutableStateOf(true) }
     var devToolsHeightFraction by remember { mutableFloatStateOf(0.45f) }
+    var userTriggerTimestampMs by remember { mutableLongStateOf(0L) }
 
     val timingBridge = remember { BrowserTimingBridge() }
     val records by timingBridge.records.collectAsState()
@@ -185,6 +190,7 @@ fun DiagnosticBrowserScreen(
                                 currentUrl = target
                                 timingBridge.currentPageUrl = target
                                 selectedRecord = null
+                                userTriggerTimestampMs = System.currentTimeMillis()
                                 webViewInstance?.loadUrl(target)
                             }),
                             trailingIcon = {
@@ -205,6 +211,7 @@ fun DiagnosticBrowserScreen(
                             currentUrl = target
                             timingBridge.currentPageUrl = target
                             selectedRecord = null
+                            userTriggerTimestampMs = System.currentTimeMillis()
                             webViewInstance?.loadUrl(target)
                         }) {
                             Icon(Icons.Filled.ArrowForward, contentDescription = stringResource(R.string.diag_go))
@@ -219,6 +226,7 @@ fun DiagnosticBrowserScreen(
                 actions = {
                     IconButton(onClick = {
                         selectedRecord = null
+                        userTriggerTimestampMs = System.currentTimeMillis()
                         webViewInstance?.reload()
                     }) {
                         Icon(Icons.Filled.Refresh, contentDescription = stringResource(R.string.diag_refresh))
@@ -332,6 +340,7 @@ fun DiagnosticBrowserScreen(
                                 onClick = {
                                     timingBridge.clear()
                                     ProxyEventBus.clearTraces()
+                                    userTriggerTimestampMs = 0L
                                     selectedRecord = null
                                     selectedPipeline = null
                                     webViewInstance?.evaluateJavascript("if (window.__clearTimingBuffer) window.__clearTimingBuffer();", null)
@@ -352,7 +361,7 @@ fun DiagnosticBrowserScreen(
                         }
 
                         // 阶段色彩图例（包含浏览器阶段与内核阶段）
-                        TimingLegendBar()
+                        TimingLegendBar(hasTrigger = userTriggerTimestampMs > 0L)
 
                         HorizontalDivider()
 
@@ -360,6 +369,7 @@ fun DiagnosticBrowserScreen(
                         UnifiedWaterfallTab(
                             records = records,
                             pipelines = internalPipelines,
+                            userTriggerTimestampMs = userTriggerTimestampMs,
                             selected = selectedRecord,
                             onSelect = { selectedRecord = it }
                         )
@@ -371,20 +381,22 @@ fun DiagnosticBrowserScreen(
 
     // 统一资源与内核详情弹出框
     if (selectedRecord != null) {
-        val matchedPipeline = remember(selectedRecord) {
-            val host = runCatching { URI(selectedRecord!!.name).host }.getOrNull()
-            ProxyEventBus.findPipeline(host)
+        val rec = selectedRecord!!
+        val matchedPipeline = remember(rec) {
+            val host = runCatching { URI(rec.name).host }.getOrNull()
+            ProxyEventBus.findPipeline(host, rec.absoluteStartMs)
         }
         RecordDetailDialog(
-            record = selectedRecord!!,
+            record = rec,
             pipeline = matchedPipeline,
+            triggerTimeMs = userTriggerTimestampMs,
             onDismiss = { selectedRecord = null }
         )
     }
 }
 
 @Composable
-private fun TimingLegendBar() {
+private fun TimingLegendBar(hasTrigger: Boolean) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -393,6 +405,9 @@ private fun TimingLegendBar() {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
+        if (hasTrigger) {
+            LegendDot(ColorTrigger, stringResource(R.string.diag_trigger_legend))
+        }
         LegendDot(ColorDns, stringResource(R.string.diag_phase_dns))
         LegendDot(ColorConnect, stringResource(R.string.diag_phase_connect))
         LegendDot(ColorSsl, stringResource(R.string.diag_phase_ssl))
@@ -424,6 +439,7 @@ private fun LegendDot(color: Color, label: String) {
 private fun UnifiedWaterfallTab(
     records: List<TimingRecord>,
     pipelines: List<InternalPipelineTiming>,
+    userTriggerTimestampMs: Long,
     selected: TimingRecord?,
     onSelect: (TimingRecord) -> Unit,
 ) {
@@ -441,32 +457,95 @@ private fun UnifiedWaterfallTab(
         return
     }
 
-    val maxTimelineMs = remember(records) {
-        records.maxOfOrNull { it.startTime + it.duration }?.coerceAtLeast(10.0) ?: 100.0
+    // 计算全局统一时间基准轴:
+    // 如果有绝对时间戳 (timeOrigin > 0)，以 triggerTimeMs 与各记录/连接的起始时间计算基准
+    // 否则回退为以 record.startTime 为基准的相对时间
+    val hasAbsoluteTiming = records.any { it.absoluteStartMs > 0L }
+
+    val (timelineBaseMs, totalTimelineMs) = remember(records, pipelines, userTriggerTimestampMs, hasAbsoluteTiming) {
+        if (hasAbsoluteTiming) {
+            val recordStarts = records.filter { it.absoluteStartMs > 0L }.map { it.absoluteStartMs }
+            val recordEnds = records.filter { it.absoluteStartMs > 0L }.map { it.absoluteStartMs + it.duration.toLong() }
+            val pipelineStarts = pipelines.filter { it.startTimeMs > 0L }.map { it.startTimeMs }
+            val pipelineEnds = pipelines.filter { it.startTimeMs > 0L }.map { it.startTimeMs + it.totalTime }
+
+            val allStarts = mutableListOf<Long>()
+            allStarts.addAll(recordStarts)
+            allStarts.addAll(pipelineStarts)
+            if (userTriggerTimestampMs > 0L) {
+                // 如果 trigger 时间和记录在合理区间内 (例如前后 30 秒)，纳入基准
+                val minEvent = allStarts.minOrNull() ?: userTriggerTimestampMs
+                if (Math.abs(userTriggerTimestampMs - minEvent) < 30_000L) {
+                    allStarts.add(userTriggerTimestampMs)
+                }
+            }
+
+            val base = allStarts.minOrNull() ?: 0L
+            val maxEnd = (recordEnds + pipelineEnds).maxOrNull() ?: (base + 1000L)
+            val span = (maxEnd - base).coerceAtLeast(100L).toDouble()
+            Pair(base, span)
+        } else {
+            val span = records.maxOfOrNull { it.startTime + it.duration }?.coerceAtLeast(10.0) ?: 100.0
+            Pair(0L, span)
+        }
     }
 
     val listState = rememberLazyListState()
 
-    LazyColumn(
-        state = listState,
-        modifier = Modifier.fillMaxSize(),
-    ) {
-        items(records) { r ->
-            val host = remember(r.name) {
-                runCatching { URI(r.name).host }.getOrNull()
+    Column(modifier = Modifier.fillMaxSize()) {
+        // 如果有用户回车触发上网时间，且在时间轴基准内，展示出发时间提示指示
+        if (userTriggerTimestampMs > 0L) {
+            val timeStr = remember(userTriggerTimestampMs) {
+                SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()).format(Date(userTriggerTimestampMs))
             }
-            val matchedPipeline = remember(host, pipelines) {
-                ProxyEventBus.findPipeline(host)
+            Surface(
+                color = ColorTrigger.copy(alpha = 0.08f),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .clip(CircleShape)
+                            .background(ColorTrigger)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = stringResource(R.string.diag_trigger_origin, timeStr),
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                        color = ColorTrigger,
+                        fontSize = 11.sp,
+                    )
+                }
             }
+            HorizontalDivider(thickness = 0.5.dp, color = ColorTrigger.copy(alpha = 0.3f))
+        }
 
-            UnifiedWaterfallRow(
-                record = r,
-                pipeline = matchedPipeline,
-                totalTimelineMs = maxTimelineMs,
-                isSelected = r == selected,
-                onClick = { onSelect(r) }
-            )
-            HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            items(records) { r ->
+                val host = remember(r.name) {
+                    runCatching { URI(r.name).host }.getOrNull()
+                }
+                val matchedPipeline = remember(host, pipelines, r.absoluteStartMs) {
+                    ProxyEventBus.findPipeline(host, r.absoluteStartMs)
+                }
+
+                UnifiedWaterfallRow(
+                    record = r,
+                    pipeline = matchedPipeline,
+                    timelineBaseMs = timelineBaseMs,
+                    totalTimelineMs = totalTimelineMs,
+                    isSelected = r == selected,
+                    onClick = { onSelect(r) }
+                )
+                HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+            }
         }
     }
 }
@@ -475,6 +554,7 @@ private fun UnifiedWaterfallTab(
 private fun UnifiedWaterfallRow(
     record: TimingRecord,
     pipeline: InternalPipelineTiming?,
+    timelineBaseMs: Long,
     totalTimelineMs: Double,
     isSelected: Boolean,
     onClick: () -> Unit,
@@ -533,10 +613,20 @@ private fun UnifiedWaterfallRow(
         Spacer(Modifier.width(6.dp))
 
         // 双层可视化甘特条 (上条: 浏览器网络时序; 下条: 内部代理运转链路)
+        // 关键改进: 基于统一时间原点计算浏览器条和内核条的起始偏移量，使二者真实时序严格对齐！
         Column(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
+            // 计算浏览器请求在时间轴上的物理起始位置
+            val browserStartOffsetMs = if (timelineBaseMs > 0L && record.absoluteStartMs > 0L) {
+                (record.absoluteStartMs - timelineBaseMs).coerceAtLeast(0L).toDouble()
+            } else {
+                record.startTime
+            }
+            val browserStartWeight = (browserStartOffsetMs / totalTimelineMs).coerceIn(0.0, 0.95).toFloat()
+            val browserDurationWeight = (record.duration / totalTimelineMs).coerceIn(0.01, 1.0).toFloat()
+
             // 浏览器视角网络瀑布流
             Box(
                 modifier = Modifier
@@ -545,14 +635,11 @@ private fun UnifiedWaterfallRow(
                     .clip(RoundedCornerShape(2.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
             ) {
-                val startWeight = (record.startTime / totalTimelineMs).coerceIn(0.0, 1.0).toFloat()
-                val durationWeight = (record.duration / totalTimelineMs).coerceIn(0.01, 1.0).toFloat()
-
                 Row(
                     modifier = Modifier
                         .fillMaxHeight()
-                        .fillMaxWidth(fraction = (startWeight + durationWeight).coerceAtMost(1f))
-                        .padding(start = (startWeight * 200).coerceAtLeast(0f).dp)
+                        .fillMaxWidth(fraction = (browserStartWeight + browserDurationWeight).coerceAtMost(1f))
+                        .padding(start = (browserStartWeight * 180).coerceAtLeast(0f).dp)
                 ) {
                     if (record.duration > 0) {
                         val d = record.duration
@@ -577,11 +664,16 @@ private fun UnifiedWaterfallRow(
                 }
             }
 
-            // 内核代理链路剖析条 (有内核记录时展示对应阶段，剖析等待到底在干嘛)
+            // 内核代理链路剖析条 (按内核真实的 startTimeMs 偏移，精确对齐浏览器建立连接与等待首包阶段)
             if (pipeline != null && pipeline.totalTime > 0) {
+                val pipeStartOffsetMs = if (timelineBaseMs > 0L && pipeline.startTimeMs > 0L) {
+                    (pipeline.startTimeMs - timelineBaseMs).coerceAtLeast(0L).toDouble()
+                } else {
+                    browserStartOffsetMs
+                }
+                val pipeStartWeight = (pipeStartOffsetMs / totalTimelineMs).coerceIn(0.0, 0.95).toFloat()
+                val pipeDurationWeight = (pipeline.totalTime.toDouble() / totalTimelineMs).coerceIn(0.01, 1.0).toFloat()
                 val d = pipeline.totalTime.toDouble()
-                val startWeight = (record.startTime / totalTimelineMs).coerceIn(0.0, 1.0).toFloat()
-                val durationWeight = (pipeline.totalTime / totalTimelineMs).coerceIn(0.01, 1.0).toFloat()
 
                 Box(
                     modifier = Modifier
@@ -593,8 +685,8 @@ private fun UnifiedWaterfallRow(
                     Row(
                         modifier = Modifier
                             .fillMaxHeight()
-                            .fillMaxWidth(fraction = (startWeight + durationWeight).coerceAtMost(1f))
-                            .padding(start = (startWeight * 200).coerceAtLeast(0f).dp)
+                            .fillMaxWidth(fraction = (pipeStartWeight + pipeDurationWeight).coerceAtMost(1f))
+                            .padding(start = (pipeStartWeight * 180).coerceAtLeast(0f).dp)
                     ) {
                         val routeW = (pipeline.routeMs / d).toFloat().coerceIn(0f, 1f)
                         val connW = (pipeline.dnsOrConnectMs / d).toFloat().coerceIn(0f, 1f)
@@ -641,6 +733,7 @@ private fun UnifiedWaterfallRow(
 private fun RecordDetailDialog(
     record: TimingRecord,
     pipeline: InternalPipelineTiming?,
+    triggerTimeMs: Long,
     onDismiss: () -> Unit,
 ) {
     androidx.compose.material3.AlertDialog(
@@ -666,6 +759,28 @@ private fun RecordDetailDialog(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.height(10.dp))
+
+                // 回车触发时间相关分析
+                if (triggerTimeMs > 0L && record.absoluteStartMs > 0L) {
+                    val triggerDeltaMs = (record.absoluteStartMs - triggerTimeMs).coerceAtLeast(0L)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "从回车到本请求发起",
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                            color = ColorTrigger
+                        )
+                        Text(
+                            text = "+$triggerDeltaMs ms",
+                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold),
+                            color = ColorTrigger
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
 
                 // 浏览器网络时序部分
                 Text(

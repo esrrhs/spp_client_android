@@ -164,14 +164,17 @@ object ProxyEventBus {
     }
 
     /**
-     * 查找与目标 host 匹配的最近一条内部管道时序记录（用于在网络时序列表中直接关联展示内核运转细节）。
+     * 查找与目标 host 匹配且发生时间与请求时间戳最接近的内部管道时序记录。
+     * [targetTimeMs]: 网络请求发起的时间戳 (Unix ms)，优先匹配建连时间在请求发起前后 5000ms 范围内的内核连接。
      */
-    fun findPipeline(host: String?): InternalPipelineTiming? {
+    fun findPipeline(host: String?, targetTimeMs: Long = 0L): InternalPipelineTiming? {
         if (host.isNullOrBlank()) return null
         val targetHost = host.trimEnd('.')
-        return _pipelines.value.lastOrNull {
-            hostEquals(it.host, targetHost)
-        }
+        val candidates = _pipelines.value.filter { hostEquals(it.host, targetHost) }
+        if (candidates.isEmpty()) return null
+        if (targetTimeMs <= 0L) return candidates.lastOrNull()
+        // 查找与 targetTimeMs 绝对差最小的连接（优先偏向在 request 发生之前或附近建立的连接）
+        return candidates.minByOrNull { kotlin.math.abs(it.startTimeMs - targetTimeMs) }
     }
 
     private fun hostEquals(a: String, b: String): Boolean =

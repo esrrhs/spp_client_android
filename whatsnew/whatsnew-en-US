@@ -1,4 +1,4 @@
+• Unified Real Timing Alignment: accurately mark user trigger moment on the timeline, perfectly aligning browser network timing with internal proxy stages to inspect connection and TTFB breakdowns
 • Unified Diagnosis Timing: seamlessly integrate browser network timing with App internal routing/handshake/pipeline breakdown
 • Support built-in direct routing presets for multiple countries
 • Multilingual translations and in-app language switching
-• Dedicated DNS queries tab and connection lifecycle timing

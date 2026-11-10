@@ -297,6 +297,8 @@ Bạn cũng có thể kéo ô Cài đặt nhanh \"SPP VPN\" đến vị trí ưa
     <string name="diag_go">Go</string>
     <string name="diag_refresh">Refresh</string>
     <string name="diag_toggle_devtools">Timing</string>
+    <string name="diag_trigger_origin">Triggered: %1</string>
+    <string name="diag_trigger_legend">Trigger</string>
     <string name="diag_tab_unified">Timing</string>
     <string name="diag_phase_dns">DNS</string>
     <string name="diag_phase_connect">Connect</string>
