@@ -323,6 +323,7 @@
     <string name="diag_refresh">Refresh</string>
     <string name="diag_toggle_devtools">Timing Details</string>
     <string name="diag_tab_network">Network Timing</string>
+    <string name="diag_tab_internal">App Internal</string>
     <string name="diag_tab_console">Console</string>
     <string name="diag_phase_dns">DNS Lookup</string>
     <string name="diag_phase_connect">TCP Connect</string>
@@ -330,6 +331,7 @@
     <string name="diag_phase_ttfb">Waiting (TTFB)</string>
     <string name="diag_phase_download">Download</string>
     <string name="diag_empty_network">No requests yet. Enter a URL to test.</string>
+    <string name="diag_empty_internal">No internal proxy events</string>
     <string name="diag_empty_console">No console logs</string>
     <string name="diag_timing_detail_title">Timing Details</string>
     <string name="diag_total_duration">Total Duration</string>

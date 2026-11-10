@@ -45,9 +45,12 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Timeline
+import com.esrrhs.spp.client.proxy.InternalProxyTrace
+import com.esrrhs.spp.client.proxy.ProxyEventBus
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.BottomSheetDefaults
@@ -125,11 +128,12 @@ fun DiagnosticBrowserScreen(
     var isPageLoading by remember { mutableStateOf(false) }
     var showDevTools by remember { mutableStateOf(true) }
     var devToolsHeightFraction by remember { mutableFloatStateOf(0.45f) }
-    var selectedTab by remember { mutableIntStateOf(0) } // 0: 网络时序 1: 控制台日志
+    var selectedTab by remember { mutableIntStateOf(0) } // 0: 网络时序 1: 内核运转 2: 控制台日志
 
     val timingBridge = remember { BrowserTimingBridge() }
     val records by timingBridge.records.collectAsState()
     val consoleLogs by timingBridge.logs.collectAsState()
+    val internalTraces by ProxyEventBus.traces.collectAsState()
 
     var selectedRecord by remember { mutableStateOf<TimingRecord?>(null) }
 
@@ -302,6 +306,13 @@ fun DiagnosticBrowserScreen(
                                 FilterChip(
                                     selected = selectedTab == 1,
                                     onClick = { selectedTab = 1 },
+                                    label = { Text("${stringResource(R.string.diag_tab_internal)} (${internalTraces.size})") },
+                                    leadingIcon = { Icon(Icons.Filled.Memory, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                                    modifier = Modifier.padding(end = 6.dp)
+                                )
+                                FilterChip(
+                                    selected = selectedTab == 2,
+                                    onClick = { selectedTab = 2 },
                                     label = { Text("${stringResource(R.string.diag_tab_console)} (${consoleLogs.size})") },
                                     leadingIcon = { Icon(Icons.Filled.Code, contentDescription = null, modifier = Modifier.size(16.dp)) }
                                 )
@@ -309,6 +320,7 @@ fun DiagnosticBrowserScreen(
                             IconButton(
                                 onClick = {
                                     timingBridge.clear()
+                                    ProxyEventBus.clearTraces()
                                     selectedRecord = null
                                     webViewInstance?.evaluateJavascript("if (window.__clearTimingBuffer) window.__clearTimingBuffer();", null)
                                 },
@@ -339,7 +351,8 @@ fun DiagnosticBrowserScreen(
                                 selected = selectedRecord,
                                 onSelect = { selectedRecord = it }
                             )
-                            1 -> ConsoleLogsTab(logs = consoleLogs)
+                            1 -> InternalTracesTab(traces = internalTraces)
+                            2 -> ConsoleLogsTab(logs = consoleLogs)
                         }
                     }
                 }
@@ -532,6 +545,88 @@ private fun WaterfallRow(
             fontSize = 11.sp,
             modifier = Modifier.width(52.dp)
         )
+    }
+}
+
+@Composable
+private fun InternalTracesTab(traces: List<InternalProxyTrace>) {
+    if (traces.isEmpty()) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = stringResource(R.string.diag_empty_internal),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        return
+    }
+
+    val timeFormat = remember { java.text.SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()) }
+
+    LazyColumn(modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 4.dp)) {
+        items(traces.reversed(), key = { it.id }) { trace ->
+            val stageColor = when (trace.stage) {
+                "ROUTE" -> Color(0xFF1E88E5)
+                "DNS" -> Color(0xFF00ACC1)
+                "DIRECT" -> Color(0xFF43A047)
+                "UPSTREAM" -> Color(0xFFFB8C00)
+                "HANDSHAKE" -> Color(0xFF8E24AA)
+                "DATA" -> Color(0xFF3949AB)
+                "CLOSE" -> Color(0xFF757575)
+                else -> MaterialTheme.colorScheme.primary
+            }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = timeFormat.format(java.util.Date(trace.timestampMs)),
+                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(stageColor.copy(alpha = 0.2f))
+                            .padding(horizontal = 4.dp, vertical = 1.dp)
+                    ) {
+                        Text(
+                            text = trace.stage,
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            fontSize = 9.sp,
+                            color = stageColor,
+                        )
+                    }
+                    if (trace.host.isNotBlank()) {
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = "${trace.host}:${trace.port}",
+                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = trace.detail,
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    fontSize = 11.sp,
+                    color = if (trace.isError) Color(0xFFE53935) else MaterialTheme.colorScheme.onSurface,
+                )
+            }
+            HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+        }
     }
 }
 

@@ -1,6 +1,22 @@
 package com.esrrhs.spp.client.proxy
 
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.ConcurrentLinkedQueue
+
+/**
+ * 细粒度的代理内部运转事件（用于诊断分析 App 内部到底卡在哪个阶段、发了什么、收了什么）。
+ */
+data class InternalProxyTrace(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val timestampMs: Long = System.currentTimeMillis(),
+    val stage: String,     // e.g., "DNS", "HANDSHAKE", "UPSTREAM", "DIRECT", "DATA", "CLOSE"
+    val host: String,
+    val port: Int,
+    val detail: String,
+    val isError: Boolean = false,
+)
 
 /** 一次 TCP CONNECT 的判定与结果（由 [RuleSocksServer] 产生）。 */
 data class ProxyConnectEvent(
@@ -27,6 +43,29 @@ object ProxyEventBus {
     private const val MAX_EVENTS = 2000
 
     private val queue = ConcurrentLinkedQueue<ProxyConnectEvent>()
+
+    private val _traces = MutableStateFlow<List<InternalProxyTrace>>(emptyList())
+    val traces: StateFlow<List<InternalProxyTrace>> = _traces.asStateFlow()
+
+    fun logTrace(stage: String, host: String, port: Int, detail: String, isError: Boolean = false) {
+        val trace = InternalProxyTrace(
+            stage = stage,
+            host = host,
+            port = port,
+            detail = detail,
+            isError = isError,
+        )
+        val current = _traces.value.toMutableList()
+        current.add(trace)
+        if (current.size > 500) {
+            current.removeAt(0)
+        }
+        _traces.value = current
+    }
+
+    fun clearTraces() {
+        _traces.value = emptyList()
+    }
 
     fun record(
         host: String,

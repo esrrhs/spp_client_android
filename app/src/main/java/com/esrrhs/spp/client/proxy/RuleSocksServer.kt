@@ -262,27 +262,42 @@ class RuleSocksServer(
         val ruleDirect = shouldDirect(req.host, req.atyp)
         val started = System.currentTimeMillis()
 
+        ProxyEventBus.logTrace(
+            stage = "ROUTE",
+            host = req.host,
+            port = req.port,
+            detail = "Received CONNECT request. Decision: ${if (ruleDirect) "DIRECT" else "PROXY"}"
+        )
+
         val inDirectPenalty = ruleDirect && isDirectPenalized(req.host)
         var directFailReason: String? = null
         var target: Socket? = null
         if (ruleDirect && !inDirectPenalty) {
+            ProxyEventBus.logTrace("DIRECT", req.host, req.port, "Resolving DNS and opening direct socket...")
             try {
                 target = openConnected(req.host, req.port)
+                ProxyEventBus.logTrace("DIRECT", req.host, req.port, "Direct connection established in ${System.currentTimeMillis() - started}ms")
             } catch (e: Exception) {
                 directFailReason = e.message ?: e.javaClass.simpleName
                 markDirectPenalized(req.host)
+                ProxyEventBus.logTrace("DIRECT", req.host, req.port, "Direct failed ($directFailReason), fallback to proxy", isError = true)
                 Log.i(TAG, "direct ${req.host}:${req.port} failed, penalized for ${DIRECT_PENALTY_MS / 1000}s, fallback to proxy: $directFailReason")
             }
         } else if (inDirectPenalty) {
             directFailReason = "penalized (previous direct failed)"
+            ProxyEventBus.logTrace("ROUTE", req.host, req.port, "Direct is penalized, fallback to proxy")
         }
         val usedDirect = target != null
 
         if (target == null) {
+            ProxyEventBus.logTrace("UPSTREAM", req.host, req.port, "Forwarding CONNECT to SPP/Socks upstream...")
             target = try {
-                connectUpstream(req)
+                val sock = connectUpstream(req)
+                ProxyEventBus.logTrace("UPSTREAM", req.host, req.port, "Upstream tunnel CONNECT success in ${System.currentTimeMillis() - started}ms")
+                sock
             } catch (e: Exception) {
                 val reason = e.message ?: e.javaClass.simpleName
+                ProxyEventBus.logTrace("UPSTREAM", req.host, req.port, "Upstream CONNECT failed: $reason", isError = true)
                 Log.w(TAG, "connect ${req.host}:${req.port} (direct=$ruleDirect) failed: $reason")
                 recordEvent(
                     req,
@@ -311,15 +326,17 @@ class RuleSocksServer(
         try {
             out.write(Socks5Codec.successReply("0.0.0.0", 0))
             out.flush()
+            ProxyEventBus.logTrace("HANDSHAKE", req.host, req.port, "Replied SUCCESS to client. Starting bidirectional data piping.")
         } catch (e: Exception) {
             // 客户端可能在我们建连期间已经 RST 走人：target 已连接成功，
             // 不关掉就是永久 fd 泄漏（handleClient 的 finally 只关 client）。
+            ProxyEventBus.logTrace("HANDSHAKE", req.host, req.port, "Client disconnected before reply: ${e.message}", isError = true)
             Log.v(TAG, "client gone before CONNECT reply, closing target: ${e.message}")
             runCatching { target.close() }
             return
         }
         client.soTimeout = 0 // 进入双向转发：copyDirection 的读必须无限阻塞
-        awaitPipe(client, target)
+        awaitPipe(client, target, req.host, req.port)
     }
 
     /**
@@ -392,16 +409,20 @@ class RuleSocksServer(
     private fun connectUpstream(req: Socks5Codec.Request): Socket {
         var socket = acquireUpstream()
         try {
+            ProxyEventBus.logTrace("UPSTREAM", req.host, req.port, "Sending SOCKS5 CONNECT to upstream server...")
             val upOut = socket.getOutputStream()
             val upIn = DataInputStream(socket.getInputStream())
             upOut.write(req.raw)
             upOut.flush()
+            ProxyEventBus.logTrace("UPSTREAM", req.host, req.port, "Waiting for upstream SOCKS5 CONNECT reply...")
             if (Socks5Codec.readReply(upIn) == null) {
                 throw java.io.IOException("upstream CONNECT rejected/timeout")
             }
+            ProxyEventBus.logTrace("UPSTREAM", req.host, req.port, "Upstream replied SUCCESS")
             socket.soTimeout = 0 // 进入长连接中继：copyDirection 的读必须无限阻塞
             return socket
         } catch (e: Exception) {
+            ProxyEventBus.logTrace("UPSTREAM", req.host, req.port, "Re-connecting upstream (previous connection closed/timeout: ${e.message})")
             runCatching { socket.close() }
             // 预热连接可能已被服务器因空闲超时断开，重试一次新建连
             socket = openUpstream()
@@ -413,6 +434,7 @@ class RuleSocksServer(
                 runCatching { socket.close() }
                 throw java.io.IOException("upstream CONNECT rejected/timeout")
             }
+            ProxyEventBus.logTrace("UPSTREAM", req.host, req.port, "Upstream retry replied SUCCESS")
             socket.soTimeout = 0 // 同上：长连接中继阶段取消握手读预算
             return socket
         }
@@ -425,7 +447,7 @@ class RuleSocksServer(
      * 但保留反向继续传输的能力（严格兼容 HTTP/2 和 gRPC 双向流）。
      * 当双向转发全部完成，或者发生底层异常时，统一关闭两端 Socket。
      */
-    private fun awaitPipe(a: Socket, b: Socket) {
+    private fun awaitPipe(a: Socket, b: Socket, host: String = "", port: Int = 0) {
         runCatching {
             a.sendBufferSize = TCP_SOCKET_BUFFER
             a.receiveBufferSize = TCP_SOCKET_BUFFER
@@ -434,9 +456,10 @@ class RuleSocksServer(
         }
         val latch = java.util.concurrent.CountDownLatch(2)
 
-        val forwardDirection = { from: Socket, to: Socket ->
+        val forwardDirection = { from: Socket, to: Socket, isUpload: Boolean ->
+            var totalBytes = 0L
             try {
-                copyDirection(from, to)
+                totalBytes = copyDirectionCounting(from, to)
             } finally {
                 // 该方向读取结束，通知目标端此方向已无新数据 (发送 TCP FIN)
                 runCatching {
@@ -444,12 +467,18 @@ class RuleSocksServer(
                         to.shutdownOutput()
                     }
                 }
+                ProxyEventBus.logTrace(
+                    stage = "DATA",
+                    host = host,
+                    port = port,
+                    detail = if (isUpload) "Upload FIN: $totalBytes bytes sent" else "Download FIN: $totalBytes bytes received"
+                )
                 latch.countDown()
             }
         }
 
-        pool.execute { forwardDirection(a, b) }
-        pool.execute { forwardDirection(b, a) }
+        pool.execute { forwardDirection(a, b, true) }
+        pool.execute { forwardDirection(b, a, false) }
 
         // 等待两个单向通道全部完成（或异常退出）
         try {
@@ -459,7 +488,27 @@ class RuleSocksServer(
         } finally {
             runCatching { a.close() }
             runCatching { b.close() }
+            ProxyEventBus.logTrace("CLOSE", host, port, "Connection closed")
         }
+    }
+
+    private fun copyDirectionCounting(from: Socket, to: Socket): Long {
+        var count = 0L
+        try {
+            val buf = ByteArray(BUFFER_SIZE)
+            val input = from.getInputStream()
+            val out = to.getOutputStream()
+            while (running.get() && !from.isClosed && !to.isClosed) {
+                val n = input.read(buf)
+                if (n < 0) break // 读到 EOF
+                out.write(buf, 0, n)
+                out.flush()
+                count += n
+            }
+        } catch (_: Exception) {
+            // 连接断开或重置
+        }
+        return count
     }
 
     private fun recordEvent(
@@ -488,6 +537,7 @@ class RuleSocksServer(
      */
     private fun openConnected(host: String, port: Int): Socket {
         val addresses = resolveHost(host)
+        ProxyEventBus.logTrace("DNS", host, port, "Resolved ${addresses.size} address(es): ${addresses.joinToString { it.hostAddress ?: "" }}")
         if (addresses.isEmpty()) {
             throw java.net.UnknownHostException(host)
         }

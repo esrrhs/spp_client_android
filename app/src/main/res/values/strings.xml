@@ -323,6 +323,7 @@
     <string name="diag_refresh">刷新</string>
     <string name="diag_toggle_devtools">时序明细</string>
     <string name="diag_tab_network">网络时序</string>
+    <string name="diag_tab_internal">内核运转</string>
     <string name="diag_tab_console">控制台</string>
     <string name="diag_phase_dns">DNS 查询</string>
     <string name="diag_phase_connect">TCP 握手</string>
@@ -330,6 +331,7 @@
     <string name="diag_phase_ttfb">等待响应 (TTFB)</string>
     <string name="diag_phase_download">内容下载</string>
     <string name="diag_empty_network">暂无网络请求，请输入网址并访问</string>
+    <string name="diag_empty_internal">暂无内核运转事件</string>
     <string name="diag_empty_console">暂无控制台日志</string>
     <string name="diag_timing_detail_title">请求时序明细</string>
     <string name="diag_total_duration">总持续时间</string>
