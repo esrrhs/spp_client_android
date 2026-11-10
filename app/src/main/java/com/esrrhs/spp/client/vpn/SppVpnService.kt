@@ -353,6 +353,9 @@ class SppVpnService : VpnService() {
             socksPort!!
         }
         ActiveSession.socksPort = hevSocksPort
+        ActiveSession.sppProto = if (config.isSocks5) "socks5" else config.proto
+        ActiveSession.sppCompress = if (config.isSocks5) 0 else config.compress
+        ActiveSession.sppEncrypt = if (config.isSocks5) "" else config.encrypt
         // 2. 建立 TUN（分应用规则；路由始终全抓，CN/LAN 分流在用户态分流器完成）
         val tun = buildTun(profile)
             .establish() ?: throw SppException(getString(R.string.error_establish))
@@ -580,6 +583,9 @@ class SppVpnService : VpnService() {
         sppProcess?.stop()
         sppProcess = null
         ActiveSession.socksPort = null
+        ActiveSession.sppProto = "tcp"
+        ActiveSession.sppCompress = 0
+        ActiveSession.sppEncrypt = ""
         if (finalStats != null) {
             val segTx = ((finalStats.getOrNull(1) ?: 0L) - baselineTx).coerceAtLeast(0)
             val segRx = ((finalStats.getOrNull(3)  ?: 0L) - baselineRx).coerceAtLeast(0)

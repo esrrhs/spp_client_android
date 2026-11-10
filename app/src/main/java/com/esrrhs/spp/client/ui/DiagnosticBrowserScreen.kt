@@ -114,21 +114,28 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.runtime.mutableLongStateOf
 
-// 浏览器网络时序色彩（现代冷色调体系：青/蓝/紫/翠绿）
+// 浏览器网络时序色彩（现代冷色调体系：明蓝/青色/天蓝/绿）
 private val ColorDns = Color(0xFF0288D1)       // 明蓝: DNS 查询
 private val ColorConnect = Color(0xFF00ACC1)   // 湖蓝/青: TCP 建连
-private val ColorSsl = Color(0xFF7E57C2)       // 浅紫: SSL/TLS
-private val ColorTtfb = Color(0xFF26A69A)      // 翠绿/青绿: 等待首字节 (TTFB)
-private val ColorDownload = Color(0xFF42A5F5)  // 浅天蓝: 内容下载
+private val ColorSsl = Color(0xFF00897B)       // 墨绿青: SSL/TLS (避免与下层深紫混淆)
+private val ColorTtfb = Color(0xFF43A047)      // 翠绿/草绿: 等待首字节 (TTFB)
+private val ColorDownload = Color(0xFF29B6F6)  // 浅天蓝: 内容下载
 private val ColorOther = Color(0xFF9E9E9E)     // 灰色: 排队/其他
 
-// 内部代理内核链路阶段色彩（温暖/琥珀/深橙/深紫/珊瑚色体系，与上层冷色调鲜明区分）
-private val ColorInternalRoute = Color(0xFF673AB7)      // 浓郁深紫: 分流路由判定
+// 内部代理内核链路阶段色彩（温暖/琥珀/深橙/深棕/珊瑚色体系，与上层冷色调鲜明区分）
+private val ColorInternalRoute = Color(0xFF5D4037)      // 棕褐/暗焦糖: 分流路由判定 (不再使用紫色，避免任何混淆)
 private val ColorInternalTunnel = Color(0xFFFF9800)     // 琥珀橙: 上游隧道建连
-private val ColorInternalHandshake = Color(0xFFE91E63)  // 玫红紫: SOCKS5 握手
+private val ColorInternalHandshake = Color(0xFFE65100)  // 浓郁深橙: SOCKS5 握手
 private val ColorInternalWait = Color(0xFFFFB300)       // 金黄/琥珀: 等待首包 (TTFB)
 private val ColorInternalPipe = Color(0xFFFF7043)       // 珊瑚橙红: 双向数据转发
 private val ColorTrigger = Color(0xFFD81B60)            // 鲜亮洋红: 用户回车触发上网起点
+
+// 底层通道数据帧色彩 (与上层冷色调和内核暖色调均区分开)
+private val ColorFrameOpen = Color(0xFF8E24AA)      // 紫色: OPEN 帧
+private val ColorFrameOpenRsp = Color(0xFF3949AB)   // 靛蓝: OPENRSP 帧
+private val ColorFrameDataUp = Color(0xFF00ACC1)    // 青色: DATA (↑上传)
+private val ColorFrameDataDown = Color(0xFFFF9800)  // 橙色: DATA (↓下载)
+private val ColorFrameClose = Color(0xFFE53935)     // 红色: CLOSE 帧
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -902,11 +909,37 @@ private fun RecordDetailDialog(
                                     color = ColorInternalTunnel
                                 )
                             }
+                            Spacer(Modifier.height(4.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "SPP 传输协议 / 压缩比",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                val protoText = ActiveSession.sppProto.uppercase()
+                                val compressRatioText = if (record.transferSize > 0 && pipeline.uploadBytes + pipeline.downloadBytes > 0) {
+                                    val wireBytes = pipeline.uploadBytes + pipeline.downloadBytes
+                                    val ratio = (wireBytes.toDouble() / record.transferSize.toDouble())
+                                    String.format(Locale.getDefault(), "%.1f%% (%d B / %d B)", ratio * 100, wireBytes, record.transferSize)
+                                } else if (ActiveSession.sppCompress > 0) {
+                                    "ZSTD (阈值 ${ActiveSession.sppCompress}B)"
+                                } else {
+                                    "未启用压缩"
+                                }
+                                Text(
+                                    text = "$protoText · $compressRatioText",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Medium),
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
                         }
                     }
                 }
 
-                // 卡片 2: 上下平行的双层对比时序甘特图 (和诊断列表完全一致的双层物理时序对齐条，更宽更高更易读)
+                // 卡片 2: 四层平行物理时间对齐视图 (上层浏览器网络、底层内核代理、Sonny 业务子通道、Main 物理隧道帧流 全部基于同一真实时间轴对齐)
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
@@ -917,13 +950,13 @@ private fun RecordDetailDialog(
                             .padding(14.dp)
                     ) {
                         Text(
-                            text = "双层物理时序对齐视图",
+                            text = "全链路物理时序统一对齐视图",
                             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                             color = MaterialTheme.colorScheme.onSurface,
                         )
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            text = "上层为浏览器网络阶段，下层为内部内核代理运转，横向基于真实时间物理对齐",
+                            text = "浏览器请求、内核代理运转、Sonny 子通道及 Main 物理隧道包流全部按同一绝对时间轴横向对齐",
                             style = MaterialTheme.typography.bodySmall,
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -939,14 +972,14 @@ private fun RecordDetailDialog(
                         val browserStartWeight = (browserStartOffsetMs / totalTimelineMs).coerceIn(0.0, 0.95).toFloat()
                         val browserDurationWeight = (record.duration / totalTimelineMs).coerceIn(0.01, 1.0).toFloat()
 
-                        // 浏览器上层条标签 + 甘特条
+                        // 序列 1: 浏览器上层条标签 + 甘特条
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = "上层: 浏览器请求",
+                                text = "1. 上层: 浏览器网络时序",
                                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                 color = MaterialTheme.colorScheme.primary,
                             )
@@ -956,12 +989,12 @@ private fun RecordDetailDialog(
                                 color = MaterialTheme.colorScheme.primary,
                             )
                         }
-                        Spacer(Modifier.height(4.dp))
+                        Spacer(Modifier.height(3.dp))
 
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(18.dp)
+                                .height(16.dp)
                                 .clip(RoundedCornerShape(3.dp))
                                 .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
                         ) {
@@ -996,7 +1029,7 @@ private fun RecordDetailDialog(
 
                         Spacer(Modifier.height(10.dp))
 
-                        // 内核底层条标签 + 甘特条 (与上层平行排列)
+                        // 序列 2: 内核底层条标签 + 甘特条 (与上层平行排列)
                         if (pipeline != null && pipeline.totalTime > 0) {
                             val pipeStartOffsetMs = if (timelineBaseMs > 0L && pipeline.startTimeMs > 0L) {
                                 (pipeline.startTimeMs - timelineBaseMs).coerceAtLeast(0L).toDouble()
@@ -1013,7 +1046,7 @@ private fun RecordDetailDialog(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = "底层: 内核代理运转 (${if (pipeline.isDirect) "DIRECT" else "TUNNEL"})",
+                                    text = "2. 底层: 内核代理运转 (${if (pipeline.isDirect) "DIRECT" else "TUNNEL"})",
                                     style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                     color = ColorInternalTunnel,
                                 )
@@ -1023,7 +1056,7 @@ private fun RecordDetailDialog(
                                     color = ColorInternalTunnel,
                                 )
                             }
-                            Spacer(Modifier.height(4.dp))
+                            Spacer(Modifier.height(3.dp))
 
                             Box(
                                 modifier = Modifier
@@ -1054,6 +1087,79 @@ private fun RecordDetailDialog(
                                         Box(Modifier.fillMaxSize().background(ColorOther))
                                     }
                                 }
+                            }
+
+                            // 序列 3: Sonny 业务子通道包流 (真实绝对时间对齐)
+                            val sonnyPackets = remember(pipeline.packetEvents) {
+                                pipeline.packetEvents.filter { it.channel == "SONNY" }
+                            }
+                            Spacer(Modifier.height(10.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "3. 通道: Sonny 子通道包流 (${pipeline.sonnyId})",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = Color(0xFF00ACC1),
+                                )
+                                Text(
+                                    text = "${sonnyPackets.size} 包",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                                    color = Color(0xFF00ACC1),
+                                )
+                            }
+                            Spacer(Modifier.height(3.dp))
+                            PacketStreamTimelineBar(
+                                packets = sonnyPackets,
+                                timelineBaseMs = timelineBaseMs,
+                                totalTimelineMs = totalTimelineMs,
+                            )
+
+                            // 序列 4: Main 物理隧道复用通道帧流 (真实绝对时间对齐)
+                            val mainPackets = remember(pipeline.packetEvents) {
+                                pipeline.packetEvents.filter { it.channel == "MAIN" }
+                            }
+                            Spacer(Modifier.height(10.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "4. 通道: Main 物理隧道复用帧流 (SPP Father Pipe)",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = Color(0xFFFF9800),
+                                )
+                                Text(
+                                    text = "${mainPackets.size} 帧",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                                    color = Color(0xFFFF9800),
+                                )
+                            }
+                            Spacer(Modifier.height(3.dp))
+                            PacketStreamTimelineBar(
+                                packets = mainPackets,
+                                timelineBaseMs = timelineBaseMs,
+                                totalTimelineMs = totalTimelineMs,
+                            )
+
+                            Spacer(Modifier.height(12.dp))
+
+                            // 底层通道包类型图例
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                FrameTypeDot(ColorFrameOpen, "OPEN (建连)")
+                                FrameTypeDot(ColorFrameOpenRsp, "OPENRSP (就绪)")
+                                FrameTypeDot(ColorFrameDataUp, "DATA (↑上传)")
+                                FrameTypeDot(ColorFrameDataDown, "DATA (↓下载)")
+                                FrameTypeDot(ColorFrameClose, "CLOSE (关闭)")
                             }
                         } else {
                             Text(
@@ -1152,93 +1258,9 @@ private fun RecordDetailDialog(
                     }
                 }
 
-                // 卡片 5: SPP 协议级 Sonny 子通道与 Main 物理隧道包流可视化 (两条流对比图)
-                if (pipeline != null && pipeline.packetEvents.isNotEmpty()) {
-                    val sonnyPackets = remember(pipeline.packetEvents) {
-                        pipeline.packetEvents.filter { it.channel == "SONNY" }
-                    }
-                    val mainPackets = remember(pipeline.packetEvents) {
-                        pipeline.packetEvents.filter { it.channel == "MAIN" }
-                    }
-                    val pMinTime = remember(pipeline.packetEvents) {
-                        pipeline.packetEvents.minOfOrNull { it.timestampMs } ?: pipeline.startTimeMs
-                    }
-                    val pMaxTime = remember(pipeline.packetEvents) {
-                        val maxT = pipeline.packetEvents.maxOfOrNull { it.timestampMs } ?: (pMinTime + 100)
-                        (maxT - pMinTime).coerceAtLeast(10L).toDouble()
-                    }
-
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(14.dp)
-                        ) {
-                            Text(
-                                text = "SPP 协议底层通道包流可视化",
-                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                                color = MaterialTheme.colorScheme.onSurface,
-                            )
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                text = "展示 Sonny 业务连接与转发至 Main 主隧道的收发包生命周期与帧类型",
-                                style = MaterialTheme.typography.bodySmall,
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            Spacer(Modifier.height(12.dp))
-
-                            // 1. Sonny 子通道包流图
-                            Text(
-                                text = "通道 1: Sonny 业务子通道 (${pipeline.sonnyId}) - 收发包 (${sonnyPackets.size} 个)",
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                color = Color(0xFF00ACC1),
-                            )
-                            Spacer(Modifier.height(4.dp))
-                            PacketStreamGantt(
-                                packets = sonnyPackets,
-                                baseTimeMs = pMinTime,
-                                totalTimeMs = pMaxTime,
-                            )
-
-                            Spacer(Modifier.height(14.dp))
-
-                            // 2. Main 主物理隧道通道帧流图
-                            Text(
-                                text = "通道 2: Main 物理隧道复用通道 - 帧流转发 (${mainPackets.size} 个)",
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                color = Color(0xFFFF9800),
-                            )
-                            Spacer(Modifier.height(4.dp))
-                            PacketStreamGantt(
-                                packets = mainPackets,
-                                baseTimeMs = pMinTime,
-                                totalTimeMs = pMaxTime,
-                            )
-
-                            Spacer(Modifier.height(12.dp))
-
-                            // 图例与帧类型说明
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                FrameTypeDot(Color(0xFF9C27B0), "OPEN")
-                                FrameTypeDot(Color(0xFF4CAF50), "OPENRSP")
-                                FrameTypeDot(Color(0xFF0288D1), "DATA (↑上传)")
-                                FrameTypeDot(Color(0xFFFB8C00), "DATA (↓下载)")
-                                FrameTypeDot(Color(0xFFE53935), "CLOSE")
-                            }
-                        }
-                    }
-                }
-
-                // 卡片 6: 细粒度内核运转时序与异常排查链路 (向下可滑动查看)
+                // 卡片 5: 细粒度内核运转时序与异常排查链路 (带绝对精确时间戳)
                 if (traces.isNotEmpty()) {
+                    val traceTimeFormat = remember { SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()) }
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
@@ -1274,13 +1296,23 @@ private fun RecordDetailDialog(
                                             .clip(CircleShape)
                                             .background(traceColor)
                                     )
-                                    Spacer(Modifier.width(8.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    // 格式化时间戳 (HH:mm:ss.SSS)
+                                    val timeStr = if (tr.timestampMs > 0) traceTimeFormat.format(Date(tr.timestampMs)) else "—"
+                                    Text(
+                                        text = timeStr,
+                                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.width(76.dp)
+                                    )
+                                    Spacer(Modifier.width(4.dp))
                                     Text(
                                         text = tr.stage,
                                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                         fontSize = 10.sp,
                                         color = traceColor,
-                                        modifier = Modifier.width(72.dp)
+                                        modifier = Modifier.width(66.dp)
                                     )
                                     Text(
                                         text = tr.detail,
@@ -1303,35 +1335,42 @@ private fun RecordDetailDialog(
 }
 
 @Composable
-private fun PacketStreamGantt(
+private fun PacketStreamTimelineBar(
     packets: List<com.esrrhs.spp.client.proxy.PacketEvent>,
-    baseTimeMs: Long,
-    totalTimeMs: Double,
+    timelineBaseMs: Long,
+    totalTimelineMs: Double,
 ) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(24.dp)
-            .clip(RoundedCornerShape(4.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            .height(14.dp)
+            .clip(RoundedCornerShape(3.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
     ) {
-        if (packets.isNotEmpty()) {
-            Row(modifier = Modifier.fillMaxSize()) {
-                packets.forEach { pkt ->
-                    val offsetMs = (pkt.timestampMs - baseTimeMs).coerceAtLeast(0L).toDouble()
-                    val fraction = (offsetMs / totalTimeMs).coerceIn(0.0, 0.96).toFloat()
-                    val color = when (pkt.frameType) {
-                        "OPEN" -> Color(0xFF9C27B0)      // 紫色
-                        "OPENRSP" -> Color(0xFF4CAF50)   // 绿色
-                        "DATA" -> if (pkt.isUpload) Color(0xFF0288D1) else Color(0xFFFB8C00) // 蓝色上行, 橙色下行
-                        "CLOSE" -> Color(0xFFE53935)     // 红色
-                        else -> Color(0xFF757575)
-                    }
+        if (packets.isNotEmpty() && totalTimelineMs > 0) {
+            packets.forEach { pkt ->
+                val offsetMs = (pkt.timestampMs - timelineBaseMs).coerceAtLeast(0L).toDouble()
+                val fraction = (offsetMs / totalTimelineMs).coerceIn(0.0, 0.98).toFloat()
+                val color = when (pkt.frameType) {
+                    "OPEN" -> ColorFrameOpen
+                    "OPENRSP" -> ColorFrameOpenRsp
+                    "DATA" -> if (pkt.isUpload) ColorFrameDataUp else ColorFrameDataDown
+                    "CLOSE" -> ColorFrameClose
+                    else -> ColorOther
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .width(4.dp)
+                        .padding(start = 0.dp)
+                        .align(Alignment.CenterStart)
+                        .fillMaxWidth(fraction = (fraction + 0.02f).coerceAtMost(1f))
+                ) {
                     Box(
                         modifier = Modifier
                             .fillMaxHeight()
-                            .width(6.dp)
-                            .padding(horizontal = 0.5.dp)
+                            .width(3.dp)
+                            .align(Alignment.CenterEnd)
                             .background(color)
                     )
                 }

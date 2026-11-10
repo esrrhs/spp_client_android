@@ -1,3 +1,4 @@
-• Sonny ID & Packet Streams: visualizes Sonny sub-channel and Main tunnel OPEN/DATA/CLOSE frame lifecycle
-• Parallel Dual-layer Timing: aligned Gantt bars for physical correlation between browser and kernel
-• Vertical Scrollable Breakdown: scroll to inspect requests, network phases, and internal event traces
+• 4-Stream Unified Timeline: Browser, Kernel, Sonny, and Main tunnel frames fully aligned on the same physical time axis
+• Kernel Trace Timestamps: Millisecond-level timestamps (HH:mm:ss.SSS) for internal proxy events
+• Disambiguated Color Palette: Distinct colors for browser cold tones and kernel warm tones
+• Protocol & Compression Ratio: Live SPP transit protocol and compression metrics in detail view
