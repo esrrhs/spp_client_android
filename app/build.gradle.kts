@@ -48,8 +48,8 @@ android {
         applicationId = "com.esrrhs.spp.client"
         minSdk = 26
         targetSdk = 37
-        versionCode = 14
-        versionName = "0.4.3"
+        versionCode = 15
+        versionName = "0.4.4"
 
         buildConfigField("String", "GIT_COMMIT_APP", "\"$appGitHash\"")
         buildConfigField("String", "GIT_COMMIT_SPP", "\"$sppGitHash\"")
@@ -131,6 +131,7 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.icons.extended)
+    implementation(libs.androidx.webkit)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.zxing.core)

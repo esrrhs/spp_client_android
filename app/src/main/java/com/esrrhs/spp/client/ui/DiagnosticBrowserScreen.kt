@@ -95,6 +95,11 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.esrrhs.spp.client.R
 import com.esrrhs.spp.client.data.TimingRecord
 import com.esrrhs.spp.client.util.BrowserTimingBridge
+import com.esrrhs.spp.client.vpn.ActiveSession
+import androidx.webkit.ProxyConfig
+import androidx.webkit.ProxyController
+import androidx.webkit.WebViewFeature
+import java.util.concurrent.Executor
 import kotlinx.coroutines.launch
 import java.net.URI
 import java.util.Locale
@@ -133,6 +138,15 @@ fun DiagnosticBrowserScreen(
             webViewInstance?.goBack()
         } else {
             onBack()
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
+                val executor = Executor { it.run() }
+                ProxyController.getInstance().clearProxyOverride(executor) {}
+            }
         }
     }
 
@@ -639,6 +653,25 @@ private fun createWebView(
     onProgressChanged: (Int) -> Unit,
     onLoadingStateChanged: (Boolean, String?) -> Unit,
 ): WebView {
+    // 如果 VPN 处于连接状态，通过 AndroidX WebKit ProxyController 把 WebView 的流量
+    // 显式桥接到本地 SOCKS5 代理端口（因为本 App 自身被排除在 VPN 外以防 VPN 回环，
+    // WebView 默认走物理网卡直连，必须通过 ProxyOverride 接入隧道）
+    val socksPort = ActiveSession.socksPort
+    if (socksPort != null && socksPort > 0 && WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
+        runCatching {
+            val proxyConfig = ProxyConfig.Builder()
+                .addProxyRule("socks://127.0.0.1:$socksPort")
+                .addDirect() // 当代理异常或未连接时回退直连
+                .build()
+            val executor = Executor { it.run() }
+            ProxyController.getInstance().setProxyOverride(proxyConfig, executor) {
+                timingBridge.postLog("INFO", "WebView proxy override set to socks://127.0.0.1:$socksPort")
+            }
+        }.onFailure {
+            timingBridge.postLog("WARN", "Set proxy override failed: ${it.message}")
+        }
+    }
+
     return WebView(context).apply {
         layoutParams = ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
