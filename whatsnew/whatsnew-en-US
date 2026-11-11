@@ -1,3 +1,3 @@
+• Fix kernel Gantt bar proportions: calibrated phase width calculation against active transmission duration rather than idle Keep-Alive period
 • High-contrast distinct phase colors per Gantt chart: each bar uses vivid Red/Orange/Green/Blue/Purple tones for instant visual distinction
 • Interactive Gantt Chart Zoom: supports 1x/2x/4x/8x zoom levels with horizontal scrolling and timeline ruler
-• Smart Active Period Focus: option to crop out Keep-Alive idle periods and focus on real transmission delays
