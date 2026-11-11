@@ -118,33 +118,37 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.runtime.mutableLongStateOf
 
-// 预建连与引擎调度开销色彩 (序列 0)
-private val ColorDispatch = Color(0xFF3F51B5)       // 靛蓝: UI 点击 -> WebKit 引擎调度 / IPC
-private val ColorPrecheck = Color(0xFF673AB7)       // 浓紫: 缓存比对 / 策略判定 / 重定向
-private val ColorQueueing = Color(0xFF607D8B)       // 蓝灰: 网络排队 / Socket 准备
+// =========================================================================
+// 甘特图分条独立配色方案 (每条甘特图内部颜色唯一且对比强烈，允许跨甘特图重复)
+// =========================================================================
 
-// 浏览器网络时序色彩 (序列 1，现代高辨识度冷色与青绿系)
-private val ColorDns = Color(0xFF0288D1)            // 明蓝: DNS 查询
-private val ColorConnect = Color(0xFF0097A7)        // 青蓝: TCP 建连
-private val ColorSsl = Color(0xFF00796B)            // 墨绿青: SSL/TLS 握手
-private val ColorTtfb = Color(0xFF2E7D32)           // 深森林绿: 等待首字节 (TTFB)
-private val ColorDownload = Color(0xFF00B0FF)       // 亮天蓝: 内容下载
-private val ColorOther = Color(0xFF757575)          // 中性灰: 排队/其他
+// 序列 0: 预备阶段 (3个阶段，冷暖对比强烈)
+private val ColorDispatch = Color(0xFF1E88E5)       // 亮蓝: UI 点击 -> WebKit 引擎调度 / IPC
+private val ColorPrecheck = Color(0xFFFF8F00)       // 琥珀金橙: 缓存比对 / 策略判定 / 重定向
+private val ColorQueueing = Color(0xFF8E24AA)       // 紫色: 网络排队 / Socket 准备
 
-// 内部代理内核链路阶段色彩 (序列 2，暖色/琥珀/深焦糖/红系，与上层完全区隔)
-private val ColorInternalRoute = Color(0xFF4E342E)      // 深焦糖褐: 分流路由判定
-private val ColorInternalTunnel = Color(0xFFE65100)     // 浓郁红橙: 上游隧道建连
-private val ColorInternalHandshake = Color(0xFFFF6D00)  // 鲜亮亮橙: SOCKS5 握手
-private val ColorInternalWait = Color(0xFFFFB300)       // 明亮金黄: 等待首包 (TTFB)
-private val ColorInternalPipe = Color(0xFFBF360C)       // 砖红焦橙: 双向数据转发
-private val ColorTrigger = Color(0xFFC2185B)            // 鲜亮洋红玫瑰: 用户回车触发上网起点
+// 序列 1: 浏览器网络时序 (Chrome DevTools 经典高辨识度原色方案，各阶段色相完全不同)
+private val ColorDns = Color(0xFF039BE5)            // 亮天蓝: DNS 查询
+private val ColorConnect = Color(0xFFFFB300)        // 明黄橙: TCP 建连
+private val ColorSsl = Color(0xFF8E24AA)            // 紫色: SSL/TLS 握手
+private val ColorTtfb = Color(0xFF43A047)           // 鲜绿: 等待首字节 (TTFB / Server Response)
+private val ColorDownload = Color(0xFF00ACC1)       // 青碧色: 内容下载 (Content Download)
+private val ColorOther = Color(0xFF757575)          // 中性灰: 排队/未分类
 
-// 底层通道数据帧色彩 (序列 3 & 4，独立鲜明色调)
-private val ColorFrameOpen = Color(0xFF9C27B0)          // 亮紫罗兰: OPEN 帧
-private val ColorFrameOpenRsp = Color(0xFF1A237E)       // 极深午夜蓝: OPENRSP 帧
-private val ColorFrameDataUp = Color(0xFF00BFA5)        // 薄荷碧青: DATA (↑上传)
-private val ColorFrameDataDown = Color(0xFFFF9100)      // 明艳琥珀橙: DATA (↓下载)
-private val ColorFrameClose = Color(0xFFD50000)         // 鲜艳绯红: CLOSE 帧
+// 序列 2: 内核底层代理链路 (5个连续子阶段，红/黄/绿/蓝/紫 饱和原色对比，绝对不混淆)
+private val ColorInternalRoute = Color(0xFFE53935)      // 红色: 分流路由判定
+private val ColorInternalTunnel = Color(0xFFFB8C00)     // 橙黄: 目标 DNS / 上游隧道建连
+private val ColorInternalHandshake = Color(0xFF43A047)  // 绿色: SOCKS5 握手确认
+private val ColorInternalWait = Color(0xFF1E88E5)       // 蓝色: 等待首包响应 (Wait First Packet)
+private val ColorInternalPipe = Color(0xFF8E24AA)       // 紫色: 双向数据转发传输
+private val ColorTrigger = Color(0xFFE91E63)            // 鲜亮洋红: 用户回车触发上网起点
+
+// 序列 3 & 4: 底层通道协议帧 (5种帧类型，经典红黄蓝绿紫极高反差)
+private val ColorFrameOpen = Color(0xFF1E88E5)          // 亮蓝: OPEN (建连)
+private val ColorFrameOpenRsp = Color(0xFF43A047)       // 鲜绿: OPENRSP (就绪)
+private val ColorFrameDataUp = Color(0xFF00ACC1)        // 青蓝: DATA (↑上传)
+private val ColorFrameDataDown = Color(0xFFFF8F00)      // 亮橙: DATA (↓下载)
+private val ColorFrameClose = Color(0xFFE53935)         // 鲜红: CLOSE (关闭)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
