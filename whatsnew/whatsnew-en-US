@@ -1,3 +1,3 @@
-• Fix diagnosis timing alignment & packet stream rendering: accurate positioning and pipeline lifecycle tracking
-• Proportional network phase rendering: Gantt bar segment widths strictly match actual elapsed milliseconds
-• Pre-dispatch Breakdown: details overhead between UI click and first packet, including engine IPC dispatch, local cache/policy checks, and socket queueing
+• Interactive Gantt Chart Zoom: supports 1x/2x/4x/8x zoom levels with horizontal scrolling and timeline ruler
+• Smart Active Period Focus: option to crop out Keep-Alive idle periods and focus on real transmission delays
+• Unique Color Scheme: distinct colors for all phases across dispatch, browser, kernel, and packet streams
